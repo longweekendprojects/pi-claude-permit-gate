@@ -1,0 +1,33 @@
+{
+  "name": "pi-claude-permit-gate",
+  "version": "0.1.0",
+  "description": "A shared concurrency gate for native Anthropic Claude requests in Pi.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "anthropic",
+    "claude",
+    "concurrency",
+    "rate-limit",
+    "scheduling"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longweekendprojects/pi-claude-permit-gate.git"
+  },
+  "homepage": "https://github.com/longweekendprojects/pi-claude-permit-gate#readme",
+  "bugs": {
+    "url": "https://github.com/longweekendprojects/pi-claude-permit-gate/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mjs"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
