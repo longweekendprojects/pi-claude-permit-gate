@@ -12,6 +12,8 @@ const DISABLED = process.env.CLAUDE_PERMIT_GATE_DISABLE === "1" || process.env.A
 const VERBOSE = process.env.CLAUDE_PERMIT_GATE_VERBOSE === "1" || process.env.ANTHROPIC_PERMIT_GATE_VERBOSE === "1";
 const RETRY_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_RETRY_MS", 500, 10);
 const WARNING_ATTEMPTS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", 600, 1);
+const SPAWN_BACKOFF_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_SPAWN_BACKOFF_MS", "ANTHROPIC_PERMIT_GATE_SPAWN_BACKOFF_MS", 1000, 100);
+const MAX_SPAWN_BACKOFF_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS", "ANTHROPIC_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS", 30000, SPAWN_BACKOFF_MS);
 
 function positiveEnvInt(name: string, legacy: string, fallback: number, minimum: number): number {
   const parsed = Number.parseInt(process.env[name] ?? process.env[legacy] ?? "", 10);
@@ -29,6 +31,12 @@ export function providerPorts(value = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PO
 }
 const PROVIDER_PORTS = providerPorts();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type DaemonRecovery = { failures: number; nextSpawnAt: number; lastError?: string };
+const daemonRecovery = new Map<number, DaemonRecovery>();
+function recoveryFor(port: number): DaemonRecovery { const state = daemonRecovery.get(port) ?? { failures: 0, nextSpawnAt: 0 }; daemonRecovery.set(port, state); return state; }
+function recoveryMessage(port: number): string | undefined { return daemonRecovery.get(port)?.lastError; }
+function clearRecovery(port: number) { daemonRecovery.delete(port); }
 
 function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000): Promise<T | undefined> {
   return new Promise((resolve) => {
@@ -64,9 +72,27 @@ function daemonEnv(port: number, provider: string): NodeJS.ProcessEnv {
   };
 }
 async function ensureDaemon(directory: string, port: number, provider: string): Promise<void> {
-  if ((await getJson(port))?.ok) return;
-  const child = spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
-  child.unref();
+  if ((await getJson(port))?.ok) { clearRecovery(port); return; }
+  const state = recoveryFor(port);
+  const now = Date.now();
+  if (now < state.nextSpawnAt) throw new Error(`Claude permit daemon on port ${port} is retrying after startup failure: ${state.lastError ?? "daemon is unavailable"}`);
+
+  state.failures++;
+  const backoff = Math.min(MAX_SPAWN_BACKOFF_MS, SPAWN_BACKOFF_MS * 2 ** Math.min(state.failures - 1, 5));
+  state.nextSpawnAt = now + backoff;
+  state.lastError = `daemon launch pending; retrying in ${Math.ceil(backoff / 1000)}s`;
+  try {
+    const child = spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
+    child.once("error", (error) => { state.lastError = `could not start daemon on port ${port}: ${error.message}`; });
+    child.once("exit", (code, signal) => {
+      if (code === 0 && !signal) return;
+      state.lastError = `daemon on port ${port} exited${signal ? ` from ${signal}` : ` with code ${code}`}; retrying in ${Math.ceil(backoff / 1000)}s`;
+    });
+    child.unref();
+  } catch (error) {
+    state.lastError = `could not start daemon on port ${port}: ${error instanceof Error ? error.message : String(error)}`;
+    throw error;
+  }
 }
 
 type Permit = { permitId: string; port: number; renewTimer?: ReturnType<typeof setInterval> };
@@ -84,7 +110,11 @@ export async function acquirePermitResponse(port: number, body: any, directory: 
     let response: any; try { response = await (options.request ?? ((pathname, payload) => postJson(port, pathname, payload)))("/acquire", body); } catch {}
     if (response?.permitId) return response;
     try { await (options.ensure ?? (() => ensureDaemon(directory, port, String(body.provider ?? "anthropic"))))(); } catch {}
-    if (!warned && attempt >= (options.warningAfterAttempts ?? WARNING_ATTEMPTS)) { warned = true; options.onUnavailable?.(`Claude permit gate unavailable after ${attempt} attempts; provider request remains blocked`); }
+    if (!warned && attempt >= (options.warningAfterAttempts ?? WARNING_ATTEMPTS)) {
+      warned = true;
+      const detail = recoveryMessage(port);
+      options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
+    }
     await (options.wait ?? sleep)(options.retryMs ?? RETRY_MS);
   }
 }
@@ -109,11 +139,11 @@ function cooldown(failure: "rate-limit" | "overloaded") { return failure === "ov
 export default function (pi: ExtensionAPI) {
   if (DISABLED) return;
   const directory = path.dirname(fileURLToPath(import.meta.url));
-  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const port = ctx.model && PROVIDER_PORTS[ctx.model.provider]; if (port) { await ensureDaemon(directory, port, ctx.model.provider); if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); } });
+  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const port = ctx.model && PROVIDER_PORTS[ctx.model.provider]; if (port) { try { await ensureDaemon(directory, port, ctx.model.provider); } catch {} if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); } });
   pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; ctx.ui.setStatus("claude-permit-gate", PROVIDER_PORTS[event.model?.provider] ? "Claude gate: ready" : undefined); });
-  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; const port = provider && PROVIDER_PORTS[provider]; if (!provider || !port) return undefined; await ensureDaemon(directory, port, provider); await acquire(ctx, directory, port, provider); return undefined; });
+  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; const port = provider && PROVIDER_PORTS[provider]; if (!provider || !port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
   pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); if (ctx.hasUI && PROVIDER_PORTS[ctx.model?.provider]) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); return undefined; });
   pi.on("agent_end", async () => { await release(false, "agent-end"); });
   pi.on("session_shutdown", async () => { await release(false, "session-shutdown"); });
-  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const lines = ["Claude permit gate:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health: any = await getJson(port); lines.push(health?.ok ? `  ${provider} (${port}): active ${health.active}, queued ${health.queued}, concurrency ${health.current}/${health.max}, throttles ${health.throttles}` : `  ${provider} (${port}): daemon stopped`); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const lines = ["Claude permit gate:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health: any = await getJson(port); const unavailable = recoveryMessage(port); lines.push(health?.ok ? `  ${provider} (${port}): active ${health.active}, queued ${health.queued}, concurrency ${health.current}/${health.max}, throttles ${health.throttles}` : `  ${provider} (${port}): ${unavailable ?? "daemon stopped"}`); } ctx.ui.notify(lines.join("\n"), "info"); } });
 }

@@ -30,11 +30,16 @@ const health = (port) => request(port, "GET", "/health").then((response) => resp
 const acquire = (port, session) => request(port, "POST", "/acquire", { session });
 const release = (port, permitId) => request(port, "POST", "/release", { permitId });
 async function eventually(check, message) { const deadline = Date.now() + 3000; while (Date.now() < deadline) { try { const value = await check(); if (value) return value; } catch {} await delay(20); } throw new Error(message); }
-async function daemon(overrides = {}) {
-  const port = await unusedPort(); const home = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-"));
+async function startDaemon(port, home, overrides = {}) {
   const child = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_PORT: String(port), ...overrides }, stdio: "ignore" });
   await eventually(async () => (await health(port)).ok, "daemon did not start");
-  return { port, child, async stop() { if (child.exitCode === null) child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); await fs.rm(home, { recursive: true, force: true }); } };
+  return child;
+}
+async function daemon(overrides = {}) {
+  const port = await unusedPort(); const home = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-"));
+  const child = await startDaemon(port, home, overrides);
+  const gate = { port, home, overrides, child };
+  return { ...gate, async stop() { if (this.child.exitCode === null) this.child.kill("SIGTERM"); if (this.child.exitCode === null) await new Promise((resolve) => this.child.once("exit", resolve)); await fs.rm(home, { recursive: true, force: true }); } };
 }
 
 test("daemon bounds concurrency and schedules sessions round-robin", async (t) => {
@@ -66,6 +71,22 @@ test("throttles before releasing, caps cooldown, and renews live permits", async
   const second = await waiting; assert.equal(second.status, 200);
   for (let i = 0; i < 3; i++) { await delay(50); assert.equal((await request(gate.port, "POST", "/renew", { permitId: second.body.permitId })).body.ok, true); }
   assert.equal((await health(gate.port)).expired, 0); await release(gate.port, second.body.permitId);
+});
+
+test("graceful restart preserves live permits before granting replacements", async (t) => {
+  const gate = await daemon({ CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1", CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: "10000" });
+  t.after(() => gate.stop());
+  const held = await acquire(gate.port, "held");
+  assert.equal(held.status, 200);
+  gate.child.kill("SIGTERM");
+  await new Promise((resolve) => gate.child.once("exit", resolve));
+  gate.child = await startDaemon(gate.port, gate.home, gate.overrides);
+  const restored = await health(gate.port);
+  assert.equal(restored.active, 1, "replacement must quarantine the pre-restart lease");
+  const waiting = acquire(gate.port, "waiting");
+  await eventually(async () => (await health(gate.port)).queued === 1, "replacement granted while a restored lease was active");
+  assert.equal((await release(gate.port, held.body.permitId)).body.ok, true);
+  assert.equal((await waiting).status, 200);
 });
 
 test("reclaims abandoned permits and drains waiters on shutdown", async () => {

@@ -23,6 +23,7 @@ const INCREASE_AFTER_MS = envInt("CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS", "ANTHRO
 const PERMIT_TTL_MS = envInt("CLAUDE_PERMIT_GATE_PERMIT_TTL_MS", "ANTHROPIC_PERMIT_GATE_PERMIT_TTL_MS", 300000, 0);
 const DIR = path.join(os.homedir(), ".pi", "agent", "claude-permit-gate");
 const LOG = path.join(DIR, "permit-daemon.log");
+const STATE = path.join(DIR, `permit-state-${PORT}.json`);
 fs.mkdirSync(DIR, { recursive: true });
 
 const stats = { startedAt: new Date().toISOString(), granted: 0, released: 0, cancelled: 0, expired: 0, throttles: 0, peakActive: 0, peakQueued: 0, peakOldestWaitMs: 0 };
@@ -38,6 +39,34 @@ function log(...parts) { fs.appendFile(LOG, `[${new Date().toISOString()}] [:${P
 function reply(res, status, body) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); }
 function readBody(req) { return new Promise((resolve) => { let body = ""; req.on("data", (chunk) => { body += chunk; }); req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch { resolve({}); } }); }); }
 function schedulePump(delay) { if (!pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = undefined; pump(); }, Math.max(0, delay)); }
+
+function saveState() {
+  const state = {
+    version: 1,
+    current,
+    cooldownUntil,
+    lastThrottleAt,
+    active: [...active.entries()].map(([permitId, permit]) => ({ permitId, session: permit.session, renewedAt: permit.renewedAt })),
+  };
+  const temporary = `${STATE}.${process.pid}.tmp`;
+  try { fs.writeFileSync(temporary, JSON.stringify(state)); fs.renameSync(temporary, STATE); } catch { try { fs.unlinkSync(temporary); } catch {} }
+}
+function restoreState() {
+  try {
+    const state = JSON.parse(fs.readFileSync(STATE, "utf8"));
+    current = Math.min(MAX, Math.max(MIN, Number(state.current) || current));
+    cooldownUntil = Math.max(0, Number(state.cooldownUntil) || 0);
+    lastThrottleAt = Math.max(0, Number(state.lastThrottleAt) || 0);
+    const now = Date.now();
+    for (const permit of state.active || []) {
+      if (!permit?.permitId || !permit?.renewedAt) continue;
+      if (PERMIT_TTL_MS && now - permit.renewedAt > PERMIT_TTL_MS) continue;
+      active.set(permit.permitId, { session: String(permit.session || "unknown"), grantedAt: permit.renewedAt, renewedAt: permit.renewedAt });
+    }
+    if (active.size || cooldownUntil > now) log(`restored ${active.size} active permit(s), concurrency ${current}, and ${Math.max(0, cooldownUntil - now)}ms cooldown`);
+    saveState();
+  } catch {}
+}
 function snapshot() {
   const now = Date.now(); let queued = 0; let oldestWaitMs = 0; const bySession = {};
   for (const [session, queue] of queues) {
@@ -67,19 +96,20 @@ function pump() {
     const request = queue.shift(); if (queue.length) roundRobin.push(session); else queues.delete(session);
     if (request.done) continue;
     request.done = true; request.res.removeListener("close", request.cancel);
-    const permitId = crypto.randomUUID(); const now = Date.now(); active.set(permitId, { session, grantedAt: now, renewedAt: now });
+    const permitId = crypto.randomUUID(); const now = Date.now(); active.set(permitId, { session, grantedAt: now, renewedAt: now }); saveState();
     stats.granted++; stats.peakActive = Math.max(stats.peakActive, active.size);
     reply(request.res, 200, { ok: true, permitId, waitedMs: now - request.enqueuedAt, current, max: MAX, permitTtlMs: PERMIT_TTL_MS });
   }
 }
 function maybeIncrease() { const now = Date.now(); if (current >= MAX || now < cooldownUntil || now - lastThrottleAt < INCREASE_AFTER_MS || now - lastIncreaseAt < INCREASE_AFTER_MS) return; const before = current; current++; lastIncreaseAt = now; log(`clean window: concurrency ${before} -> ${current}`); pump(); }
-function releasePermit(permitId) { if (!permitId || !active.delete(permitId)) return false; stats.released++; maybeIncrease(); pump(); return true; }
-function renewPermit(permitId) { const permit = active.get(permitId); if (!permit) return false; permit.renewedAt = Date.now(); return true; }
-function throttle(reason, requestedCooldown) { const effective = Math.min(Math.max(1000, Number(requestedCooldown) || COOLDOWN_MS), MAX_COOLDOWN_MS); stats.throttles++; lastThrottleAt = Date.now(); cooldownUntil = Math.min(Date.now() + MAX_COOLDOWN_MS, Math.max(cooldownUntil, Date.now() + effective)); const before = current; current = Math.max(MIN, current - 1); log(`throttle(${reason}): concurrency ${before} -> ${current}; cooldown ${effective}ms`); schedulePump(effective); }
-function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(); let expired = 0; for (const [id, permit] of active) { if (now - permit.renewedAt > PERMIT_TTL_MS) { active.delete(id); expired++; } } if (expired) { stats.expired += expired; log(`reclaimed ${expired} unrenewed permit(s) older than ${PERMIT_TTL_MS}ms`); maybeIncrease(); pump(); } }
+function releasePermit(permitId) { if (!permitId || !active.delete(permitId)) return false; saveState(); stats.released++; maybeIncrease(); pump(); return true; }
+function renewPermit(permitId) { const permit = active.get(permitId); if (!permit) return false; permit.renewedAt = Date.now(); saveState(); return true; }
+function throttle(reason, requestedCooldown) { const effective = Math.min(Math.max(1000, Number(requestedCooldown) || COOLDOWN_MS), MAX_COOLDOWN_MS); stats.throttles++; lastThrottleAt = Date.now(); cooldownUntil = Math.min(Date.now() + MAX_COOLDOWN_MS, Math.max(cooldownUntil, Date.now() + effective)); const before = current; current = Math.max(MIN, current - 1); saveState(); log(`throttle(${reason}): concurrency ${before} -> ${current}; cooldown ${effective}ms`); schedulePump(effective); }
+function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(); let expired = 0; for (const [id, permit] of active) { if (now - permit.renewedAt > PERMIT_TTL_MS) { active.delete(id); expired++; } } if (expired) { saveState(); stats.expired += expired; log(`reclaimed ${expired} unrenewed permit(s) older than ${PERMIT_TTL_MS}ms`); maybeIncrease(); pump(); } }
 
+restoreState();
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 2, active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
+  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
   const body = await readBody(req);
   if (req.method === "POST" && req.url === "/acquire") return enqueue(String(body.session || "unknown"), res);
   if (req.method === "POST" && req.url === "/renew") return reply(res, 200, { ok: renewPermit(body.permitId) });
@@ -90,5 +120,5 @@ const server = http.createServer(async (req, res) => {
 server.on("error", (error) => { if (error.code === "EADDRINUSE") process.exit(0); log("server error", error.message); process.exit(1); });
 server.listen(PORT, "127.0.0.1", () => log(`permit daemon listening on 127.0.0.1:${PORT}; concurrency ${current}/${MAX}; cooldown<=${MAX_COOLDOWN_MS}ms; permitTtl ${PERMIT_TTL_MS}ms`));
 const sweepTimer = setInterval(sweepStalePermits, 30000); sweepTimer.unref?.();
-function shutdown() { for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }
+function shutdown() { saveState(); for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

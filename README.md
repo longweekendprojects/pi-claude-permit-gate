@@ -66,11 +66,17 @@ The daemon reads its settings when it first starts. Each pool defaults to two co
 | `CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS` | `60000` | Hard cooldown ceiling. |
 | `CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS` | `120000` | Quiet period before concurrency rises. |
 | `CLAUDE_PERMIT_GATE_PERMIT_TTL_MS` | `300000` | Time without a renewal before a permit is reclaimed. Set to `0` to disable reclaiming. |
+| `CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS` | `20000` | Cooldown requested after a rate-limit response. |
+| `CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS` | `60000` | Cooldown requested after an overload response. |
+| `CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS` | `500` | Delay between failed acquire attempts. |
+| `CLAUDE_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS` | `600` | Failed attempts before the blocked request reports a diagnostic. |
+| `CLAUDE_PERMIT_GATE_SPAWN_BACKOFF_MS` | `1000` | Initial delay before retrying a failed daemon launch. |
+| `CLAUDE_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS` | `30000` | Maximum retry delay for a failed daemon launch. |
 | `CLAUDE_PERMIT_GATE_VERBOSE` | `0` | Set to `1` for permit-grant notifications. |
 
-Account-lane installations can retain `CLAUDE_LANE_A_*` through `CLAUDE_LANE_D_*` settings for each lane's `MIN`, `MAX`, `START`, `COOLDOWN_MS`, `MAX_COOLDOWN_MS`, `INCREASE_AFTER_MS`, and `PERMIT_TTL_MS` values. The initial release also honors the matching legacy `ANTHROPIC_PERMIT_GATE_*` names while migrating to `CLAUDE_PERMIT_GATE_*`.
+Account-lane installations can retain `CLAUDE_LANE_A_*` through `CLAUDE_LANE_D_*` settings for each lane's `MIN`, `MAX`, `START`, `COOLDOWN_MS`, `MAX_COOLDOWN_MS`, `INCREASE_AFTER_MS`, and `PERMIT_TTL_MS` values. The initial release also honors matching legacy `ANTHROPIC_PERMIT_GATE_*` names while migrating to `CLAUDE_PERMIT_GATE_*`.
 
-After changing daemon settings, stop the affected local daemon. The next mapped request starts it with the new configuration:
+`CLAUDE_PERMIT_GATE_PROVIDER_PORTS`, `CLAUDE_PERMIT_GATE_DISABLE`, retry settings, and throttle settings are read when Pi loads the extension. Restart Pi after changing them. The daemon reads its own concurrency settings when it starts. After changing daemon settings, stop the affected local daemon. The next mapped request starts it with the new configuration:
 
 ```bash
 pkill -TERM -f 'pi-claude-permit-gate/permit-daemon.mjs'
@@ -92,9 +98,9 @@ The daemon writes its log under:
 
 ## Limitations
 
-The gate coordinates only local Pi processes. It cannot prevent Anthropic-side outages or enforce a limit across machines. A configured daemon port is unauthenticated, so any process under the same local user can occupy a permit or request a cooldown. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
+The gate coordinates only local Pi processes. It cannot prevent Anthropic-side outages or enforce a limit across machines. A configured daemon port is unauthenticated and reachable by any process on the local machine, so another local user or service can occupy a permit or request a cooldown. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
 
-The gate remains pending while it restores an unavailable daemon. This protects the concurrency limit but means a blocked request needs a healthy local port to resume.
+The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. The gate remains pending while it restores an unavailable daemon. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
 
 ## Development
 
