@@ -81,6 +81,10 @@ function enqueue(session, res) {
   const queue = queues.get(session) ?? []; queues.set(session, queue); queue.push(request);
   if (!roundRobin.includes(session)) roundRobin.push(session);
   request.cancel = () => {
+    if (request.permitId) {
+      if (!request.responseFinished) releasePermit(request.permitId);
+      return;
+    }
     if (request.done) return;
     request.done = true; const items = queues.get(session); if (!items) return;
     const index = items.indexOf(request); if (index >= 0) items.splice(index, 1);
@@ -95,9 +99,10 @@ function pump() {
     const session = roundRobin.shift(); const queue = queues.get(session); if (!queue?.length) continue;
     const request = queue.shift(); if (queue.length) roundRobin.push(session); else queues.delete(session);
     if (request.done) continue;
-    request.done = true; request.res.removeListener("close", request.cancel);
-    const permitId = crypto.randomUUID(); const now = Date.now(); active.set(permitId, { session, grantedAt: now, renewedAt: now }); saveState();
+    request.done = true;
+    const permitId = crypto.randomUUID(); const now = Date.now(); request.permitId = permitId; active.set(permitId, { session, grantedAt: now, renewedAt: now }); saveState();
     stats.granted++; stats.peakActive = Math.max(stats.peakActive, active.size);
+    request.res.once("finish", () => { request.responseFinished = true; request.res.removeListener("close", request.cancel); });
     reply(request.res, 200, { ok: true, permitId, waitedMs: now - request.enqueuedAt, current, max: MAX, permitTtlMs: PERMIT_TTL_MS });
   }
 }

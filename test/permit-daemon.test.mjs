@@ -77,6 +77,23 @@ test("closing a queued acquire removes it without consuming a permit", async (t)
   const state = await health(gate.port); assert.equal(state.active, 0); assert.equal(state.cancelled, 1);
 });
 
+test("releases a grant when its queued client disconnects before the response flushes", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-"));
+  const preload = path.join(home, "delay-grant-response.cjs");
+  await fs.writeFile(preload, `const http = require("node:http"); const end = http.ServerResponse.prototype.end; http.ServerResponse.prototype.end = function(chunk, ...args) { if (String(chunk).includes("\\\"permitId\\\"")) { setTimeout(() => end.call(this, chunk, ...args), 100); return this; } return end.call(this, chunk, ...args); };`);
+  const port = await unusedPort(); const child = await startDaemon(port, home, { NODE_OPTIONS: `--require=${preload}`, CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1" });
+  const gate = { port, home, child, async stop() { if (this.child.exitCode === null) this.child.kill("SIGTERM"); if (this.child.exitCode === null) await new Promise((resolve) => this.child.once("exit", resolve)); await fs.rm(home, { recursive: true, force: true }); } }; t.after(() => gate.stop());
+  const holder = await acquire(port, "holder");
+  const disconnected = new Promise((resolve) => {
+    const payload = JSON.stringify({ session: "waiting" }); const req = http.request({ host: "127.0.0.1", port, method: "POST", path: "/acquire", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } });
+    req.once("error", resolve); req.end(payload); gate.disconnect = () => req.destroy();
+  });
+  await eventually(async () => (await health(port)).queued === 1, "request did not queue");
+  await release(port, holder.body.permitId); await eventually(async () => (await health(port)).active === 1, "queued request was not granted"); gate.disconnect(); await disconnected;
+  await eventually(async () => (await health(port)).active === 0, "disconnected grant remained active");
+  assert.equal((await health(port)).released, 2);
+});
+
 test("throttles before releasing, caps cooldown, and renews live permits", async (t) => {
   const gate = await daemon({ CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1", CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS: "1000", CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: "100" }); t.after(() => gate.stop());
   const first = await acquire(gate.port, "first"); const waiting = acquire(gate.port, "next"); await eventually(async () => (await health(gate.port)).queued === 1, "request did not queue");
