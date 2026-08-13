@@ -64,6 +64,19 @@ test("daemon bounds concurrency and schedules sessions round-robin", async (t) =
   const final = await health(gate.port); assert.equal(final.active, 0); assert.equal(final.queued, 0); assert.equal(final.peakActive, 1);
 });
 
+test("closing a queued acquire removes it without consuming a permit", async (t) => {
+  const gate = await daemon({ CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1" }); t.after(() => gate.stop());
+  const holder = await acquire(gate.port, "holder"); const controller = new AbortController();
+  const pending = new Promise((resolve) => {
+    const payload = JSON.stringify({ session: "waiting" });
+    const req = http.request({ host: "127.0.0.1", port: gate.port, method: "POST", path: "/acquire", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } });
+    controller.signal.addEventListener("abort", () => req.destroy(), { once: true }); req.on("error", resolve); req.end(payload);
+  });
+  await eventually(async () => (await health(gate.port)).queued === 1, "request did not queue"); controller.abort(); await pending;
+  await eventually(async () => (await health(gate.port)).queued === 0, "aborted request remained queued"); await release(gate.port, holder.body.permitId);
+  const state = await health(gate.port); assert.equal(state.active, 0); assert.equal(state.cancelled, 1);
+});
+
 test("throttles before releasing, caps cooldown, and renews live permits", async (t) => {
   const gate = await daemon({ CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1", CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS: "1000", CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: "100" }); t.after(() => gate.stop());
   const first = await acquire(gate.port, "first"); const waiting = acquire(gate.port, "next"); await eventually(async () => (await health(gate.port)).queued === 1, "request did not queue");

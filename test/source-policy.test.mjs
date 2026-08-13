@@ -30,3 +30,11 @@ test("extension preserves provider payloads and owns one acquire hook", () => {
   assert.equal(source.includes("transformPayload"), false);
   assert.equal(source.includes("/renew"), true);
 });
+
+test("aborting an acquire destroys its queued request and stops retries", async () => {
+  const controller = new AbortController(); let attempts = 0;
+  const pending = acquirePermitResponse(19000, { session: "test" }, "/unused", { signal: controller.signal, request: async (_path, _body, signal) => { attempts++; return await new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true })); }, ensure: async () => { throw new Error("unavailable"); }, wait: async () => {}, retryMs: 1 });
+  await new Promise((resolve) => setImmediate(resolve)); controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(attempts, 1);
+});

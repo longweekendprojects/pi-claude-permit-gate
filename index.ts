@@ -46,13 +46,27 @@ function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000):
     req.on("timeout", () => { req.destroy(); resolve(undefined); }); req.on("error", () => resolve(undefined));
   });
 }
-function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs = 7200000): Promise<T> {
+function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs = 7200000, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError()); return; }
     const payload = JSON.stringify(body ?? {});
     const req = http.request(`http://127.0.0.1:${port}${pathname}`, { method: "POST", timeout: timeoutMs, headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
       let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } });
     });
-    req.on("timeout", () => req.destroy(new Error("permit acquire timed out"))); req.on("error", reject); req.end(payload);
+    const abort = () => req.destroy(abortError());
+    signal?.addEventListener("abort", abort, { once: true });
+    req.on("timeout", () => req.destroy(new Error("permit acquire timed out"))); req.on("error", reject); req.on("close", () => signal?.removeEventListener("abort", abort)); req.end(payload);
+  });
+}
+function abortError() { return Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }
+function isAborted(signal?: AbortSignal) { return signal?.aborted === true; }
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (isAborted(signal)) { reject(abortError()); return; }
+    const timer = setTimeout(done, ms);
+    const abort = () => { clearTimeout(timer); done(abortError()); };
+    function done(error?: Error) { signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); }
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 function laneForProvider(provider: string): string | undefined { return provider.match(/^anthropic-([a-d])$/)?.[1]; }
@@ -104,26 +118,39 @@ function startRenewal(permit: Permit, ttlMs: number) {
   permit.renewTimer = setInterval(async () => { if (activePermit === permit) { try { await postJson(permit.port, "/renew", { permitId: permit.permitId }, 5000); } catch {} } }, interval);
   permit.renewTimer.unref?.();
 }
-export async function acquirePermitResponse(port: number, body: any, directory: string, options: { request?: (path: string, body: any) => Promise<any>; ensure?: () => Promise<void>; wait?: (ms: number) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number } = {}): Promise<any> {
+export async function acquirePermitResponse(port: number, body: any, directory: string, options: { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; ensure?: () => Promise<void>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal } = {}): Promise<any> {
+  const signal = options.signal;
   let warned = false;
   for (let attempt = 1; ; attempt++) {
-    let response: any; try { response = await (options.request ?? ((pathname, payload) => postJson(port, pathname, payload)))("/acquire", body); } catch {}
-    if (response?.permitId) return response;
+    if (isAborted(signal)) throw abortError();
+    let response: any;
+    try { response = await (options.request ?? ((pathname, payload, requestSignal) => postJson(port, pathname, payload, 7200000, requestSignal)))("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
+    if (response?.permitId) {
+      if (isAborted(signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); throw abortError(); }
+      return response;
+    }
     try { await (options.ensure ?? (() => ensureDaemon(directory, port, String(body.provider ?? "anthropic"))))(); } catch {}
     if (!warned && attempt >= (options.warningAfterAttempts ?? WARNING_ATTEMPTS)) {
       warned = true;
       const detail = recoveryMessage(port);
       options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
     }
-    await (options.wait ?? sleep)(options.retryMs ?? RETRY_MS);
+    await (options.wait ?? waitForRetry)(options.retryMs ?? RETRY_MS, signal);
   }
 }
 async function acquire(ctx: any, directory: string, port: number, provider: string) {
-  if (activePermit) return;
+  if (activePermit || isAborted(ctx.signal)) return;
   ctx.ui?.setStatus?.("claude-permit-gate", "Claude: waiting for permit...");
-  const response = await acquirePermitResponse(port, { session: sessionId, cwd: ctx.cwd, provider }, directory, { onUnavailable: (message) => { ctx.ui?.setStatus?.("claude-permit-gate", "Claude: blocked; permit gate unavailable"); ctx.ui?.notify?.(message, "error"); } });
-  const permit: Permit = { permitId: String(response.permitId), port }; activePermit = permit; startRenewal(permit, Number(response.permitTtlMs || 0));
-  const waited = Number(response.waitedMs || 0); ctx.ui?.setStatus?.("claude-permit-gate", waited > 1000 ? `Claude: permit after ${Math.round(waited / 1000)}s` : "Claude: permit active"); if (VERBOSE) ctx.ui?.notify?.(`Claude permit granted after ${waited}ms`, "info");
+  try {
+    const response = await acquirePermitResponse(port, { session: sessionId, cwd: ctx.cwd, provider }, directory, { signal: ctx.signal, onUnavailable: (message) => { ctx.ui?.setStatus?.("claude-permit-gate", "Claude: blocked; permit gate unavailable"); ctx.ui?.notify?.(message, "error"); } });
+    if (isAborted(ctx.signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); return; }
+    const permit: Permit = { permitId: String(response.permitId), port }; activePermit = permit; startRenewal(permit, Number(response.permitTtlMs || 0));
+    const waited = Number(response.waitedMs || 0); ctx.ui?.setStatus?.("claude-permit-gate", waited > 1000 ? `Claude: permit after ${Math.round(waited / 1000)}s` : "Claude: permit active"); if (VERBOSE) ctx.ui?.notify?.(`Claude permit granted after ${waited}ms`, "info");
+  } catch (error) {
+    if (!isAborted(ctx.signal) && (error as Error)?.name !== "AbortError") throw error;
+  } finally {
+    if (isAborted(ctx.signal)) ctx.ui?.setStatus?.("claude-permit-gate", undefined);
+  }
 }
 async function release(throttle: boolean, reason: string, cooldownMs?: number) {
   const permit = activePermit; if (!permit) return; activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer);

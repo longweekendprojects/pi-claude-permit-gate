@@ -100,7 +100,7 @@ The daemon writes its log under:
 
 The gate coordinates only local Pi processes. It cannot prevent Anthropic-side outages or enforce a limit across machines. A configured daemon port is unauthenticated and reachable by any process on the local machine, so another local user or service can occupy a permit or request a cooldown. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
 
-The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. The gate remains pending while it restores an unavailable daemon. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
+The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. The gate remains pending while it restores an unavailable daemon, unless the user presses Esc to cancel that waiting request. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
 
 ## Development
 
