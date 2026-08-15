@@ -344,6 +344,12 @@ const PERMIT_TTL_MS = envInt("CLAUDE_PERMIT_GATE_PERMIT_TTL_MS", "ANTHROPIC_PERM
 const DIR = path.join(os.homedir(), ".pi", "agent", "claude-permit-gate");
 const LOG = path.join(DIR, "permit-daemon.log");
 const STATE = path.join(DIR, `permit-state-${PORT}.json`);
+// Telemetry is observational only. Nothing recorded here feeds a scheduling or
+// cooldown decision; it exists to answer whether the fixed cooldown is right,
+// a question the current counters cannot settle.
+const TELEMETRY = path.join(DIR, `telemetry-${PORT}.jsonl`);
+const TELEMETRY_ENABLED = process.env.CLAUDE_PERMIT_GATE_TELEMETRY !== "0";
+const SAMPLE_MS = envInt("CLAUDE_PERMIT_GATE_TELEMETRY_SAMPLE_MS", "", 60000, 1000);
 fs.mkdirSync(DIR, { recursive: true });
 
 const stats = { startedAt: new Date().toISOString(), granted: 0, released: 0, cancelled: 0, expired: 0, throttles: 0, peakActive: 0, peakQueued: 0, peakOldestWaitMs: 0 };
@@ -354,6 +360,30 @@ let cooldownUntil = 0;
 let lastThrottleAt = 0;
 let lastIncreaseAt = Date.now();
 let pumpTimer;
+
+// Idle accounting exists because "time from throttle to next success" is not a
+// recovery measurement on its own: a lane nobody is using looks identical to a
+// lane the provider is refusing. Subtracting the time this lane had no active
+// and no queued work leaves recovery time under actual demand.
+let laneIdle = true;
+let idleMarkAt = Date.now();
+let idleAccumMs = 0;
+let pendingRecovery;
+let sampleBaseline = { granted: 0, released: 0, throttles: 0, expired: 0 };
+function totalQueued() { let total = 0; for (const queue of queues.values()) total += queue.length; return total; }
+function idleTotalMs() { return idleAccumMs + (laneIdle ? Date.now() - idleMarkAt : 0); }
+// Call after any change to active or queued state, never before: it closes out
+// the stretch that just ended and then reclassifies the lane.
+function touchIdle() {
+  const now = Date.now();
+  if (laneIdle) idleAccumMs += now - idleMarkAt;
+  laneIdle = active.size === 0 && totalQueued() === 0;
+  idleMarkAt = now;
+}
+function record(type, fields) {
+  if (!TELEMETRY_ENABLED) return;
+  fs.appendFile(TELEMETRY, `${JSON.stringify({ t: new Date().toISOString(), port: PORT, type, ...fields })}\n`, () => {});
+}
 
 function log(...parts) { fs.appendFile(LOG, `[${new Date().toISOString()}] [:${PORT}] ${parts.join(" ")}\n`, () => {}); }
 function reply(res, status, body) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); }
@@ -405,6 +435,7 @@ function enqueue(session, res) {
   const request = { session, res, enqueuedAt: Date.now(), done: false };
   const queue = queues.get(session) ?? []; queues.set(session, queue); queue.push(request);
   if (!roundRobin.includes(session)) roundRobin.push(session);
+  touchIdle();
   request.cancel = () => {
     if (request.permitId) {
       if (!request.responseFinished) releasePermit(request.permitId);
@@ -414,7 +445,7 @@ function enqueue(session, res) {
     request.done = true; const items = queues.get(session); if (!items) return;
     const index = items.indexOf(request); if (index >= 0) items.splice(index, 1);
     if (!items.length) { queues.delete(session); const lane = roundRobin.indexOf(session); if (lane >= 0) roundRobin.splice(lane, 1); }
-    stats.cancelled++;
+    stats.cancelled++; touchIdle();
   };
   res.on("close", request.cancel); pump();
 }
@@ -426,16 +457,61 @@ function pump() {
     if (request.done) continue;
     request.done = true;
     const permitId = crypto.randomUUID(); const now = Date.now(); request.permitId = permitId; active.set(permitId, { session, grantedAt: now, renewedAt: now }); saveState();
-    stats.granted++; stats.peakActive = Math.max(stats.peakActive, active.size);
+    stats.granted++; stats.peakActive = Math.max(stats.peakActive, active.size); touchIdle();
     request.res.once("finish", () => { request.responseFinished = true; request.res.removeListener("close", request.cancel); });
     reply(request.res, 200, { ok: true, permitId, waitedMs: now - request.enqueuedAt, current, max: MAX, permitTtlMs: PERMIT_TTL_MS, ...daemonProvenance() });
   }
 }
 function maybeIncrease() { const now = Date.now(); if (current >= MAX || now < cooldownUntil || now - lastThrottleAt < INCREASE_AFTER_MS || now - lastIncreaseAt < INCREASE_AFTER_MS) return; const before = current; current++; lastIncreaseAt = now; log(`clean window: concurrency ${before} -> ${current}`); pump(); }
-function releasePermit(permitId) { if (!permitId || !active.delete(permitId)) return false; saveState(); stats.released++; maybeIncrease(); pump(); return true; }
+// succeeded distinguishes a completed assistant turn from a release that merely
+// tears down a permit (cancel, agent exit, or the release that accompanies a
+// throttle). Only a completed turn proves the provider is serving this lane
+// again, so only that closes a recovery window.
+function releasePermit(permitId, succeeded = false) {
+  if (!permitId || !active.delete(permitId)) return false;
+  saveState(); stats.released++; touchIdle();
+  if (succeeded && pendingRecovery) {
+    const sinceThrottleMs = Date.now() - pendingRecovery.at;
+    const idleMs = Math.max(0, idleTotalMs() - pendingRecovery.idleAtThrottle);
+    record("recovery", {
+      reason: pendingRecovery.reason,
+      sinceThrottleMs,
+      idleMs,
+      demandRecoveryMs: Math.max(0, sinceThrottleMs - idleMs),
+      appliedCooldownMs: pendingRecovery.appliedCooldownMs,
+      providerRetryMs: pendingRecovery.providerRetryMs,
+      throttlesDuringWindow: pendingRecovery.throttlesDuring,
+      queuedAtThrottle: pendingRecovery.queuedAtThrottle,
+    });
+    pendingRecovery = undefined;
+  }
+  maybeIncrease(); pump(); return true;
+}
 function renewPermit(permitId) { const permit = active.get(permitId); if (!permit) return false; permit.renewedAt = Date.now(); saveState(); return true; }
-function throttle(reason, requestedCooldown) { const effective = Math.min(Math.max(1000, Number(requestedCooldown) || COOLDOWN_MS), MAX_COOLDOWN_MS); stats.throttles++; lastThrottleAt = Date.now(); cooldownUntil = Math.min(Date.now() + MAX_COOLDOWN_MS, Math.max(cooldownUntil, Date.now() + effective)); const before = current; current = Math.max(MIN, current - 1); saveState(); log(`throttle(${reason}): concurrency ${before} -> ${current}; cooldown ${effective}ms`); schedulePump(effective); }
-function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(); let expired = 0; for (const [id, permit] of active) { if (now - permit.renewedAt > PERMIT_TTL_MS) { active.delete(id); expired++; } } if (expired) { saveState(); stats.expired += expired; log(`reclaimed ${expired} unrenewed permit(s) older than ${PERMIT_TTL_MS}ms`); maybeIncrease(); pump(); } }
+// providerRetryMs is recorded and deliberately not used: measurement showed the
+// provider's requested delay is often orders of magnitude too large, so acting
+// on it needs the evidence this telemetry is being added to collect.
+function throttle(reason, requestedCooldown, providerRetryMs) {
+  const effective = Math.min(Math.max(1000, Number(requestedCooldown) || COOLDOWN_MS), MAX_COOLDOWN_MS);
+  stats.throttles++; lastThrottleAt = Date.now();
+  cooldownUntil = Math.min(Date.now() + MAX_COOLDOWN_MS, Math.max(cooldownUntil, Date.now() + effective));
+  const before = current; current = Math.max(MIN, current - 1); saveState();
+  const snap = snapshot();
+  record("throttle", { reason, providerRetryMs: Number(providerRetryMs) || undefined, requestedCooldownMs: Number(requestedCooldown) || undefined, appliedCooldownMs: effective, concurrencyBefore: before, concurrencyAfter: current, active: active.size, queued: snap.queued, oldestWaitMs: snap.oldestWaitMs });
+  if (pendingRecovery) pendingRecovery.throttlesDuring++;
+  else pendingRecovery = { at: Date.now(), reason, appliedCooldownMs: effective, providerRetryMs: Number(providerRetryMs) || undefined, idleAtThrottle: idleTotalMs(), queuedAtThrottle: snap.queued, throttlesDuring: 0 };
+  log(`throttle(${reason}): concurrency ${before} -> ${current}; cooldown ${effective}ms`);
+  schedulePump(effective);
+}
+function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(); let expired = 0; for (const [id, permit] of active) { if (now - permit.renewedAt > PERMIT_TTL_MS) { active.delete(id); expired++; record("expiry", { session: permit.session, ageMs: now - permit.renewedAt, heldMs: now - permit.grantedAt }); } } if (expired) { saveState(); stats.expired += expired; touchIdle(); log(`reclaimed ${expired} unrenewed permit(s) older than ${PERMIT_TTL_MS}ms`); maybeIncrease(); pump(); } }
+// A periodic sample gives the windowed throughput series that the cumulative
+// counters cannot provide, which is what a later capacity change would be
+// judged against.
+function sampleLane() {
+  const snap = snapshot();
+  record("sample", { active: active.size, queued: snap.queued, oldestWaitMs: snap.oldestWaitMs, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), grantedDelta: stats.granted - sampleBaseline.granted, releasedDelta: stats.released - sampleBaseline.released, throttlesDelta: stats.throttles - sampleBaseline.throttles, expiredDelta: stats.expired - sampleBaseline.expired, idleMs: idleTotalMs() });
+  sampleBaseline = { granted: stats.granted, released: stats.released, throttles: stats.throttles, expired: stats.expired };
+}
 
 restoreState();
 const server = http.createServer(async (req, res) => {
@@ -446,13 +522,14 @@ const server = http.createServer(async (req, res) => {
     return enqueue(String(body.session || "unknown"), res);
   }
   if (req.method === "POST" && req.url === "/renew") return reply(res, 200, { ok: renewPermit(body.permitId) });
-  if (req.method === "POST" && req.url === "/release") return reply(res, 200, { ok: releasePermit(body.permitId) });
-  if (req.method === "POST" && req.url === "/throttle") { throttle(String(body.reason || "unknown"), body.cooldownMs); if (body.permitId) releasePermit(body.permitId); return reply(res, 200, { ok: true, current, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()) }); }
+  if (req.method === "POST" && req.url === "/release") return reply(res, 200, { ok: releasePermit(body.permitId, String(body.reason || "") === "assistant-end") });
+  if (req.method === "POST" && req.url === "/throttle") { throttle(String(body.reason || "unknown"), body.cooldownMs, body.providerRetryMs); if (body.permitId) releasePermit(body.permitId); return reply(res, 200, { ok: true, current, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()) }); }
   reply(res, 404, { ok: false, error: "not found" });
 });
 server.on("error", (error) => { if (error.code === "EADDRINUSE") process.exit(3); log("server error", error.message); process.exit(1); });
 server.listen(PORT, "127.0.0.1", () => log(`permit daemon listening on 127.0.0.1:${PORT}; concurrency ${current}/${MAX}; cooldown<=${MAX_COOLDOWN_MS}ms; permitTtl ${PERMIT_TTL_MS}ms`));
 const sweepTimer = setInterval(sweepStalePermits, 30000); sweepTimer.unref?.();
+const sampleTimer = TELEMETRY_ENABLED ? setInterval(sampleLane, SAMPLE_MS) : undefined; sampleTimer?.unref?.();
 function shutdown() { saveState(); for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
 }
