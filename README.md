@@ -22,6 +22,7 @@ The extension starts each daemon on demand. It gates only configured Anthropic-f
 
 ## What it does
 
+- Preflights local health before every permit request and blocks explicit provider or protocol mismatches.
 - Acquires one local permit before each mapped Anthropic provider request.
 - Shares a fair, round-robin queue among local Pi sessions that use the same provider.
 - Releases permits after a response, an agent exit, or session shutdown.
@@ -76,19 +77,28 @@ The daemon reads its settings when it first starts. Each pool defaults to two co
 
 Account-lane installations can retain `CLAUDE_LANE_A_*` through `CLAUDE_LANE_D_*` settings for each lane's `MIN`, `MAX`, `START`, `COOLDOWN_MS`, `MAX_COOLDOWN_MS`, `INCREASE_AFTER_MS`, and `PERMIT_TTL_MS` values. The initial release also honors matching legacy `ANTHROPIC_PERMIT_GATE_*` names while migrating to `CLAUDE_PERMIT_GATE_*`.
 
-`CLAUDE_PERMIT_GATE_PROVIDER_PORTS`, `CLAUDE_PERMIT_GATE_DISABLE`, retry settings, and throttle settings are read when Pi loads the extension. Restart Pi after changing them. The daemon reads its own concurrency settings when it starts. After changing daemon settings, stop the affected local daemon. The next mapped request starts it with the new configuration:
+`CLAUDE_PERMIT_GATE_PROVIDER_PORTS`, `CLAUDE_PERMIT_GATE_DISABLE`, retry settings, and throttle settings are read when Pi loads the extension. Restart Pi after changing them. The daemon reads its own concurrency settings when it starts. Normal request handling and this package's commands never terminate a daemon.
 
-```bash
-pkill -TERM -f 'pi-claude-permit-gate/permit-daemon.mjs'
-```
+### Approved idle replacement
+
+A legacy daemon may remain usable until a separately approved maintenance window. During that window, an operator handles one daemon at a time: confirm that its health is legacy, observe `active === 0` and `queued === 0` twice at least two seconds apart, restart only that eligible daemon, then verify that its replacement reports the expected provider, protocol `1`, and schema version `3`. If work or queueing returns, defer that daemon. This package intentionally provides no termination command.
 
 ## Operations
 
-Use `/claude-permit` for a compact view of every configured pool. Raw health is also available locally:
+`/claude-permit` is the doctor surface for every configured pool. It reports health schema, protocol, reported provider, daemon age, and a compatibility status alongside occupancy. Raw health is also available locally:
 
 ```bash
 curl http://127.0.0.1:8791/health
 ```
+
+New daemons retain `version: 3` and add `protocolVersion: 1` plus the provider supplied through `CLAUDE_PERMIT_GATE_PROVIDER`. `startedAt` is an ISO-8601 timestamp with fractional seconds, such as `2026-01-02T03:04:05.678Z`; the doctor parses it to report daemon age.
+
+Compatibility is fail closed at the acquire boundary:
+
+- `current` means `ok: true`, the expected provider, and protocol `1`.
+- `legacy` means `ok: true` but a provider or protocol field is absent. It remains usable and is labeled “restart when idle.”
+- `incompatible` means an explicit provider differs or an explicit protocol is unsupported. It never receives `/acquire`.
+- `invalidOrUnavailable` means malformed, unavailable, or non-OK health. It never receives `/acquire` and acquisition retries until Esc cancels it.
 
 The daemon writes its log under:
 

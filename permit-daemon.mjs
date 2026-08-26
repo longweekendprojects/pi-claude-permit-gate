@@ -14,6 +14,7 @@ function envInt(name, legacy, fallback, minimum = 1) {
 }
 
 const PORT = envInt("CLAUDE_PERMIT_GATE_PORT", "ANTHROPIC_PERMIT_GATE_PORT", 8790);
+const PROVIDER = process.env.CLAUDE_PERMIT_GATE_PROVIDER || undefined;
 const MIN = envInt("CLAUDE_PERMIT_GATE_MIN", "ANTHROPIC_PERMIT_GATE_MIN", 1);
 const MAX = Math.max(MIN, envInt("CLAUDE_PERMIT_GATE_MAX", "ANTHROPIC_PERMIT_GATE_MAX", 2));
 let current = Math.min(MAX, Math.max(MIN, envInt("CLAUDE_PERMIT_GATE_START", "ANTHROPIC_PERMIT_GATE_START", 2)));
@@ -114,7 +115,7 @@ function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(
 
 restoreState();
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
+  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, protocolVersion: 1, provider: PROVIDER, active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
   const body = await readBody(req);
   if (req.method === "POST" && req.url === "/acquire") return enqueue(String(body.session || "unknown"), res);
   if (req.method === "POST" && req.url === "/renew") return reply(res, 200, { ok: renewPermit(body.permitId) });
@@ -122,7 +123,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/throttle") { throttle(String(body.reason || "unknown"), body.cooldownMs); if (body.permitId) releasePermit(body.permitId); return reply(res, 200, { ok: true, current, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()) }); }
   reply(res, 404, { ok: false, error: "not found" });
 });
-server.on("error", (error) => { if (error.code === "EADDRINUSE") process.exit(0); log("server error", error.message); process.exit(1); });
+server.on("error", (error) => { if (error.code === "EADDRINUSE") process.exit(3); log("server error", error.message); process.exit(1); });
 server.listen(PORT, "127.0.0.1", () => log(`permit daemon listening on 127.0.0.1:${PORT}; concurrency ${current}/${MAX}; cooldown<=${MAX_COOLDOWN_MS}ms; permitTtl ${PERMIT_TTL_MS}ms`));
 const sweepTimer = setInterval(sweepStalePermits, 30000); sweepTimer.unref?.();
 function shutdown() { saveState(); for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }

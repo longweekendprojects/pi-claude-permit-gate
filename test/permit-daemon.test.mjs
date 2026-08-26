@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -7,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const daemonPath = path.join(root, "permit-daemon.mjs");
@@ -41,6 +43,30 @@ async function daemon(overrides = {}) {
   const gate = { port, home, overrides, child };
   return { ...gate, async stop() { if (this.child.exitCode === null) this.child.kill("SIGTERM"); if (this.child.exitCode === null) await new Promise((resolve) => this.child.once("exit", resolve)); await fs.rm(home, { recursive: true, force: true }); } };
 }
+
+test("daemon health reports provenance and EADDRINUSE re-probes a compatible owner", async (t) => {
+  const gate = await daemon({ CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }); t.after(() => gate.stop());
+  const state = await health(gate.port);
+  assert.equal(state.version, 3); assert.equal(state.protocolVersion, 1); assert.equal(state.provider, "anthropic-a"); assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+  const contenderHome = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-")); t.after(() => fs.rm(contenderHome, { recursive: true, force: true }));
+  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: contenderHome, CLAUDE_PERMIT_GATE_PORT: String(gate.port), CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }, stdio: "ignore" });
+  const exited = await new Promise((resolve) => contender.once("exit", (code, signal) => resolve({ code, signal })));
+  assert.deepEqual(exited, { code: 3, signal: null });
+
+  const port = await unusedPort(); const first = new EventEmitter(); const second = new EventEmitter(); first.unref = () => first; second.unref = () => second;
+  let probes = 0; let spawns = 0;
+  const options = {
+    probe: async () => { probes++; return probes === 1 ? undefined : probes === 2 ? { ok: true, version: 3, protocolVersion: 1, provider: "anthropic-a" } : undefined; },
+    spawnDaemon: () => { spawns++; return spawns === 1 ? first : second; },
+  };
+  const pending = await ensureDaemon("/unused", port, "anthropic-a", options);
+  assert.equal(pending.compatibility, "invalidOrUnavailable"); assert.equal(pending.spawned, true);
+  first.emit("exit", 3, null);
+  await eventually(() => probes === 2, "occupied-port winner was not re-probed");
+  const retried = await ensureDaemon("/unused", port, "anthropic-a", options);
+  assert.equal(retried.spawned, true); assert.equal(spawns, 2, "a compatible occupied-port winner must clear recovery");
+  await ensureDaemon("/unused", port, "anthropic-a", { probe: async () => ({ ok: true, protocolVersion: 1, provider: "anthropic-a" }), spawnDaemon: () => second });
+});
 
 test("daemon bounds concurrency and schedules sessions round-robin", async (t) => {
   const gate = await daemon({ CLAUDE_PERMIT_GATE_MIN: "1", CLAUDE_PERMIT_GATE_MAX: "1", CLAUDE_PERMIT_GATE_START: "1" }); t.after(() => gate.stop());

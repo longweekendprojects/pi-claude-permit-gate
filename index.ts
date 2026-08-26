@@ -38,12 +38,38 @@ function recoveryFor(port: number): DaemonRecovery { const state = daemonRecover
 function recoveryMessage(port: number): string | undefined { return daemonRecovery.get(port)?.lastError; }
 function clearRecovery(port: number) { daemonRecovery.delete(port); }
 
-function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000): Promise<T | undefined> {
+export type DaemonCompatibility = "current" | "legacy" | "incompatible" | "invalidOrUnavailable";
+type HealthRecord = Record<string, unknown>;
+export type DaemonHealthClassification = { compatibility: DaemonCompatibility; health?: HealthRecord; diagnostic: string };
+export type EnsureDaemonResult = DaemonHealthClassification & { spawned: boolean };
+type SpawnedDaemon = { once(event: string, listener: (...args: any[]) => void): unknown; unref(): unknown };
+type EnsureDaemonOptions = { signal?: AbortSignal; probe?: (signal?: AbortSignal) => Promise<unknown | undefined>; spawnDaemon?: (directory: string, port: number, provider: string) => SpawnedDaemon };
+
+function isHealthRecord(value: unknown): value is HealthRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function isCompatibleHealth(result: DaemonHealthClassification): boolean { return result.compatibility === "current" || result.compatibility === "legacy"; }
+export function classifyDaemonHealth(health: unknown, expectedProvider: string): DaemonHealthClassification {
+  if (!isHealthRecord(health) || health.ok !== true) return { compatibility: "invalidOrUnavailable", health: isHealthRecord(health) ? health : undefined, diagnostic: "health is unavailable or invalid" };
+  const hasProvider = Object.prototype.hasOwnProperty.call(health, "provider") && health.provider !== undefined;
+  const hasProtocol = Object.prototype.hasOwnProperty.call(health, "protocolVersion") && health.protocolVersion !== undefined;
+  if (hasProvider && typeof health.provider !== "string") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health provider is invalid" };
+  if (hasProtocol && typeof health.protocolVersion !== "number") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health protocol version is invalid" };
+  if (hasProvider && health.provider !== expectedProvider) return { compatibility: "incompatible", health, diagnostic: `provider ${JSON.stringify(health.provider)} does not match expected ${JSON.stringify(expectedProvider)}` };
+  if (hasProtocol && health.protocolVersion !== 1) return { compatibility: "incompatible", health, diagnostic: `protocol ${health.protocolVersion} is unsupported; expected 1` };
+  if (!hasProvider || !hasProtocol) return { compatibility: "legacy", health, diagnostic: "health omits provider or protocol; restart when idle" };
+  return { compatibility: "current", health, diagnostic: "provider and protocol match" };
+}
+
+function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000, signal?: AbortSignal): Promise<T | undefined> {
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}${pathname}`, { timeout: timeoutMs }, (res) => {
-      let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve(text ? JSON.parse(text) : undefined); } catch { resolve(undefined); } });
+    let settled = false; let req: ReturnType<typeof http.get> | undefined;
+    function finish(value: T | undefined) { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); resolve(value); }
+    function abort() { req?.destroy(); finish(undefined); }
+    if (signal?.aborted) { finish(undefined); return; }
+    signal?.addEventListener("abort", abort, { once: true });
+    req = http.get(`http://127.0.0.1:${port}${pathname}`, { timeout: timeoutMs }, (res) => {
+      let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("error", () => finish(undefined)); res.on("end", () => { try { finish(text ? JSON.parse(text) : undefined); } catch { finish(undefined); } });
     });
-    req.on("timeout", () => { req.destroy(); resolve(undefined); }); req.on("error", () => resolve(undefined));
+    req.on("timeout", () => { req?.destroy(); finish(undefined); }); req.on("error", () => finish(undefined));
   });
 }
 function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs = 7200000, signal?: AbortSignal): Promise<T> {
@@ -76,6 +102,7 @@ function daemonEnv(port: number, provider: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     CLAUDE_PERMIT_GATE_PORT: String(port),
+    CLAUDE_PERMIT_GATE_PROVIDER: provider,
     CLAUDE_PERMIT_GATE_MAX: laneValue("MAX") ?? process.env.CLAUDE_PERMIT_GATE_MAX ?? process.env.ANTHROPIC_PERMIT_GATE_MAX ?? "2",
     CLAUDE_PERMIT_GATE_START: laneValue("START") ?? process.env.CLAUDE_PERMIT_GATE_START ?? process.env.ANTHROPIC_PERMIT_GATE_START ?? "2",
     CLAUDE_PERMIT_GATE_MIN: laneValue("MIN") ?? process.env.CLAUDE_PERMIT_GATE_MIN ?? process.env.ANTHROPIC_PERMIT_GATE_MIN ?? "1",
@@ -85,27 +112,46 @@ function daemonEnv(port: number, provider: string): NodeJS.ProcessEnv {
     CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: laneValue("PERMIT_TTL_MS") ?? process.env.CLAUDE_PERMIT_GATE_PERMIT_TTL_MS ?? process.env.ANTHROPIC_PERMIT_GATE_PERMIT_TTL_MS ?? "300000",
   };
 }
-async function ensureDaemon(directory: string, port: number, provider: string): Promise<void> {
-  if ((await getJson(port))?.ok) { clearRecovery(port); return; }
+function launchDaemon(directory: string, port: number, provider: string): SpawnedDaemon {
+  return spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
+}
+async function occupiedPortRecovery(port: number, provider: string, probe: (signal?: AbortSignal) => Promise<unknown | undefined>) {
+  let health: unknown;
+  try { health = await probe(); } catch {}
+  const result = classifyDaemonHealth(health, provider);
+  if (isCompatibleHealth(result)) { clearRecovery(port); return; }
+  recoveryFor(port).lastError = `daemon launch found an occupied port: ${result.diagnostic}`;
+}
+export async function ensureDaemon(directory: string, port: number, provider: string, options: EnsureDaemonOptions = {}): Promise<EnsureDaemonResult> {
+  const probe = options.probe ?? ((signal?: AbortSignal) => getJson(port, "/health", 1000, signal));
+  if (isAborted(options.signal)) throw abortError();
+  let health: unknown;
+  try { health = await probe(options.signal); } catch {}
+  if (isAborted(options.signal)) throw abortError();
+  const result = classifyDaemonHealth(health, provider);
+  if (isCompatibleHealth(result)) { clearRecovery(port); return { ...result, spawned: false }; }
   const state = recoveryFor(port);
+  if (result.compatibility === "incompatible") { state.lastError = result.diagnostic; return { ...result, spawned: false }; }
   const now = Date.now();
-  if (now < state.nextSpawnAt) throw new Error(`Claude permit daemon on port ${port} is retrying after startup failure: ${state.lastError ?? "daemon is unavailable"}`);
+  if (now < state.nextSpawnAt) return { ...result, diagnostic: state.lastError ?? result.diagnostic, spawned: false };
 
   state.failures++;
   const backoff = Math.min(MAX_SPAWN_BACKOFF_MS, SPAWN_BACKOFF_MS * 2 ** Math.min(state.failures - 1, 5));
   state.nextSpawnAt = now + backoff;
   state.lastError = `daemon launch pending; retrying in ${Math.ceil(backoff / 1000)}s`;
   try {
-    const child = spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
-    child.once("error", (error) => { state.lastError = `could not start daemon on port ${port}: ${error.message}`; });
-    child.once("exit", (code, signal) => {
+    const child = (options.spawnDaemon ?? launchDaemon)(directory, port, provider);
+    child.once("error", (error: Error) => { recoveryFor(port).lastError = `could not start daemon on port ${port}: ${error.message}`; });
+    child.once("exit", (code: number | null, signal: string | null) => {
+      if (code === 3 && !signal) { void occupiedPortRecovery(port, provider, probe); return; }
       if (code === 0 && !signal) return;
-      state.lastError = `daemon on port ${port} exited${signal ? ` from ${signal}` : ` with code ${code}`}; retrying in ${Math.ceil(backoff / 1000)}s`;
+      recoveryFor(port).lastError = `daemon on port ${port} exited${signal ? ` from ${signal}` : ` with code ${code}`}; retrying in ${Math.ceil(backoff / 1000)}s`;
     });
     child.unref();
+    return { ...result, diagnostic: state.lastError, spawned: true };
   } catch (error) {
     state.lastError = `could not start daemon on port ${port}: ${error instanceof Error ? error.message : String(error)}`;
-    throw error;
+    return { ...result, diagnostic: state.lastError, spawned: false };
   }
 }
 
@@ -118,21 +164,39 @@ function startRenewal(permit: Permit, ttlMs: number) {
   permit.renewTimer = setInterval(async () => { if (activePermit === permit) { try { await postJson(permit.port, "/renew", { permitId: permit.permitId }, 5000); } catch {} } }, interval);
   permit.renewTimer.unref?.();
 }
-export async function acquirePermitResponse(port: number, body: any, directory: string, options: { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; ensure?: () => Promise<void>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal } = {}): Promise<any> {
+type AcquirePermitOptions = { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; ensure?: (signal?: AbortSignal) => Promise<EnsureDaemonResult>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal };
+function unavailableEnsureResult(diagnostic: string): EnsureDaemonResult { return { compatibility: "invalidOrUnavailable", diagnostic, spawned: false }; }
+function isEnsureDaemonResult(value: unknown): value is EnsureDaemonResult { return isHealthRecord(value) && typeof value.diagnostic === "string" && typeof value.spawned === "boolean" && ["current", "legacy", "incompatible", "invalidOrUnavailable"].includes(String(value.compatibility)); }
+export async function acquirePermitResponse(port: number, body: any, directory: string, options: AcquirePermitOptions = {}): Promise<any> {
   const signal = options.signal;
-  let warned = false;
+  const expectedProvider = String(body.provider ?? "anthropic");
+  let warned = false; let reportedIncompatibility = false;
   for (let attempt = 1; ; attempt++) {
     if (isAborted(signal)) throw abortError();
+    let preflight = unavailableEnsureResult("health is unavailable or invalid");
+    try {
+      const ensured = await (options.ensure ?? ((requestSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: requestSignal })))(signal);
+      if (isEnsureDaemonResult(ensured)) preflight = ensured;
+    } catch (error) {
+      if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
+      preflight = unavailableEnsureResult(error instanceof Error ? error.message : String(error));
+    }
+    if (isAborted(signal)) throw abortError();
     let response: any;
-    try { response = await (options.request ?? ((pathname, payload, requestSignal) => postJson(port, pathname, payload, 7200000, requestSignal)))("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
+    if (isCompatibleHealth(preflight)) {
+      try { response = await (options.request ?? ((pathname, payload, requestSignal) => postJson(port, pathname, payload, 7200000, requestSignal)))("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
+    }
     if (response?.permitId) {
       if (isAborted(signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); throw abortError(); }
       return response;
     }
-    try { await (options.ensure ?? (() => ensureDaemon(directory, port, String(body.provider ?? "anthropic"))))(); } catch {}
+    if (preflight.compatibility === "incompatible" && !reportedIncompatibility) {
+      reportedIncompatibility = true;
+      options.onUnavailable?.(`Claude permit gate on port ${port} is incompatible: ${preflight.diagnostic}. Provider request remains blocked. Restart it only during approved idle maintenance.`);
+    }
     if (!warned && attempt >= (options.warningAfterAttempts ?? WARNING_ATTEMPTS)) {
       warned = true;
-      const detail = recoveryMessage(port);
+      const detail = recoveryMessage(port) ?? preflight.diagnostic;
       options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
     }
     await (options.wait ?? waitForRetry)(options.retryMs ?? RETRY_MS, signal);
@@ -162,6 +226,27 @@ function providerFailure(message: any): "rate-limit" | "overloaded" | undefined 
   return /rate.?limit|rate_limit_error|too many requests|429|529/i.test(text) && !/quota|billing|balance|insufficient/i.test(text) ? "rate-limit" : undefined;
 }
 function cooldown(failure: "rate-limit" | "overloaded") { return failure === "overloaded" ? Number(process.env.CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS || 60000) : Number(process.env.CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS || 20000); }
+function parseDaemonStartedAt(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return undefined;
+  const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : undefined;
+}
+function formatDaemonAge(startedAt: unknown): string {
+  const timestamp = parseDaemonStartedAt(startedAt); if (timestamp === undefined) return "unknown";
+  const seconds = Math.floor(Math.max(0, Date.now() - timestamp) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+function doctorLine(provider: string, port: number, rawHealth: unknown, unavailable?: string): string {
+  const result = classifyDaemonHealth(rawHealth, provider); const health = result.health;
+  const schema = typeof health?.version === "number" ? `v${health.version}` : "unknown";
+  const protocol = typeof health?.protocolVersion === "number" ? String(health.protocolVersion) : "absent";
+  const owner = typeof health?.provider === "string" ? health.provider : "absent";
+  const compatibility = result.compatibility === "legacy" ? "legacy (restart when idle)" : result.compatibility;
+  const count = (field: string) => typeof health?.[field] === "number" ? String(health[field]) : "unknown";
+  const state = health?.ok === true ? `; active ${count("active")}, queued ${count("queued")}, concurrency ${count("current")}/${count("max")}, throttles ${count("throttles")}` : `; ${unavailable ?? result.diagnostic}`;
+  return `  ${provider} (${port}): compatibility ${compatibility}; schema ${schema}; protocol ${protocol}; provider ${owner}; daemon age ${formatDaemonAge(health?.startedAt)}${state}`;
+}
 
 export default function (pi: ExtensionAPI) {
   if (DISABLED) return;
@@ -172,5 +257,5 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); if (ctx.hasUI && PROVIDER_PORTS[ctx.model?.provider]) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); return undefined; });
   pi.on("agent_end", async () => { await release(false, "agent-end"); });
   pi.on("session_shutdown", async () => { await release(false, "session-shutdown"); });
-  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const lines = ["Claude permit gate:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health: any = await getJson(port); const unavailable = recoveryMessage(port); lines.push(health?.ok ? `  ${provider} (${port}): active ${health.active}, queued ${health.queued}, concurrency ${health.current}/${health.max}, throttles ${health.throttles}` : `  ${provider} (${port}): ${unavailable ?? "daemon stopped"}`); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const lines = ["Claude permit gate doctor:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
 }
