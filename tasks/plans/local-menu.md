@@ -4,13 +4,9 @@
 
 Install a display-only macOS menu bar app that truthfully shows this Mac's last-observed 5-hour and 7-day Claude allowance plus live permit state for lanes A-D, after making daemon provenance observable and safely replacing legacy owners during an explicitly approved idle maintenance window.
 
-## Resolved Product Decisions
+## Authority
 
-- The user selected the local-first menu workstream. Tailnet transport, authentication, cross-machine aggregation, and shared-server ownership are excluded.
-- Version 1 is display-only. `anthropic-account-lanes` remains the sole owner of lane switching.
-- Version 1 shows A-D only. The built-in `anthropic` row is deferred; if added later, it is optional and never Lane E.
-- The cross-machine A-D account-order confirmation is deferred to the Tailnet workstream because this release reads only this Mac's configured providers.
-- No implementation step may stop a live daemon without a separate, explicit operator approval at the maintenance gate.
+`tasks/discovery/decision-brief.md` is the authoritative product and scope decision. This plan executes its local-first, display-only, A-D-only release; Tailnet/shared authority and lane switching remain out of scope.
 
 ## Canonical Contracts
 
@@ -25,7 +21,7 @@ The extension classifies health as:
 - `incompatible`: health is well-formed but an explicit provider differs or an explicit protocol is unsupported. Incompatible endpoints never receive `/acquire`.
 - `invalidOrUnavailable`: timeout, transport failure, malformed JSON, or `ok !== true`. Acquisition stays fail-closed and retries under existing backoff.
 
-`ensureDaemon` returns this typed result. `acquirePermitResponse` must run compatibility preflight before every `/acquire` attempt. It may send `/acquire` only for `current` or `legacy`; incompatible and unavailable states wait, re-probe, and remain cancellable. `before_provider_request` must not swallow incompatibility and then proceed to transport.
+`ensureDaemon` returns this typed result. `acquirePermitResponse` must run compatibility preflight before every `/acquire` attempt. It may send `/acquire` only for `current` or `legacy`; `incompatible` and `invalidOrUnavailable` states wait, re-probe, and remain cancellable. `before_provider_request` must not swallow incompatibility and then proceed to transport.
 
 Keep the existing source-policy guard line byte-identical:
 
@@ -85,14 +81,14 @@ The app uses only loopback health endpoints and never reads auth data. Before ap
 
 ### L1: Login-item lifecycle
 
-`LoginItemController` handles every `SMAppService.Status`:
+`LoginItemController` uses `SMAppService.Status` as the registration source of truth and handles each status idempotently:
 
-- `.enabled`: toggle on.
-- `.notRegistered` and `.notFound`: toggle off without an error.
-- `.requiresApproval`: toggle off and show “Approve Claude Lane Monitor in System Settings, General, Login Items.”
-- Only thrown register/unregister failures use the error surface.
+- `.enabled`: show the toggle on and leave registration unchanged.
+- `.notRegistered` and `.notFound`: show the toggle off without an error.
+- `.requiresApproval`: leave the service unchanged and show “Approve Claude Lane Monitor in System Settings, General, Login Items.” Never churn this status by unregistering or registering it.
+- Only an explicit user toggle may call register or unregister. Only thrown register/unregister failures use the error surface.
 
-Persist the user's desired state in `UserDefaults`. On every installed-app launch, reconcile it by unregistering stale registration when needed and registering the current installed bundle. This makes reinstall safe after ad-hoc signatures change.
+Do not persist a desired state that triggers launch-time reconciliation. On launch and reinstall, inspect the service status without unregistering and registering it. Reinstall validation verifies exactly one BTM item for the app; if it does not settle, log out and back in before further diagnosis.
 
 ## Tasks
 
@@ -102,7 +98,7 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
    - Changes:
      - Record `git status --short --branch` in both existing repositories and preserve unrelated dirty files.
      - Run the ten-test permit baseline and six-test focused usage baseline.
-     - Record that local-first/display-only is approved and that cross-machine account-order confirmation is deferred.
+     - Record the decision brief as the scope authority and that cross-machine account-order confirmation is deferred.
      - Create sanitized test fixtures from live health v1/v3 and usage shapes. Remove `bySession`, session strings, cwd, permit IDs, file paths, credentials, and raw headers.
      - Run the P1 packaged-app ATS probe. Record its result in the validation artifact and freeze the selected loopback/Info.plist policy before writing the app source.
      - Confirm SwiftUI `MenuBarExtra`, ServiceManagement, Swift 6.2, and macOS 13+ compilation.
@@ -122,9 +118,9 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - Preserve Esc cancellation and existing retry/backoff. Incompatible health remains blocked with an actionable diagnostic until a later probe becomes current or legacy.
      - Keep the existing `before_provider_request` acquire call and all existing source-policy assertions unchanged; add assertions rather than weakening the payload/noninterference guard.
      - Reserve daemon exit code `3` for `EADDRINUSE`; keep exit `1` for genuine server failures.
-     - On child exit `3`, re-probe health once. Clear recovery if a current or legacy daemon now owns the port; record mismatch/unavailable only when the probe proves it. Do not report a benign startup race as a crash.
+     - On child exit `3`, re-probe health once. Clear recovery if a current or legacy daemon now owns the port; record an `incompatible` or `invalidOrUnavailable` result only when the probe proves it. Do not report a benign startup race as a crash.
      - Parse `startedAt` as ISO-8601 with fractional seconds in consumers and document it explicitly.
-     - Expand `/claude-permit` to report schema/protocol/provider, started age, and current/legacy/incompatible status.
+     - Expand `/claude-permit` to report schema/protocol/provider, started age, and current/legacy/incompatible/`invalidOrUnavailable` status.
      - Name `/claude-permit` as the doctor surface. Document the maintenance gate below; add no automatic kill command.
    - Acceptance:
      - A mismatched endpoint cannot issue a permit, even if its `/acquire` response would contain a permit ID.
@@ -152,7 +148,7 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - Define lane identity, provider, and label in `LaneModels.swift`. Keep the provider-to-port and usage-file maps private to `LocalLaneSnapshotSource.swift`.
      - Implement U1, independent permit/usage states, fixed A-D ordering, severity, summary text, and `LaneSnapshotSource`.
      - Fetch ports 8791-8794 concurrently with one-second URLSession timeouts under P1.
-     - Decode health v1/v3 tolerantly; missing identity is legacy, explicit mismatch is incompatible, malformed data is invalid.
+     - Decode health v1/v3 tolerantly; missing identity is legacy, explicit mismatch is incompatible, malformed data is `invalidOrUnavailable`.
      - Decode `startedAt` with `.withFractionalSeconds`.
      - Ignore unknown health fields. The health fixture includes a populated `bySession` sentinel; encode the resulting `LaneSnapshot` and prove neither the key nor sentinel survives.
      - Join each lane independently. One invalid window leaves its valid sibling visible; one source failure leaves the other source visible.
@@ -162,7 +158,7 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - `scripts/test.sh` passes under the installed Command Line Tools; no literal `swift test` remains in gates or docs.
      - No app model can carry session IDs, cwd, permit IDs, auth data, raw headers, or local paths.
      - Closed visibility produces zero health-loader calls across simulated scheduler ticks.
-     - The test target contains exactly three test methods under the approved ceiling.
+     - The test target implements exactly three Swift test methods.
 
 4. **Build the display-only menu and lifecycle**
    - Files: `Sources/ClaudeLaneMonitor/ClaudeLaneMonitorApp.swift`, `MenuContentView.swift`, `LoginItemController.swift`, `Resources/Info.plist`.
@@ -177,7 +173,7 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - The title shows the worst non-stale current/aging allowance. `?` includes tooltip/accessibility copy with the number of lanes awaiting observation and the newest observation age. `!` indicates invalid or unavailable permit data.
      - State “Local observations on this Mac only” prominently. README and manual validation record that day one may show only lane C as current and `?` once all snapshots age out; that is truthful, not a transport failure.
      - Implement R1 visibility transitions. If target-OS validation shows disappearance is unreliable, stop rather than adding closed polling.
-     - Implement L1, including persisted desired state and reinstall reconciliation.
+     - Implement L1's status-driven, idempotent handling; only an explicit user toggle may register or unregister.
      - Add accessibility labels that communicate lane, both windows, freshness, occupancy, queue, and errors without relying on color.
    - Acceptance:
      - A-D remain visible with absent, stale, malformed, or partially unavailable data.
@@ -194,12 +190,12 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - Build with `swift build -c release` and obtain `BIN=$(swift build -c release --show-bin-path)`; assert the path basename is `release` before copying.
      - Assemble `Claude Lane Monitor.app`, copy the resolved release executable and validated Info.plist, and sign with `codesign --force --sign - --identifier com.longweekendprojects.claude-lane-monitor`.
      - `install.sh` quits the running old app, uses `ditto` to replace `~/Applications/Claude Lane Monitor.app`, verifies signature/plist, and opens the installed app.
-     - The installed app performs L1 reconciliation. The installer never silently turns a previously disabled login item on.
+     - The installed app reads L1 status without automatic register/unregister reconciliation. The installer never silently turns a previously disabled login item on.
      - Keep notarization, Sparkle, Homebrew, upload automation, and GitHub publication out of version 1.
    - Acceptance:
      - `scripts/test.sh`, `scripts/build-app.sh`, plist validation, and strict signature verification pass.
      - The bundled executable comes from the release directory.
-     - First install and reinstall while Launch at Login is enabled both preserve the desired registration.
+     - First install and reinstall while Launch at Login is enabled leave the enabled service unchanged and preserve exactly one BTM item.
      - The app launches from `~/Applications` without a Dock icon.
 
 6. **Run independent review gates before touching live daemon ownership**
@@ -225,7 +221,7 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
      - Install the app and open the dropdown. Compare A-D rows with sanitized health and usage commands.
      - While open, start one ordinary Pi request on lane C. Verify the permit row changes within three seconds and returns after completion. Verify the resulting allowance observation matches the local file without affecting other rows.
      - Validate zero health requests for at least ten seconds after closing the dropdown.
-     - Enable Launch at Login, confirm the app reports `.enabled`, and visually confirm it under System Settings > General > Login Items > Allow in the Background. Reinstall once while enabled and verify registration remains effective. `sudo sfltool dumpbtm` is optional, not a required gate.
+     - Enable Launch at Login, confirm the app reports `.enabled`, and visually confirm it under System Settings > General > Login Items > Allow in the Background. Reinstall once while enabled and verify exactly one BTM item represents the app. If it does not settle, use the logout/login fallback and re-check; do not use unregister/register as a reinstall workaround.
      - Use VoiceOver on one healthy, one stale/post-reset, and one unavailable row.
    - Acceptance:
      - Every replaceable legacy daemon is replaced only after explicit approval and quiescence; active work is never killed.
@@ -235,19 +231,19 @@ Persist the user's desired state in `UserDefaults`. On every installed-app launc
 
 ## Test Budget
 
-The ceiling remains exactly two new Node tests and three Swift test methods. Existing tests may gain assertions but may not be weakened.
+The permit packet may add at most two new Node test cases. The Swift test target implements exactly three Swift test methods. Existing tests may gain assertions but may not be weakened.
 
 ### Closed product risks
 
 1. **Wrong or stale daemon grants a permit.**
-   - Node test 1: health provider/protocol plus exit-code-3 occupied race and compatible winner re-probe.
-   - Node test 2: current, legacy, incompatible, and unavailable preflight at the real acquire boundary; a mismatched endpoint's permit response is never requested.
+   - H1 Node test 1: health provider/protocol plus exit-code-3 occupied race and compatible winner re-probe.
+   - H1 Node test 2: current, legacy, incompatible, and `invalidOrUnavailable` preflight at the real acquire boundary; a mismatched endpoint's permit response is never requested.
 
 2. **Allowance time or status is misrepresented.**
    - Swift test 1: epoch milliseconds/seconds, five-minute future skew, 10-minute aging, 2-hour stale ceiling, mixed passed-5h/future-7d reset, non-negative unbounded utilization, status severity, and no synthetic zero.
 
 3. **One malformed source erases valid sibling/lane data or leaks identity.**
-   - Swift test 2: mixed health v1/v3, fractional `startedAt`, unavailable health, provider mismatch, one malformed window with valid sibling, fixed A-D order, and encoded DTO exclusion of populated `bySession` sentinel.
+   - Swift test 2: mixed health v1/v3, fractional `startedAt`, `invalidOrUnavailable` health, provider mismatch, one malformed window with valid sibling, fixed A-D order, and encoded DTO exclusion of populated `bySession` sentinel.
 
 4. **The app polls while closed or refreshes through an Anthropic request.**
    - Swift test 3: injected visibility/scheduler/loaders prove immediate open/manual refresh, cancellation awaited on close, zero loader calls while closed, and one-lane update from an atomic usage replacement. No production type exposes a provider-request capability.
@@ -308,8 +304,8 @@ jq '{provider,fiveHour,sevenDay,representative,at}' \
 
 - `/Users/albertgwo/Repositories/pi-claude-permit-gate/index.ts` — typed compatibility preflight at the acquire boundary, spawn readiness, and doctor output.
 - `/Users/albertgwo/Repositories/pi-claude-permit-gate/permit-daemon.mjs` — provider/protocol health and reserved occupied-port exit.
-- `/Users/albertgwo/Repositories/pi-claude-permit-gate/test/permit-daemon.test.mjs` — R1 ownership/health test.
-- `/Users/albertgwo/Repositories/pi-claude-permit-gate/test/source-policy.test.mjs` — R1 acquire-boundary compatibility test without weakening existing guards.
+- `/Users/albertgwo/Repositories/pi-claude-permit-gate/test/permit-daemon.test.mjs` — H1 provenance and occupied-port test.
+- `/Users/albertgwo/Repositories/pi-claude-permit-gate/test/source-policy.test.mjs` — H1 acquire-boundary compatibility test without weakening existing guards.
 - `/Users/albertgwo/Repositories/pi-claude-permit-gate/README.md` — H1, doctor output, and approved idle replacement procedure.
 
 No pi-dotfiles file changes.

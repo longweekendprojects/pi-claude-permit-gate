@@ -1,14 +1,16 @@
 # Claude lane sharing and menu bar decision brief
 
+## Authority
+
+This brief is the authoritative product and scope decision for the first local menu release. `tasks/plans/local-menu.md` is its execution plan and defers to this brief if the documents differ.
+
 ## Decision
 
 Build the menu bar workstream first, after a narrow permit-daemon hygiene patch. This order delivers the missing lane overview without creating a network trust boundary, and it establishes the status model that the later shared authority will expose.
 
-This order is wrong if the first menu release must include observations from both Macs, or if cross-machine concurrency is already causing bursts of Anthropic throttles. In either case, build the shared authority first and let the menu consume it.
-
 ## Frozen local-first packet contract
 
-The approved first release is local-first and display-only. It observes only this Mac's A-D loopback permit health and local allowance files. Tailnet transport, authentication, cross-machine aggregation, provider switching, pi-dotfiles changes, and daemon replacement outside an approved idle maintenance window are excluded. Cross-machine account-order confirmation remains deferred to the Tailnet workstream.
+The first release is local-first, display-only, and limited to lanes A-D. It observes only this Mac's loopback permit health and local allowance files. Tailnet transport, authentication, cross-machine aggregation, provider switching, pi-dotfiles changes, and daemon replacement outside an approved idle maintenance window are excluded. Cross-machine account-order confirmation remains deferred to the Tailnet workstream.
 
 H1 freezes daemon compatibility at the real acquire boundary:
 
@@ -20,6 +22,12 @@ H1 freezes daemon compatibility at the real acquire boundary:
 - No automatic termination is allowed. A separately approved maintenance window may replace only an idle legacy daemon after `active === 0` and `queued === 0` are each observed twice, two seconds apart.
 
 This packet retains all ten existing Node tests and may add at most two Node test cases: one for provenance and occupied-port recovery, and one for acquire preflight classification. Legacy daemon replacement remains a separate approval-gated maintenance task.
+
+L1 freezes a status-driven, idempotent login-item lifecycle:
+
+- `SMAppService.Status` is the registration source of truth. `.enabled` remains unchanged; `.notRegistered` and `.notFound` appear off without an error; `.requiresApproval` remains unchanged and directs the user to System Settings, General, Login Items.
+- Only an explicit user toggle may register or unregister. Launch and reinstall never churn `.requiresApproval` or unregister and re-register an enabled service.
+- Reinstall validation checks that exactly one BTM item represents the app. If the item does not settle, log out and back in before further diagnosis or recovery.
 
 ## What already exists
 
@@ -35,16 +43,16 @@ The second Mac is online over Tailscale through DERP, but SSH is disabled. Its p
 
 ## Product definition
 
-The menu should show two signals for lanes A through D:
+The menu shows two signals for lanes A through D:
 
 1. **Claude allowance:** last-observed 5-hour and 7-day utilization, reset time, binding window, and observation age.
 2. **Permit state:** active requests, queued requests, effective concurrency, cooldown, oldest wait, daemon version, and daemon age.
 
 The UI must call allowance data “last observed.” A missing snapshot means “awaiting first response.” A window whose reset has passed means “awaiting post-reset observation,” never 0%. Each lane keeps its permit and allowance errors independent.
 
-Token totals, conversation cost, context use, and assigned Pi-session counts are outside the first release. The built-in `anthropic` provider should be an optional separate row, not Lane E.
+Token totals, conversation cost, context use, and assigned Pi-session counts are outside the first release. The built-in `anthropic` provider is deferred; if added later, it is an optional separate row, not Lane E.
 
-The first menu release should be display-only. Lane switching belongs to the account-lane extension and would turn a read-only status tool into a second configuration owner.
+The first menu release is display-only. Lane switching belongs to the account-lane extension and would turn a read-only status tool into a second configuration owner.
 
 ## Menu bar architecture
 
@@ -62,7 +70,6 @@ The menu bar title should show the worst current allowance percentage and a stal
 
 - If sandboxing prevents reliable access to the usage directory, move only the local source into a small helper and preserve `LaneSnapshot`.
 - If a second local consumer needs the same joined data, move aggregation into a shared read-only service.
-- If the first release must include both Macs, skip the local source as the product source and build the Tailnet source first.
 
 ## Shared Tailnet authority architecture
 
@@ -115,14 +122,8 @@ Publish safe allowance snapshots to the authority after provider responses. The 
 5. Configure the second Mac as a client, then point both menu apps at the shared source.
 6. Verify that simultaneous requests from both Macs never exceed one central lane limit and that no daemon starts on the client Mac.
 
-## Test budget ceiling
+## Test budget
 
-The permit hygiene packet retains all ten existing Node tests and adds at most two load-bearing Node test cases: one for provenance and occupied-port recovery, and one for acquire-boundary compatibility. Later menu and Tailnet packets have separate approved budgets; they do not authorize extra Node tests in this packet.
+The permit hygiene packet retains all ten existing Node tests and adds at most two load-bearing Node test cases: one for provenance and occupied-port recovery, and one for acquire-boundary compatibility. Later menu and Tailnet packets have separate test budgets; they do not authorize extra Node tests in this packet.
 
 Manual validation for later packets covers menu layout, accessibility labels, launch at login, Tailnet grant denial, and a real two-Mac request wave.
-
-## Inputs required before implementation
-
-- Confirm that lanes A through D refer to the same four Claude accounts in the same order on both Macs.
-- Confirm whether a local-only first menu release is acceptable. If it must reflect responses observed by both Macs immediately, the shared authority moves ahead of the menu app.
-- Before the Tailnet workstream, accept strict fail-closed behavior when this Mac or Tailscale is unavailable. A local fallback would defeat the shared concurrency guarantee.
