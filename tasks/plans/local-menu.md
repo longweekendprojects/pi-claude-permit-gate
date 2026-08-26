@@ -81,14 +81,17 @@ The app uses only loopback health endpoints and never reads auth data. Before ap
 
 ### L1: Login-item lifecycle
 
-`LoginItemController` uses `SMAppService.Status` as the registration source of truth and handles each status idempotently:
+`LoginItemController` persists the user's desired registration state in `UserDefaults` and reconciles it idempotently on every installed-app launch using `SMAppService.Status`:
 
-- `.enabled`: show the toggle on and leave registration unchanged.
-- `.notRegistered` and `.notFound`: show the toggle off without an error.
-- `.requiresApproval`: leave the service unchanged and show “Approve Claude Lane Monitor in System Settings, General, Login Items.” Never churn this status by unregistering or registering it.
-- Only an explicit user toggle may call register or unregister. Only thrown register/unregister failures use the error surface.
+| Desired state | Status | Action |
+| --- | --- | --- |
+| On | `.notRegistered` or `.notFound` | Register. |
+| On | `.enabled` | Leave registration unchanged. |
+| On | `.requiresApproval` | Leave approval pending and show “Approve Claude Lane Monitor in System Settings, General, Login Items.” Never re-register while approval is pending. |
+| Off | `.enabled` or `.requiresApproval` | Unregister. |
+| Off | `.notRegistered` or `.notFound` | Leave it unregistered. |
 
-Do not persist a desired state that triggers launch-time reconciliation. On launch and reinstall, inspect the service status without unregistering and registering it. Reinstall validation verifies exactly one BTM item for the app; if it does not settle, log out and back in before further diagnosis.
+`.notRegistered` and `.notFound` render off without an error. Only thrown register/unregister failures use the error surface. Unconditional unregister/register is prohibited because it can re-enter Background Task Management approval. Task 7 validates reinstall independently of this reconciliation.
 
 ## Tasks
 
@@ -173,7 +176,7 @@ Do not persist a desired state that triggers launch-time reconciliation. On laun
      - The title shows the worst non-stale current/aging allowance. `?` includes tooltip/accessibility copy with the number of lanes awaiting observation and the newest observation age. `!` indicates invalid or unavailable permit data.
      - State “Local observations on this Mac only” prominently. README and manual validation record that day one may show only lane C as current and `?` once all snapshots age out; that is truthful, not a transport failure.
      - Implement R1 visibility transitions. If target-OS validation shows disappearance is unreliable, stop rather than adding closed polling.
-     - Implement L1's status-driven, idempotent handling; only an explicit user toggle may register or unregister.
+     - Implement L1's persisted-desired-state, status-driven, idempotent reconciliation. Register or unregister only for the status/desired-state pairs in L1; never unconditionally unregister/register.
      - Add accessibility labels that communicate lane, both windows, freshness, occupancy, queue, and errors without relying on color.
    - Acceptance:
      - A-D remain visible with absent, stale, malformed, or partially unavailable data.
@@ -190,12 +193,13 @@ Do not persist a desired state that triggers launch-time reconciliation. On laun
      - Build with `swift build -c release` and obtain `BIN=$(swift build -c release --show-bin-path)`; assert the path basename is `release` before copying.
      - Assemble `Claude Lane Monitor.app`, copy the resolved release executable and validated Info.plist, and sign with `codesign --force --sign - --identifier com.longweekendprojects.claude-lane-monitor`.
      - `install.sh` quits the running old app, uses `ditto` to replace `~/Applications/Claude Lane Monitor.app`, verifies signature/plist, and opens the installed app.
-     - The installed app reads L1 status without automatic register/unregister reconciliation. The installer never silently turns a previously disabled login item on.
+     - The installed app applies L1's persisted desired-state and status-driven reconciliation. The installer never silently turns a previously disabled login item on.
+     - The independent Task 7 gate owns reinstall repair. If it fails, the pre-approved ladder first changes `scripts/install.sh` to a same-volume rename replacement (move the old bundle aside, move the verified staging bundle into place, then delete the old copy). Only if the rerun still fails may `LoginItemController` add a fingerprint-gated one-time repair. Neither repair is part of the initial implementation.
      - Keep notarization, Sparkle, Homebrew, upload automation, and GitHub publication out of version 1.
    - Acceptance:
      - `scripts/test.sh`, `scripts/build-app.sh`, plist validation, and strict signature verification pass.
      - The bundled executable comes from the release directory.
-     - First install and reinstall while Launch at Login is enabled leave the enabled service unchanged and preserve exactly one BTM item.
+     - First install and reinstall while Launch at Login is enabled pass Task 7's independent BTM/reboot gate. A disabled desired state remains unregistered, and two launches without reinstall do not churn registration or the BTM record.
      - The app launches from `~/Applications` without a Dock icon.
 
 6. **Run independent review gates before touching live daemon ownership**
@@ -221,7 +225,9 @@ Do not persist a desired state that triggers launch-time reconciliation. On laun
      - Install the app and open the dropdown. Compare A-D rows with sanitized health and usage commands.
      - While open, start one ordinary Pi request on lane C. Verify the permit row changes within three seconds and returns after completion. Verify the resulting allowance observation matches the local file without affecting other rows.
      - Validate zero health requests for at least ten seconds after closing the dropdown.
-     - Enable Launch at Login, confirm the app reports `.enabled`, and visually confirm it under System Settings > General > Login Items > Allow in the Background. Reinstall once while enabled and verify exactly one BTM item represents the app. If it does not settle, use the logout/login fallback and re-check; do not use unregister/register as a reinstall workaround.
+     - Enable Launch at Login, confirm the app reports `.enabled`, and visually confirm it under System Settings > General > Login Items > Allow in the Background. After reinstall while enabled, run the independent BTM/reboot gate: `sudo sfltool dumpbtm | grep -A15 -i claude-lane-monitor` must show exactly one enabled and allowed item at `~/Applications/Claude Lane Monitor.app`, with no duplicate or ghost record, and a real reboot or logout/login must launch the app. If sudo or Full Disk Access prevents the BTM inspection, the actual reboot or logout/login launch is the sufficient fallback.
+     - Reinstall while Launch at Login is disabled and verify the item remains unregistered. Launch twice without reinstall and verify no register/unregister churn, Login Items notification, or BTM record change.
+     - If the independent gate fails, use the pre-approved ladder instead of an ad hoc register/unregister: first change `scripts/install.sh` to a same-volume rename replacement (move the old bundle aside, move the verified staging bundle into place, then delete the old copy) and rerun the gate; only if it still fails, add a fingerprint-gated one-time `LoginItemController` repair. Do not implement either repair before the gate fails.
      - Use VoiceOver on one healthy, one stale/post-reset, and one unavailable row.
    - Acceptance:
      - Every replaceable legacy daemon is replaced only after explicit approval and quiescence; active work is never killed.

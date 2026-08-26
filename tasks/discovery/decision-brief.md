@@ -25,9 +25,10 @@ This packet retains all ten existing Node tests and may add at most two Node tes
 
 L1 freezes a status-driven, idempotent login-item lifecycle:
 
-- `SMAppService.Status` is the registration source of truth. `.enabled` remains unchanged; `.notRegistered` and `.notFound` appear off without an error; `.requiresApproval` remains unchanged and directs the user to System Settings, General, Login Items.
-- Only an explicit user toggle may register or unregister. Launch and reinstall never churn `.requiresApproval` or unregister and re-register an enabled service.
-- Reinstall validation checks that exactly one BTM item represents the app. If the item does not settle, log out and back in before further diagnosis or recovery.
+- Persist the user's desired registration state. On every installed-app launch, reconcile it against `SMAppService.Status`: when desired on, register only for `.notRegistered` or `.notFound`; leave `.enabled` unchanged; and leave `.requiresApproval` pending with System Settings guidance. Never re-register while `.requiresApproval` is pending.
+- When desired off, unregister only `.enabled` or `.requiresApproval`; leave `.notRegistered` and `.notFound` unchanged. Only thrown register/unregister failures use the error surface. Unconditional unregister/register is prohibited because it can re-enter Background Task Management approval.
+- Reinstall validation is independent of reconciliation. After reinstall while enabled, require app status `.enabled`, exactly one enabled and allowed BTM item at `~/Applications/Claude Lane Monitor.app` with no duplicate or ghost record, and a reboot or logout/login that launches the app. If `sudo sfltool dumpbtm | grep -A15 -i claude-lane-monitor` cannot run because of sudo or Full Disk Access, the actual reboot or logout/login launch is the sufficient fallback. Reinstall while disabled remains unregistered, and two ordinary launches without a reinstall leave registration and the BTM record unchanged.
+- If that independent gate fails, the pre-approved ladder first uses a same-volume rename replacement in `scripts/install.sh` (move the old bundle aside, move the verified staging bundle into place, then delete the old copy) and reruns the gate. Only if it still fails may `LoginItemController` add a fingerprint-gated one-time repair. This packet implements neither step.
 
 ## What already exists
 
