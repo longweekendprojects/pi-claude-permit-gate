@@ -14,8 +14,9 @@ The first release is local-first, display-only, and limited to lanes A-D. It obs
 
 H1 freezes daemon compatibility at the real acquire boundary:
 
-- `/health` retains schema `version: 3` and every existing field. New daemons also report `protocolVersion: 1` and the provider passed through `CLAUDE_PERMIT_GATE_PROVIDER`.
-- `current` health has `ok: true`, the expected provider, and protocol `1`. `legacy` health has `ok: true` with a missing provider or protocol, remains usable locally, and is labeled “restart when idle.”
+- `/health` retains schema `version: 3` and every existing field. New daemons also report `protocolVersion: 1`, the provider passed through `CLAUDE_PERMIT_GATE_PROVIDER`, and a random UUID `instanceId`; successful `/acquire` responses report the same provenance.
+- `current` health has `ok: true`, the expected provider, protocol `1`, and a valid `instanceId`. `legacy` health has `ok: true` with a missing provider, protocol, or instance identity, remains usable locally only when it exposes a stable ISO-8601 `startedAt`, and is labeled “restart when idle.”
+- Current clients send the expected instance identity, provider, and protocol with `/acquire`; the daemon rejects a mismatched expectation and the client accepts a grant only when its response matches the preflight. Legacy clients re-probe after a grant and accept it only when `startedAt` is unchanged; otherwise they release it and retry.
 - Explicit provider mismatch or unsupported explicit protocol is `incompatible`. Malformed, unavailable, or non-OK health is `invalidOrUnavailable`. Neither status may receive `/acquire`; both remain cancellable and retry under the existing backoff.
 - An occupied-port daemon exits with code `3`. The extension re-probes once, clears recovery when a current or legacy owner won the race, and retains code `1` for genuine server failures.
 - `/claude-permit` is the doctor surface. It reports schema, protocol, provider, fractional ISO-8601 `startedAt` age, and compatibility status without sending a provider request.

@@ -47,7 +47,14 @@ async function daemon(overrides = {}) {
 test("daemon health reports provenance and EADDRINUSE re-probes a compatible owner", async (t) => {
   const gate = await daemon({ CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }); t.after(() => gate.stop());
   const state = await health(gate.port);
-  assert.equal(state.version, 3); assert.equal(state.protocolVersion, 1); assert.equal(state.provider, "anthropic-a"); assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+  assert.equal(state.version, 3); assert.equal(state.protocolVersion, 1); assert.equal(state.provider, "anthropic-a"); assert.match(state.instanceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i); assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+  const granted = await request(gate.port, "POST", "/acquire", { session: "provenance", expectedInstanceId: state.instanceId, expectedProvider: state.provider, expectedProtocolVersion: state.protocolVersion });
+  assert.equal(granted.status, 200); assert.equal(granted.body.instanceId, state.instanceId); assert.equal(granted.body.provider, state.provider); assert.equal(granted.body.protocolVersion, state.protocolVersion); assert.equal((await release(gate.port, granted.body.permitId)).body.ok, true);
+  for (const mismatch of [{ expectedInstanceId: "00000000-0000-4000-8000-000000000000" }, { expectedProvider: "anthropic-b" }, { expectedProtocolVersion: 2 }]) {
+    const rejected = await request(gate.port, "POST", "/acquire", { session: "provenance", expectedInstanceId: state.instanceId, expectedProvider: state.provider, expectedProtocolVersion: state.protocolVersion, ...mismatch });
+    assert.equal(rejected.status, 409); assert.equal(rejected.body.retry, true); assert.equal(rejected.body.permitId, undefined);
+  }
+  assert.equal((await health(gate.port)).active, 0);
   const contenderHome = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-")); t.after(() => fs.rm(contenderHome, { recursive: true, force: true }));
   const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: contenderHome, CLAUDE_PERMIT_GATE_PORT: String(gate.port), CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }, stdio: "ignore" });
   const exited = await new Promise((resolve) => contender.once("exit", (code, signal) => resolve({ code, signal })));
@@ -56,7 +63,7 @@ test("daemon health reports provenance and EADDRINUSE re-probes a compatible own
   const port = await unusedPort(); const first = new EventEmitter(); const second = new EventEmitter(); first.unref = () => first; second.unref = () => second;
   let probes = 0; let spawns = 0;
   const options = {
-    probe: async () => { probes++; return probes === 1 ? undefined : probes === 2 ? { ok: true, version: 3, protocolVersion: 1, provider: "anthropic-a" } : undefined; },
+    probe: async () => { probes++; return probes === 1 ? undefined : probes === 2 ? { ok: true, version: 3, protocolVersion: 1, provider: "anthropic-a", instanceId: "11111111-1111-4111-8111-111111111111" } : undefined; },
     spawnDaemon: () => { spawns++; return spawns === 1 ? first : second; },
   };
   const pending = await ensureDaemon("/unused", port, "anthropic-a", options);
@@ -65,7 +72,7 @@ test("daemon health reports provenance and EADDRINUSE re-probes a compatible own
   await eventually(() => probes === 2, "occupied-port winner was not re-probed");
   const retried = await ensureDaemon("/unused", port, "anthropic-a", options);
   assert.equal(retried.spawned, true); assert.equal(spawns, 2, "a compatible occupied-port winner must clear recovery");
-  await ensureDaemon("/unused", port, "anthropic-a", { probe: async () => ({ ok: true, protocolVersion: 1, provider: "anthropic-a" }), spawnDaemon: () => second });
+  await ensureDaemon("/unused", port, "anthropic-a", { probe: async () => ({ ok: true, protocolVersion: 1, provider: "anthropic-a", instanceId: "11111111-1111-4111-8111-111111111111" }), spawnDaemon: () => second });
 });
 
 test("daemon bounds concurrency and schedules sessions round-robin", async (t) => {

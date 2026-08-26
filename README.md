@@ -22,7 +22,7 @@ The extension starts each daemon on demand. It gates only configured Anthropic-f
 
 ## What it does
 
-- Preflights local health before every permit request and blocks explicit provider or protocol mismatches.
+- Binds current permit acquisition to the preflighted daemon instance and blocks provenance, provider, or protocol mismatches.
 - Acquires one local permit before each mapped Anthropic provider request.
 - Shares a fair, round-robin queue among local Pi sessions that use the same provider.
 - Releases permits after a response, an agent exit, or session shutdown.
@@ -91,14 +91,16 @@ A legacy daemon may remain usable until a separately approved maintenance window
 curl http://127.0.0.1:8791/health
 ```
 
-New daemons retain `version: 3` and add `protocolVersion: 1` plus the provider supplied through `CLAUDE_PERMIT_GATE_PROVIDER`. `startedAt` is an ISO-8601 timestamp with fractional seconds, such as `2026-01-02T03:04:05.678Z`; the doctor parses it to report daemon age.
+New daemons retain `version: 3` and add `protocolVersion: 1`, the provider supplied through `CLAUDE_PERMIT_GATE_PROVIDER`, and a random UUID `instanceId`. Health and successful `/acquire` responses report the same instance identity. `startedAt` is an ISO-8601 timestamp with fractional seconds, such as `2026-01-02T03:04:05.678Z`; the doctor parses it to report daemon age.
 
 Compatibility is fail closed at the acquire boundary:
 
-- `current` means `ok: true`, the expected provider, and protocol `1`.
-- `legacy` means `ok: true` but a provider or protocol field is absent. It remains usable and is labeled “restart when idle.”
+- `current` means `ok: true`, the expected provider, protocol `1`, and a valid `instanceId`.
+- `legacy` means `ok: true` but a provider, protocol, or instance identity field is absent. It remains usable when it has a stable `startedAt`, and is labeled “restart when idle.”
 - `incompatible` means an explicit provider differs or an explicit protocol is unsupported. It never receives `/acquire`.
 - `invalidOrUnavailable` means malformed, unavailable, or non-OK health. It never receives `/acquire` and acquisition retries until Esc cancels it.
+
+For current health, the client sends the expected instance identity, provider, and protocol with `/acquire`. The daemon rejects a different expectation, and the client accepts a permit only when the response matches its preflight. For legacy health, the client re-probes after a grant and accepts it only when the stable `startedAt` is unchanged; otherwise it releases the permit and retries.
 
 The daemon writes its log under:
 
@@ -110,7 +112,7 @@ The daemon writes its log under:
 
 The gate coordinates only local Pi processes. It cannot prevent Anthropic-side outages or enforce a limit across machines. A configured daemon port is unauthenticated and reachable by any process on the local machine, so another local user or service can occupy a permit or request a cooldown. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
 
-The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. The gate remains pending while it restores an unavailable daemon, unless the user presses Esc to cancel that waiting request. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
+The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. Legacy compatibility requires a valid, stable `startedAt`; a legacy owner without one remains blocked because a grant cannot be safely tied to its preflight. The gate remains pending while it restores an unavailable daemon, unless the user presses Esc to cancel that waiting request. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
 
 ## Development
 

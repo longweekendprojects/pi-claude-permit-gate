@@ -39,9 +39,12 @@ function recoveryMessage(port: number): string | undefined { return daemonRecove
 function clearRecovery(port: number) { daemonRecovery.delete(port); }
 
 const COMPATIBILITIES = ["current", "legacy", "incompatible", "invalidOrUnavailable"] as const;
+const PROTOCOL_VERSION = 1;
+const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNAVAILABLE_HEALTH = "health is unavailable or invalid";
 export type DaemonCompatibility = (typeof COMPATIBILITIES)[number];
 type HealthRecord = Record<string, unknown>;
+type DaemonProvenance = { instanceId: string; provider: string; protocolVersion: number };
 export type DaemonHealthClassification = { compatibility: DaemonCompatibility; health?: HealthRecord; diagnostic: string };
 export type EnsureDaemonResult = DaemonHealthClassification & { spawned: boolean };
 type HealthProbe = (signal?: AbortSignal) => Promise<unknown>;
@@ -49,18 +52,21 @@ type SpawnedDaemon = { once(event: string, listener: (...args: any[]) => void): 
 type EnsureDaemonOptions = { signal?: AbortSignal; probe?: HealthProbe; spawnDaemon?: (directory: string, port: number, provider: string) => SpawnedDaemon };
 
 function isHealthRecord(value: unknown): value is HealthRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function isInstanceId(value: unknown): value is string { return typeof value === "string" && INSTANCE_ID_PATTERN.test(value); }
 function isCompatibleHealth(result: DaemonHealthClassification): boolean { return result.compatibility === "current" || result.compatibility === "legacy"; }
 export function classifyDaemonHealth(health: unknown, expectedProvider: string): DaemonHealthClassification {
   if (!isHealthRecord(health)) return { compatibility: "invalidOrUnavailable", diagnostic: UNAVAILABLE_HEALTH };
   if (health.ok !== true) return { compatibility: "invalidOrUnavailable", health, diagnostic: UNAVAILABLE_HEALTH };
   const hasProvider = health.provider !== undefined;
   const hasProtocol = health.protocolVersion !== undefined;
+  const hasInstanceId = health.instanceId !== undefined;
   if (hasProvider && typeof health.provider !== "string") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health provider is invalid" };
   if (hasProtocol && typeof health.protocolVersion !== "number") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health protocol version is invalid" };
+  if (hasInstanceId && !isInstanceId(health.instanceId)) return { compatibility: "invalidOrUnavailable", health, diagnostic: "health instance identity is invalid" };
   if (hasProvider && health.provider !== expectedProvider) return { compatibility: "incompatible", health, diagnostic: `provider ${JSON.stringify(health.provider)} does not match expected ${JSON.stringify(expectedProvider)}` };
-  if (hasProtocol && health.protocolVersion !== 1) return { compatibility: "incompatible", health, diagnostic: `protocol ${health.protocolVersion} is unsupported; expected 1` };
-  if (!hasProvider || !hasProtocol) return { compatibility: "legacy", health, diagnostic: "health omits provider or protocol; restart when idle" };
-  return { compatibility: "current", health, diagnostic: "provider and protocol match" };
+  if (hasProtocol && health.protocolVersion !== PROTOCOL_VERSION) return { compatibility: "incompatible", health, diagnostic: `protocol ${health.protocolVersion} is unsupported; expected ${PROTOCOL_VERSION}` };
+  if (!hasProvider || !hasProtocol || !hasInstanceId) return { compatibility: "legacy", health, diagnostic: "health omits provider, protocol, or instance identity; restart when idle" };
+  return { compatibility: "current", health, diagnostic: "provider, protocol, and instance identity match" };
 }
 
 function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000, signal?: AbortSignal): Promise<T | undefined> {
@@ -171,9 +177,23 @@ function startRenewal(permit: Permit, ttlMs: number) {
   permit.renewTimer = setInterval(async () => { if (activePermit === permit) { try { await postJson(permit.port, "/renew", { permitId: permit.permitId }, 5000); } catch {} } }, interval);
   permit.renewTimer.unref?.();
 }
-type AcquirePermitOptions = { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; ensure?: (signal?: AbortSignal) => Promise<EnsureDaemonResult>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal };
+type AcquirePermitOptions = { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; release?: (body: any, signal?: AbortSignal) => Promise<unknown>; ensure?: (signal?: AbortSignal) => Promise<EnsureDaemonResult>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal };
+type ProvenanceValidation = { matches: boolean; diagnostic: string };
 function unavailableEnsureResult(diagnostic: string): EnsureDaemonResult { return { compatibility: "invalidOrUnavailable", diagnostic, spawned: false }; }
 function isEnsureDaemonResult(value: unknown): value is EnsureDaemonResult { return isHealthRecord(value) && typeof value.diagnostic === "string" && typeof value.spawned === "boolean" && (COMPATIBILITIES as readonly string[]).includes(String(value.compatibility)); }
+function currentProvenance(result: EnsureDaemonResult): DaemonProvenance | undefined {
+  const health = result.health;
+  if (result.compatibility !== "current" || !health || !isInstanceId(health.instanceId) || typeof health.provider !== "string" || health.protocolVersion !== PROTOCOL_VERSION) return undefined;
+  return { instanceId: health.instanceId, provider: health.provider, protocolVersion: health.protocolVersion };
+}
+function stableHealthIdentity(health?: HealthRecord): string | undefined {
+  const startedAt = health?.startedAt;
+  return parseDaemonStartedAt(startedAt) === undefined ? undefined : startedAt;
+}
+function acquireRequestBody(body: any, provenance: DaemonProvenance | undefined): any {
+  if (!provenance) return body;
+  return { ...body, expectedInstanceId: provenance.instanceId, expectedProvider: provenance.provider, expectedProtocolVersion: provenance.protocolVersion };
+}
 async function preflightDaemon(ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<EnsureDaemonResult> {
   try {
     const ensured = await ensure(signal);
@@ -183,26 +203,49 @@ async function preflightDaemon(ensure: NonNullable<AcquirePermitOptions["ensure"
     return unavailableEnsureResult(errorText(error));
   }
 }
+async function validateAcquiredPermitProvenance(preflight: EnsureDaemonResult, response: unknown, ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<ProvenanceValidation> {
+  const provenance = currentProvenance(preflight);
+  if (preflight.compatibility === "current") {
+    const matches = provenance !== undefined && isHealthRecord(response) && response.instanceId === provenance.instanceId && response.provider === provenance.provider && response.protocolVersion === provenance.protocolVersion;
+    return { matches, diagnostic: matches ? "acquire response matches preflight provenance" : "acquire response does not match preflight daemon provenance" };
+  }
+  const identity = stableHealthIdentity(preflight.health);
+  if (!identity) return { matches: false, diagnostic: "legacy health has no stable startedAt identity" };
+  const postflight = await preflightDaemon(ensure, signal);
+  const matches = isCompatibleHealth(postflight) && stableHealthIdentity(postflight.health) === identity;
+  return { matches, diagnostic: matches ? "legacy health identity matches after acquire" : `legacy daemon identity changed during acquire: ${postflight.diagnostic}` };
+}
 export async function acquirePermitResponse(port: number, body: any, directory: string, options: AcquirePermitOptions = {}): Promise<any> {
   const signal = options.signal;
   const expectedProvider = String(body.provider ?? "anthropic");
   const ensure = options.ensure ?? ((ensureSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: ensureSignal }));
   const request = options.request ?? ((pathname: string, payload: any, requestSignal?: AbortSignal) => postJson(port, pathname, payload, 7200000, requestSignal));
+  const releasePermit = options.release ?? ((payload: any, releaseSignal?: AbortSignal) => postJson(port, "/release", payload, 5000, releaseSignal));
   const wait = options.wait ?? waitForRetry;
   const warningAfterAttempts = options.warningAfterAttempts ?? WARNING_ATTEMPTS;
   const retryMs = options.retryMs ?? RETRY_MS;
-  let warned = false; let reportedIncompatibility = false;
+  const releaseAcquiredPermit = async (permitId: unknown) => { try { await releasePermit({ permitId }); } catch {} };
+  let warned = false; let reportedIncompatibility = false; let lastDiagnostic = UNAVAILABLE_HEALTH;
   for (let attempt = 1; ; attempt++) {
     if (isAborted(signal)) throw abortError();
     const preflight = await preflightDaemon(ensure, signal);
+    lastDiagnostic = preflight.diagnostic;
     if (isAborted(signal)) throw abortError();
     let response: any;
     if (isCompatibleHealth(preflight)) {
-      try { response = await request("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
+      try { response = await request("/acquire", acquireRequestBody(body, currentProvenance(preflight)), signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
     }
     if (response?.permitId) {
-      if (isAborted(signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); throw abortError(); }
-      return response;
+      let validation: ProvenanceValidation;
+      try { validation = await validateAcquiredPermitProvenance(preflight, response, ensure, signal); } catch (error) {
+        await releaseAcquiredPermit(response.permitId);
+        if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
+        validation = { matches: false, diagnostic: errorText(error) };
+      }
+      if (isAborted(signal)) { await releaseAcquiredPermit(response.permitId); throw abortError(); }
+      if (validation.matches) return response;
+      lastDiagnostic = validation.diagnostic;
+      await releaseAcquiredPermit(response.permitId);
     }
     if (preflight.compatibility === "incompatible" && !reportedIncompatibility) {
       reportedIncompatibility = true;
@@ -210,7 +253,7 @@ export async function acquirePermitResponse(port: number, body: any, directory: 
     }
     if (!warned && attempt >= warningAfterAttempts) {
       warned = true;
-      const detail = recoveryMessage(port) ?? preflight.diagnostic;
+      const detail = recoveryMessage(port) ?? lastDiagnostic;
       options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
     }
     await wait(retryMs, signal);

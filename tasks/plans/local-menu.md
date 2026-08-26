@@ -12,16 +12,16 @@ Install a display-only macOS menu bar app that truthfully shows this Mac's last-
 
 ### H1: Daemon compatibility and acquire precondition
 
-`GET /health` retains `version: 3` and every existing field. New daemons also return `protocolVersion: 1` and the provider passed through `CLAUDE_PERMIT_GATE_PROVIDER`.
+`GET /health` retains `version: 3` and every existing field. New daemons also return `protocolVersion: 1`, the provider passed through `CLAUDE_PERMIT_GATE_PROVIDER`, and a random UUID `instanceId`; successful `/acquire` responses return the same provenance.
 
 The extension classifies health as:
 
-- `current`: `ok === true`, provider equals the expected provider, and `protocolVersion === 1`.
-- `legacy`: `ok === true` and provider or protocol is absent. Legacy remains usable locally and is labeled “restart when idle.”
+- `current`: `ok === true`, provider equals the expected provider, `protocolVersion === 1`, and `instanceId` is valid.
+- `legacy`: `ok === true` and provider, protocol, or instance identity is absent. Legacy remains usable locally when it has a stable ISO-8601 `startedAt`, and is labeled “restart when idle.”
 - `incompatible`: health is well-formed but an explicit provider differs or an explicit protocol is unsupported. Incompatible endpoints never receive `/acquire`.
 - `invalidOrUnavailable`: timeout, transport failure, malformed JSON, or `ok !== true`. Acquisition stays fail-closed and retries under existing backoff.
 
-`ensureDaemon` returns this typed result. `acquirePermitResponse` must run compatibility preflight before every `/acquire` attempt. It may send `/acquire` only for `current` or `legacy`; `incompatible` and `invalidOrUnavailable` states wait, re-probe, and remain cancellable. `before_provider_request` must not swallow incompatibility and then proceed to transport.
+`ensureDaemon` returns this typed result. `acquirePermitResponse` must run compatibility preflight before every `/acquire` attempt. It may send `/acquire` only for `current` or `legacy`; `incompatible` and `invalidOrUnavailable` states wait, re-probe, and remain cancellable. Current acquires send expected instance identity, provider, and protocol, then accept only matching grant provenance. Legacy acquires re-probe `startedAt` after the grant and release/retry when it changed or cannot identify the owner. `before_provider_request` must not swallow incompatibility and then proceed to transport.
 
 Keep the existing source-policy guard line byte-identical:
 

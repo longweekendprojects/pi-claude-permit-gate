@@ -15,6 +15,8 @@ function envInt(name, legacy, fallback, minimum = 1) {
 
 const PORT = envInt("CLAUDE_PERMIT_GATE_PORT", "ANTHROPIC_PERMIT_GATE_PORT", 8790);
 const PROVIDER = process.env.CLAUDE_PERMIT_GATE_PROVIDER || undefined;
+const PROTOCOL_VERSION = 1;
+const INSTANCE_ID = crypto.randomUUID();
 const MIN = envInt("CLAUDE_PERMIT_GATE_MIN", "ANTHROPIC_PERMIT_GATE_MIN", 1);
 const MAX = Math.max(MIN, envInt("CLAUDE_PERMIT_GATE_MAX", "ANTHROPIC_PERMIT_GATE_MAX", 2));
 let current = Math.min(MAX, Math.max(MIN, envInt("CLAUDE_PERMIT_GATE_START", "ANTHROPIC_PERMIT_GATE_START", 2)));
@@ -39,6 +41,11 @@ let pumpTimer;
 function log(...parts) { fs.appendFile(LOG, `[${new Date().toISOString()}] [:${PORT}] ${parts.join(" ")}\n`, () => {}); }
 function reply(res, status, body) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); }
 function readBody(req) { return new Promise((resolve) => { let body = ""; req.on("data", (chunk) => { body += chunk; }); req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch { resolve({}); } }); }); }
+function daemonProvenance() { return { instanceId: INSTANCE_ID, provider: PROVIDER, protocolVersion: PROTOCOL_VERSION }; }
+function expectedProvenanceMatches(body) {
+  const hasExpectation = body?.expectedInstanceId !== undefined || body?.expectedProvider !== undefined || body?.expectedProtocolVersion !== undefined;
+  return !hasExpectation || (body.expectedInstanceId === INSTANCE_ID && body.expectedProvider === PROVIDER && body.expectedProtocolVersion === PROTOCOL_VERSION);
+}
 function schedulePump(delay) { if (!pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = undefined; pump(); }, Math.max(0, delay)); }
 
 function saveState() {
@@ -104,7 +111,7 @@ function pump() {
     const permitId = crypto.randomUUID(); const now = Date.now(); request.permitId = permitId; active.set(permitId, { session, grantedAt: now, renewedAt: now }); saveState();
     stats.granted++; stats.peakActive = Math.max(stats.peakActive, active.size);
     request.res.once("finish", () => { request.responseFinished = true; request.res.removeListener("close", request.cancel); });
-    reply(request.res, 200, { ok: true, permitId, waitedMs: now - request.enqueuedAt, current, max: MAX, permitTtlMs: PERMIT_TTL_MS });
+    reply(request.res, 200, { ok: true, permitId, waitedMs: now - request.enqueuedAt, current, max: MAX, permitTtlMs: PERMIT_TTL_MS, ...daemonProvenance() });
   }
 }
 function maybeIncrease() { const now = Date.now(); if (current >= MAX || now < cooldownUntil || now - lastThrottleAt < INCREASE_AFTER_MS || now - lastIncreaseAt < INCREASE_AFTER_MS) return; const before = current; current++; lastIncreaseAt = now; log(`clean window: concurrency ${before} -> ${current}`); pump(); }
@@ -115,9 +122,12 @@ function sweepStalePermits() { if (!PERMIT_TTL_MS) return; const now = Date.now(
 
 restoreState();
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, protocolVersion: 1, provider: PROVIDER, active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
+  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, ...daemonProvenance(), active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
   const body = await readBody(req);
-  if (req.method === "POST" && req.url === "/acquire") return enqueue(String(body.session || "unknown"), res);
+  if (req.method === "POST" && req.url === "/acquire") {
+    if (!expectedProvenanceMatches(body)) return reply(res, 409, { ok: false, retry: true, error: "daemon provenance does not match expected values", ...daemonProvenance() });
+    return enqueue(String(body.session || "unknown"), res);
+  }
   if (req.method === "POST" && req.url === "/renew") return reply(res, 200, { ok: renewPermit(body.permitId) });
   if (req.method === "POST" && req.url === "/release") return reply(res, 200, { ok: releasePermit(body.permitId) });
   if (req.method === "POST" && req.url === "/throttle") { throttle(String(body.reason || "unknown"), body.cooldownMs); if (body.permitId) releasePermit(body.permitId); return reply(res, 200, { ok: true, current, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()) }); }
