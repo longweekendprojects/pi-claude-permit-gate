@@ -38,19 +38,23 @@ function recoveryFor(port: number): DaemonRecovery { const state = daemonRecover
 function recoveryMessage(port: number): string | undefined { return daemonRecovery.get(port)?.lastError; }
 function clearRecovery(port: number) { daemonRecovery.delete(port); }
 
-export type DaemonCompatibility = "current" | "legacy" | "incompatible" | "invalidOrUnavailable";
+const COMPATIBILITIES = ["current", "legacy", "incompatible", "invalidOrUnavailable"] as const;
+const UNAVAILABLE_HEALTH = "health is unavailable or invalid";
+export type DaemonCompatibility = (typeof COMPATIBILITIES)[number];
 type HealthRecord = Record<string, unknown>;
 export type DaemonHealthClassification = { compatibility: DaemonCompatibility; health?: HealthRecord; diagnostic: string };
 export type EnsureDaemonResult = DaemonHealthClassification & { spawned: boolean };
+type HealthProbe = (signal?: AbortSignal) => Promise<unknown>;
 type SpawnedDaemon = { once(event: string, listener: (...args: any[]) => void): unknown; unref(): unknown };
-type EnsureDaemonOptions = { signal?: AbortSignal; probe?: (signal?: AbortSignal) => Promise<unknown | undefined>; spawnDaemon?: (directory: string, port: number, provider: string) => SpawnedDaemon };
+type EnsureDaemonOptions = { signal?: AbortSignal; probe?: HealthProbe; spawnDaemon?: (directory: string, port: number, provider: string) => SpawnedDaemon };
 
 function isHealthRecord(value: unknown): value is HealthRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function isCompatibleHealth(result: DaemonHealthClassification): boolean { return result.compatibility === "current" || result.compatibility === "legacy"; }
 export function classifyDaemonHealth(health: unknown, expectedProvider: string): DaemonHealthClassification {
-  if (!isHealthRecord(health) || health.ok !== true) return { compatibility: "invalidOrUnavailable", health: isHealthRecord(health) ? health : undefined, diagnostic: "health is unavailable or invalid" };
-  const hasProvider = Object.prototype.hasOwnProperty.call(health, "provider") && health.provider !== undefined;
-  const hasProtocol = Object.prototype.hasOwnProperty.call(health, "protocolVersion") && health.protocolVersion !== undefined;
+  if (!isHealthRecord(health)) return { compatibility: "invalidOrUnavailable", diagnostic: UNAVAILABLE_HEALTH };
+  if (health.ok !== true) return { compatibility: "invalidOrUnavailable", health, diagnostic: UNAVAILABLE_HEALTH };
+  const hasProvider = health.provider !== undefined;
+  const hasProtocol = health.protocolVersion !== undefined;
   if (hasProvider && typeof health.provider !== "string") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health provider is invalid" };
   if (hasProtocol && typeof health.protocolVersion !== "number") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health protocol version is invalid" };
   if (hasProvider && health.provider !== expectedProvider) return { compatibility: "incompatible", health, diagnostic: `provider ${JSON.stringify(health.provider)} does not match expected ${JSON.stringify(expectedProvider)}` };
@@ -85,6 +89,7 @@ function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs 
   });
 }
 function abortError() { return Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isAborted(signal?: AbortSignal) { return signal?.aborted === true; }
 function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -115,20 +120,22 @@ function daemonEnv(port: number, provider: string): NodeJS.ProcessEnv {
 function launchDaemon(directory: string, port: number, provider: string): SpawnedDaemon {
   return spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
 }
-async function occupiedPortRecovery(port: number, provider: string, probe: (signal?: AbortSignal) => Promise<unknown | undefined>) {
+async function probeHealth(probe: HealthProbe, provider: string, signal?: AbortSignal): Promise<DaemonHealthClassification> {
   let health: unknown;
-  try { health = await probe(); } catch {}
-  const result = classifyDaemonHealth(health, provider);
+  try { health = await probe(signal); } catch {}
+  return classifyDaemonHealth(health, provider);
+}
+async function occupiedPortRecovery(port: number, provider: string, probe: HealthProbe) {
+  const result = await probeHealth(probe, provider);
   if (isCompatibleHealth(result)) { clearRecovery(port); return; }
   recoveryFor(port).lastError = `daemon launch found an occupied port: ${result.diagnostic}`;
 }
 export async function ensureDaemon(directory: string, port: number, provider: string, options: EnsureDaemonOptions = {}): Promise<EnsureDaemonResult> {
-  const probe = options.probe ?? ((signal?: AbortSignal) => getJson(port, "/health", 1000, signal));
-  if (isAborted(options.signal)) throw abortError();
-  let health: unknown;
-  try { health = await probe(options.signal); } catch {}
-  if (isAborted(options.signal)) throw abortError();
-  const result = classifyDaemonHealth(health, provider);
+  const signal = options.signal;
+  const probe = options.probe ?? ((probeSignal?: AbortSignal) => getJson(port, "/health", 1000, probeSignal));
+  if (isAborted(signal)) throw abortError();
+  const result = await probeHealth(probe, provider, signal);
+  if (isAborted(signal)) throw abortError();
   if (isCompatibleHealth(result)) { clearRecovery(port); return { ...result, spawned: false }; }
   const state = recoveryFor(port);
   if (result.compatibility === "incompatible") { state.lastError = result.diagnostic; return { ...result, spawned: false }; }
@@ -150,7 +157,7 @@ export async function ensureDaemon(directory: string, port: number, provider: st
     child.unref();
     return { ...result, diagnostic: state.lastError, spawned: true };
   } catch (error) {
-    state.lastError = `could not start daemon on port ${port}: ${error instanceof Error ? error.message : String(error)}`;
+    state.lastError = `could not start daemon on port ${port}: ${errorText(error)}`;
     return { ...result, diagnostic: state.lastError, spawned: false };
   }
 }
@@ -166,25 +173,32 @@ function startRenewal(permit: Permit, ttlMs: number) {
 }
 type AcquirePermitOptions = { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; ensure?: (signal?: AbortSignal) => Promise<EnsureDaemonResult>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal };
 function unavailableEnsureResult(diagnostic: string): EnsureDaemonResult { return { compatibility: "invalidOrUnavailable", diagnostic, spawned: false }; }
-function isEnsureDaemonResult(value: unknown): value is EnsureDaemonResult { return isHealthRecord(value) && typeof value.diagnostic === "string" && typeof value.spawned === "boolean" && ["current", "legacy", "incompatible", "invalidOrUnavailable"].includes(String(value.compatibility)); }
+function isEnsureDaemonResult(value: unknown): value is EnsureDaemonResult { return isHealthRecord(value) && typeof value.diagnostic === "string" && typeof value.spawned === "boolean" && (COMPATIBILITIES as readonly string[]).includes(String(value.compatibility)); }
+async function preflightDaemon(ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<EnsureDaemonResult> {
+  try {
+    const ensured = await ensure(signal);
+    return isEnsureDaemonResult(ensured) ? ensured : unavailableEnsureResult(UNAVAILABLE_HEALTH);
+  } catch (error) {
+    if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
+    return unavailableEnsureResult(errorText(error));
+  }
+}
 export async function acquirePermitResponse(port: number, body: any, directory: string, options: AcquirePermitOptions = {}): Promise<any> {
   const signal = options.signal;
   const expectedProvider = String(body.provider ?? "anthropic");
+  const ensure = options.ensure ?? ((ensureSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: ensureSignal }));
+  const request = options.request ?? ((pathname: string, payload: any, requestSignal?: AbortSignal) => postJson(port, pathname, payload, 7200000, requestSignal));
+  const wait = options.wait ?? waitForRetry;
+  const warningAfterAttempts = options.warningAfterAttempts ?? WARNING_ATTEMPTS;
+  const retryMs = options.retryMs ?? RETRY_MS;
   let warned = false; let reportedIncompatibility = false;
   for (let attempt = 1; ; attempt++) {
     if (isAborted(signal)) throw abortError();
-    let preflight = unavailableEnsureResult("health is unavailable or invalid");
-    try {
-      const ensured = await (options.ensure ?? ((requestSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: requestSignal })))(signal);
-      if (isEnsureDaemonResult(ensured)) preflight = ensured;
-    } catch (error) {
-      if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
-      preflight = unavailableEnsureResult(error instanceof Error ? error.message : String(error));
-    }
+    const preflight = await preflightDaemon(ensure, signal);
     if (isAborted(signal)) throw abortError();
     let response: any;
     if (isCompatibleHealth(preflight)) {
-      try { response = await (options.request ?? ((pathname, payload, requestSignal) => postJson(port, pathname, payload, 7200000, requestSignal)))("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
+      try { response = await request("/acquire", body, signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
     }
     if (response?.permitId) {
       if (isAborted(signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); throw abortError(); }
@@ -194,12 +208,12 @@ export async function acquirePermitResponse(port: number, body: any, directory: 
       reportedIncompatibility = true;
       options.onUnavailable?.(`Claude permit gate on port ${port} is incompatible: ${preflight.diagnostic}. Provider request remains blocked. Restart it only during approved idle maintenance.`);
     }
-    if (!warned && attempt >= (options.warningAfterAttempts ?? WARNING_ATTEMPTS)) {
+    if (!warned && attempt >= warningAfterAttempts) {
       warned = true;
       const detail = recoveryMessage(port) ?? preflight.diagnostic;
       options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
     }
-    await (options.wait ?? waitForRetry)(options.retryMs ?? RETRY_MS, signal);
+    await wait(retryMs, signal);
   }
 }
 async function acquire(ctx: any, directory: string, port: number, provider: string) {
