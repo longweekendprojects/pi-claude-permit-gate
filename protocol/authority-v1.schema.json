@@ -46,6 +46,8 @@
       "nonterminalTicketsPerLane": 256,
       "retainedTicketOrTombstoneRecordsPerLane": 4096,
       "operationResultsPerTicket": 32,
+      "verifierRecordsPerAuthority": 192,
+      "verifierRecordsPerInstallationScope": 2,
       "publisherPendingSnapshotsPerProvider": 64,
       "publisherPendingSnapshotsPerInstallation": 256
     },
@@ -327,6 +329,36 @@
         "ETag": {
           "type": "string",
           "pattern": "^\\\"revision-[1-9][0-9]*\\\"$"
+        },
+        "Idempotency-Replayed": {
+          "const": "true"
+        }
+      }
+    },
+    "JsonNoStoreReplayCreateHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "ETag",
+        "Location",
+        "Idempotency-Replayed"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "ETag": {
+          "type": "string",
+          "pattern": "^\\\"revision-[1-9][0-9]*\\\"$"
+        },
+        "Location": {
+          "type": "string",
+          "pattern": "^/v1/tickets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         },
         "Idempotency-Replayed": {
           "const": "true"
@@ -1225,7 +1257,10 @@
                 "$ref": "#/$defs/EpochMilliseconds"
               },
               "terminalReason": {
-                "const": "released"
+                "enum": [
+                  "released",
+                  "operator_reconciled"
+                ]
               },
               "lease": {
                 "const": null
@@ -1664,7 +1699,7 @@
         "verifiers": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 96,
+          "maxItems": 192,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/VerifierRecordV1"
@@ -2051,7 +2086,6 @@
               "properties": {
                 "code": {
                   "enum": [
-                    "authority_starting",
                     "authority_draining",
                     "authority_degraded",
                     "persistence_unavailable",
@@ -2250,6 +2284,26 @@
         },
         "headers": {
           "$ref": "#/$defs/JsonNoStoreReplayHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TicketV1"
+        }
+      }
+    },
+    "TicketReplayCreateResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreReplayCreateHeadersV1"
         },
         "body": {
           "$ref": "#/$defs/TicketV1"

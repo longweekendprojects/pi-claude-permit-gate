@@ -52,7 +52,7 @@ Environment and file origin, mode, and port mapping must agree. Invalid, incompl
 
 ## Common response rules
 
-Successful ticket representations are `TicketV1` and always have every nullable key present. They include `ETag: "revision-<n>"`. A first create returns `201` with `Location: /v1/tickets/<ticketId>`; a replayed successful create or mutation returns `200` with `Idempotency-Replayed: true` and the original representation.
+Successful ticket representations are `TicketV1` and always have every nullable key present. They include `ETag: "revision-<n>"`. A first create returns `201` with `Location: /v1/tickets/<ticketId>`. A replayed create returns `200` with both that same `Location` and `Idempotency-Replayed: true`; a replayed non-create mutation returns `200` with `Idempotency-Replayed: true` and no `Location`. Every replay returns the original representation.
 
 Every error body is `ErrorV1`:
 
@@ -70,7 +70,7 @@ Messages are redacted ASCII text at most 160 characters. Error codes, status map
 | 404 | `not_found` | Never retryable. Another principal's opaque ID also returns this response. |
 | 409 | `provider_mismatch`, `authority_mismatch`, `account_binding_mismatch`, `stale_revision`, `invalid_transition`, `operation_conflict` | Never retryable. |
 | 429 | `principal_limit`, `lane_limit` | Retryable and includes integer-seconds `Retry-After` and an equal `retryAfterMs` value. |
-| 503 | `authority_starting`, `authority_draining`, `authority_degraded`, `persistence_unavailable`, `verifier_unavailable` | Retryable only when both `Retry-After` and matching `retryAfterMs` are supplied. |
+| 503 | `authority_starting`, `authority_draining`, `authority_degraded`, `persistence_unavailable`, `verifier_unavailable` | `authority_starting` is always retryable and supplies both `Retry-After` and matching `retryAfterMs`. The other codes are retryable only when both values are supplied. |
 
 A matching millisecond value is an exact multiple of 1,000 equal to `Retry-After * 1000`.
 
@@ -94,7 +94,7 @@ All ticket endpoints require `permit:mutate`. The canonical endpoint/body contra
 
 | Endpoint | Request body | Result |
 | --- | --- | --- |
-| `POST /v1/tickets` | `TicketCreateRequestV1` | First create returns `201 TicketV1`; a matching retry returns its original `200 TicketV1`. |
+| `POST /v1/tickets` | `TicketCreateRequestV1` | First create returns `201 TicketV1`; a matching retry returns its original `200 TicketV1` with both `Location` and `Idempotency-Replayed`. |
 | `GET /v1/tickets/:ticketId` | None | Returns the owner/lane ticket or owner-hidden `404`. |
 | `POST /v1/tickets/:ticketId/claim` | `TicketClaimOrCancelRequestV1` | One revision compare-and-set changes `offered` to `active`; provider traffic may start only after this response. |
 | `POST /v1/tickets/:ticketId/cancel` | `TicketClaimOrCancelRequestV1` | Changes only `queued|offered` to `cancelled`. `active|uncertain` returns `409 invalid_transition` and keeps capacity. |
@@ -108,6 +108,8 @@ A claim/cancel body contains exactly schema version, operation UUID, expected re
 `TicketV1` always has these keys: `schemaVersion`, `ticketId`, `requestId`, `provider`, `state`, `revision`, `createdAtEpochMs`, `enqueuedAtEpochMs`, `offeredAtEpochMs`, `offerExpiresAtEpochMs`, `terminalAtEpochMs`, `terminalReason`, `queueAhead`, and `lease`. `queueAhead` is only an owner-visible non-negative estimate and never a session list.
 
 The closed ticket states are `queued`, `offered`, `active`, `uncertain`, `cancelled`, `released`, `throttled`, and `offerExpired`. `LeaseV1` is non-null only for `active|uncertain` and contains exactly `leaseId`, `generation`, `claimedAtEpochMs`, `renewSequence`, `renewByEpochMs`, and `serverDeadlineEpochMs`. The server deadline transitions a lease to `uncertain`; it never automatically frees capacity.
+
+`operator_reconciled` is representable only as terminal `state: "released"`, with a non-null `terminalAtEpochMs` and `lease: null`. It is emitted only by the approval-gated offline reconciliation of a prior `uncertain` lease, and means the authority has deliberately freed that quarantined capacity. No active, queued, offered, cancelled, throttled, or offer-expired ticket may use this reason.
 
 Duplicate operation IDs return the original result. Reusing an operation ID for a different operation returns `409 operation_conflict`. Claim, cancel, renew, and complete serialize through revision compare-and-set.
 
@@ -135,6 +137,7 @@ The fixed v1 limits are:
 - 32 authenticated installation principals per authority and 32 live sessions per principal;
 - 16 nonterminal tickets per session, 64 per principal, and 256 per lane;
 - 4,096 retained ticket/tombstone records per lane and 32 retained operation results per ticket;
+- 192 verifier records per authority, allowing up to two records for each of 32 principals × 3 scopes during one predecessor/successor overlap; no third concurrent verifier for an installation scope is permitted;
 - effective `currentConcurrency` and `maximumConcurrency` from 1 through 64, with `active + offered + uncertain <= currentConcurrency <= maximumConcurrency`;
 - UUID/string fields at most 64 ASCII characters and redacted error messages at most 160 ASCII characters;
 - finite allowance utilization from 0 through 1,000, reset seconds from 1 through 253402300799, and observed timestamps no more than 30 seconds in the future; and
@@ -169,7 +172,7 @@ All four authorities read one owner-only (`0600`) verifier store:
 ~/Library/Application Support/Claude Permit Authority/verifiers-v1.json
 ```
 
-The store conforms to `VerifierStoreV1`, has a monotonic generation, and contains verifier records only. Offline administration writes a complete temporary file, fsyncs it, atomically renames it, and fsyncs its directory. Every authenticated request reads and validates the current generation; every mutation rereads it immediately before durable commit. Unreadable, malformed, rolled-back, or generation-mismatched verifier state degrades and fails closed. Rotation permits bounded dual-verifier overlap. Revoking one installation never revokes another.
+The store conforms to `VerifierStoreV1`, has a monotonic generation, and contains verifier records only. Its 192-record ceiling permits two records for every 32-principal, three-scope installation pair during one predecessor/successor rotation overlap. Offline administration writes a complete temporary file, fsyncs it, atomically renames it, and fsyncs its directory. Every authenticated request reads and validates the current generation; every mutation rereads it immediately before durable commit. Unreadable, malformed, rolled-back, or generation-mismatched verifier state degrades and fails closed. Rotation permits bounded dual-verifier overlap. Revoking one installation never revokes another.
 
 ## Allowance publication and monitor truth
 

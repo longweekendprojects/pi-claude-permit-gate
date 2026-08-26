@@ -1,0 +1,17 @@
+{
+  "httpStatus": 503,
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "Retry-After": "2"
+  },
+  "body": {
+    "schemaVersion": 1,
+    "error": {
+      "code": "authority_starting",
+      "message": "authority starting",
+      "retryable": true,
+      "retryAfterMs": 2000
+    }
+  }
+}

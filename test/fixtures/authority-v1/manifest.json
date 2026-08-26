@@ -1,5 +1,5 @@
 {
-  "schemaSha256": "3c106ac501624158316605a39dc7427c1e2ad2911202235cd3074c6de132b92f",
+  "schemaSha256": "b749ea6bb8b0551960c511576c7b2f14aa6abd34f6a314eb215d022aadf8a9f8",
   "referenceNowEpochMs": 1760000000000,
   "storedAllowanceObservedAtEpochMs": 1759999990000,
   "valid": [
@@ -41,6 +41,12 @@
       "definition": "ErrorResponseFixtureV1",
       "semantics": ["error-response"],
       "sha256": "012008fc542a39666af5cca86e92fa2361c27ac58ef7f97075b414cb4504ceef"
+    },
+    {
+      "file": "valid/error-starting-retryable-response.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "sha256": "0d16ac2040e859036b7167554036d3f40b2b4d5a8a1ab414b65bd06ad88fbcfc"
     },
     {
       "file": "valid/health-response.json",
@@ -92,6 +98,11 @@
       "sha256": "f78eff3d24e65fd73dc1e6c186053a0b6afa5a403bc70031d9895950f002d92c"
     },
     {
+      "file": "valid/ticket-operator-reconciled.json",
+      "definition": "TicketV1",
+      "sha256": "f0e23f2da3fdc61b4c91156963705a7498604cc05baa77a92f2857ae34e6e368"
+    },
+    {
       "file": "valid/ticket-queued.json",
       "definition": "TicketV1",
       "sha256": "b837a2f7521d0cf87a6ec5e81e45315047b8b31ac7a96dbcdcb56d3da16a0a3c"
@@ -100,6 +111,12 @@
       "file": "valid/ticket-renew-request.json",
       "definition": "TicketRenewRequestV1",
       "sha256": "700f168151379bb14308bcbeba89560b54bebff74f2a168cdcc00d701ec4c9f9"
+    },
+    {
+      "file": "valid/ticket-replay-create-response.json",
+      "definition": "TicketReplayCreateResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "sha256": "3f84ffa8b4210344b828b382b52a3fe5a839d089e2ffc1c02f5acb50efed4b6b"
     },
     {
       "file": "valid/ticket-replay-response.json",
@@ -117,6 +134,12 @@
       "file": "valid/ticket-uncertain.json",
       "definition": "TicketV1",
       "sha256": "83a83a7501bca4faea93bb956a27aa108a00e8821988db7f34d14c3dee40e8d4"
+    },
+    {
+      "file": "valid/verifier-store-full-rotation-overlap.json",
+      "definition": "VerifierStoreV1",
+      "semantics": ["verifier-store"],
+      "sha256": "9cc07a509f8b93eeefc41a5e43459cd69fca7c8fe85c2aef623e438e4095955c"
     },
     {
       "file": "valid/verifier-store.json",
@@ -181,6 +204,13 @@
       "sha256": "b1659089b2d373e9a83bd23ba7f0d22728674cb122f067eb397caf43bf6e0175"
     },
     {
+      "file": "invalid/error-starting-nonretryable-response.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "expectedError": "must match exactly one schema",
+      "sha256": "8205ca9be48af7bb5733b3328172370627fd1ee3022cb3303f411794b6c68e3c"
+    },
+    {
       "file": "invalid/error-unknown-code.json",
       "definition": "ErrorResponseFixtureV1",
       "semantics": ["error-response"],
@@ -199,6 +229,12 @@
       "definition": "HealthResponseFixtureV1",
       "expectedError": "is not allowed",
       "sha256": "165f934f95e451fa3b30ea6cdfa7a7ed48aad26d849a87c8ae5229101225512c"
+    },
+    {
+      "file": "invalid/ticket-active-operator-reconciled.json",
+      "definition": "TicketV1",
+      "expectedError": "terminalReason must equal null",
+      "sha256": "855287af5f1e2f3b7be511d9b8b472b3fcaf6dbccbb94bf067591f52976e52d1"
     },
     {
       "file": "invalid/ticket-created-at-fraction.json",
@@ -220,6 +256,13 @@
       "sha256": "d187359c7339bfc425772e0eac34757aae86bcb3ffdb05665a04613ddd2e8e0c"
     },
     {
+      "file": "invalid/ticket-replay-create-missing-location.json",
+      "definition": "TicketReplayCreateResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "expectedError": "Location is required",
+      "sha256": "9fc421fd6003b89e0d0512000d6beca95437be27c97c2d95bcae8110ce1038a9"
+    },
+    {
       "file": "invalid/ticket-response-etag-drift.json",
       "definition": "TicketResponseFixtureV1",
       "semantics": ["ticket-response"],
@@ -232,6 +275,13 @@
       "semantics": ["ticket-response"],
       "expectedError": "is not allowed",
       "sha256": "d87a707ba6d69609d5375905a93138db96b7f844a10a0cb2c324cf6a31916ebe"
+    },
+    {
+      "file": "invalid/verifier-store-overlap-over-capacity.json",
+      "definition": "VerifierStoreV1",
+      "semantics": ["verifier-store"],
+      "expectedError": "at most 192",
+      "sha256": "91a24f8ec8271ff24fb6e1665e4d159453971be68b50a4a989eb90f92eb57e36"
     }
   ]
 }

@@ -1,0 +1,3287 @@
+{
+  "schemaVersion": 1,
+  "generation": 100,
+  "verifiers": [
+    {
+      "tokenId": "p01-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p01-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000003",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p01-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000005",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p01-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000006",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000007",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p02-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000008",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000009",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p02-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000a",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p02-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000b",
+      "installationId": "10000000-0000-4000-8000-000000000002",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p02-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000c",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000d",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p03-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000e",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000000f",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p03-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000010",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p03-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000011",
+      "installationId": "10000000-0000-4000-8000-000000000003",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p03-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000012",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000013",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p04-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000014",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000015",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p04-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000016",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p04-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000017",
+      "installationId": "10000000-0000-4000-8000-000000000004",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p04-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000018",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000019",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p05-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001a",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001b",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p05-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001c",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p05-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001d",
+      "installationId": "10000000-0000-4000-8000-000000000005",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p05-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001e",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000001f",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p06-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000020",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000021",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p06-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000022",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p06-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000023",
+      "installationId": "10000000-0000-4000-8000-000000000006",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p06-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000024",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000025",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p07-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000026",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000027",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p07-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000028",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p07-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000029",
+      "installationId": "10000000-0000-4000-8000-000000000007",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p07-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002a",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002b",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p08-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002c",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002d",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p08-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002e",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p08-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000002f",
+      "installationId": "10000000-0000-4000-8000-000000000008",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p08-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000030",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000031",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p09-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000032",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000033",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p09-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000034",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p09-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000035",
+      "installationId": "10000000-0000-4000-8000-000000000009",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p09-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000036",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000037",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p10-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000038",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000039",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p10-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003a",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p10-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003b",
+      "installationId": "10000000-0000-4000-8000-000000000010",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p10-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003c",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003d",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p11-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003e",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000003f",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p11-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000040",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p11-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000041",
+      "installationId": "10000000-0000-4000-8000-000000000011",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p11-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000042",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000043",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p12-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000044",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000045",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p12-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000046",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p12-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000047",
+      "installationId": "10000000-0000-4000-8000-000000000012",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p12-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000048",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000049",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p13-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004a",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004b",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p13-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004c",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p13-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004d",
+      "installationId": "10000000-0000-4000-8000-000000000013",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p13-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004e",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000004f",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p14-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000050",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000051",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p14-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000052",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p14-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000053",
+      "installationId": "10000000-0000-4000-8000-000000000014",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p14-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000054",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000055",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p15-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000056",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000057",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p15-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000058",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p15-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000059",
+      "installationId": "10000000-0000-4000-8000-000000000015",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p15-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005a",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005b",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p16-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005c",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005d",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p16-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005e",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p16-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000005f",
+      "installationId": "10000000-0000-4000-8000-000000000016",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p16-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000060",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000061",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p17-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000062",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000063",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p17-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000064",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p17-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000065",
+      "installationId": "10000000-0000-4000-8000-000000000017",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p17-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000066",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000067",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p18-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000068",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000069",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p18-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006a",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p18-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006b",
+      "installationId": "10000000-0000-4000-8000-000000000018",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p18-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006c",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006d",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p19-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006e",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000006f",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p19-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000070",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p19-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000071",
+      "installationId": "10000000-0000-4000-8000-000000000019",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p19-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000072",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000073",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p20-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000074",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000075",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p20-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000076",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p20-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000077",
+      "installationId": "10000000-0000-4000-8000-000000000020",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p20-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000078",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000079",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p21-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007a",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007b",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p21-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007c",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p21-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007d",
+      "installationId": "10000000-0000-4000-8000-000000000021",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p21-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007e",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000007f",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p22-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000080",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000081",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p22-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000082",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p22-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000083",
+      "installationId": "10000000-0000-4000-8000-000000000022",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p22-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000084",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000085",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p23-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000086",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000087",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p23-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000088",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p23-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000089",
+      "installationId": "10000000-0000-4000-8000-000000000023",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p23-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008a",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008b",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p24-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008c",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008d",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p24-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008e",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p24-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000008f",
+      "installationId": "10000000-0000-4000-8000-000000000024",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p24-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000090",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000091",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p25-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000092",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000093",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p25-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-allowance-publish-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000094",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p25-allowance-publish-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000095",
+      "installationId": "10000000-0000-4000-8000-000000000025",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p25-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-permit-mutate-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000096",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-permit-mutate-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000097",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p26-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-snapshot-read-old",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000098",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-snapshot-read-new",
+      "verifierSha256": "0000000000000000000000000000000000000000000000000000000000000099",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p26-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-allowance-publish-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009a",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p26-allowance-publish-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009b",
+      "installationId": "10000000-0000-4000-8000-000000000026",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p26-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-permit-mutate-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009c",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-permit-mutate-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009d",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p27-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-snapshot-read-old",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009e",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-snapshot-read-new",
+      "verifierSha256": "000000000000000000000000000000000000000000000000000000000000009f",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p27-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a0",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p27-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a1",
+      "installationId": "10000000-0000-4000-8000-000000000027",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p27-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-permit-mutate-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a2",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-permit-mutate-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a3",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p28-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-snapshot-read-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a4",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-snapshot-read-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a5",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p28-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a6",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p28-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a7",
+      "installationId": "10000000-0000-4000-8000-000000000028",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p28-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-permit-mutate-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a8",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-permit-mutate-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000a9",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p29-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-snapshot-read-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000aa",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-snapshot-read-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000ab",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p29-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000ac",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p29-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000ad",
+      "installationId": "10000000-0000-4000-8000-000000000029",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p29-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-permit-mutate-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000ae",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-permit-mutate-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000af",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p30-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-snapshot-read-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b0",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-snapshot-read-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b1",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p30-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b2",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p30-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b3",
+      "installationId": "10000000-0000-4000-8000-000000000030",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p30-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-permit-mutate-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b4",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-permit-mutate-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b5",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p31-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-snapshot-read-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b6",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-snapshot-read-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b7",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p31-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b8",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p31-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000b9",
+      "installationId": "10000000-0000-4000-8000-000000000031",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p31-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-permit-mutate-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000ba",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-permit-mutate-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000bb",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p32-permit-mutate-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-snapshot-read-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000bc",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-snapshot-read-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000bd",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "snapshot:read",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p32-snapshot-read-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-allowance-publish-old",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000be",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": null,
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p32-allowance-publish-new",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000bf",
+      "installationId": "10000000-0000-4000-8000-000000000032",
+      "scope": "allowance:publish",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p32-allowance-publish-old",
+      "revokedAtEpochMs": null
+    },
+    {
+      "tokenId": "p01-permit-mutate-third",
+      "verifierSha256": "00000000000000000000000000000000000000000000000000000000000000c0",
+      "installationId": "10000000-0000-4000-8000-000000000001",
+      "scope": "permit:mutate",
+      "laneAllowlist": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ],
+      "generation": 100,
+      "issuedAtEpochMs": 1750000000000,
+      "expiresAtEpochMs": 1800000000000,
+      "predecessorTokenId": "p01-permit-mutate-new",
+      "revokedAtEpochMs": null
+    }
+  ]
+}

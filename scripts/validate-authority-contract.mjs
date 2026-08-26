@@ -149,6 +149,8 @@ function assertMetadata(schema) {
     nonterminalTicketsPerLane: 256,
     retainedTicketOrTombstoneRecordsPerLane: 4096,
     operationResultsPerTicket: 32,
+    verifierRecordsPerAuthority: 192,
+    verifierRecordsPerInstallationScope: 2,
     publisherPendingSnapshotsPerProvider: 64,
     publisherPendingSnapshotsPerInstallation: 256,
   }, "limits");
@@ -179,9 +181,14 @@ function semanticErrors(value, tags, manifest) {
       if (aggregate.currentConcurrency > aggregate.maximumConcurrency) errors.push("currentConcurrency must not exceed maximumConcurrency");
     } else if (tag === "verifier-store") {
       const tokenIds = new Set();
+      const verifierCounts = new Map();
       for (const verifier of value.verifiers) {
         if (tokenIds.has(verifier.tokenId)) errors.push("verifier tokenId values must be unique");
         tokenIds.add(verifier.tokenId);
+        const key = `${verifier.installationId}\u0000${verifier.scope}`;
+        const count = (verifierCounts.get(key) ?? 0) + 1;
+        verifierCounts.set(key, count);
+        if (count > 2) errors.push("an installation scope may have only one predecessor/successor verifier overlap");
         if (verifier.generation > value.generation) errors.push("verifier generation must not exceed store generation");
         if (verifier.expiresAtEpochMs <= verifier.issuedAtEpochMs) errors.push("verifier expiry must follow issue time");
       }
