@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "installationId": "33333333-3333-4333-8333-333333333333",
+  "provider": "anthropic-a",
+  "accountBindingId": "44444444-4444-4444-8444-444444444441",
+  "publishId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "publisherSequence": 42,
+  "observedAtEpochMs": 1759999999500,
+  "fiveHour": {
+    "utilization": 47.5,
+    "status": "allowed",
+    "resetEpochSeconds": 1760003600
+  },
+  "sevenDay": null
+}

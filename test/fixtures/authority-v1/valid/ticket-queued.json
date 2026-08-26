@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticketId": "77777777-7777-4777-8777-777777777777",
+  "requestId": "66666666-6666-4666-8666-666666666666",
+  "provider": "anthropic-a",
+  "state": "queued",
+  "revision": 1,
+  "createdAtEpochMs": 1759999999000,
+  "enqueuedAtEpochMs": 1759999999000,
+  "offeredAtEpochMs": null,
+  "offerExpiresAtEpochMs": null,
+  "terminalAtEpochMs": null,
+  "terminalReason": null,
+  "queueAhead": 0,
+  "lease": null
+}

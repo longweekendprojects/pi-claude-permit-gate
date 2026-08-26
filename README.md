@@ -32,6 +32,16 @@ The extension starts each daemon on demand. It gates only configured Anthropic-f
 
 It does not proxy provider traffic, read credentials, register providers, select accounts, or modify provider payloads.
 
+## Shared-authority protocol
+
+The future authenticated, cross-machine authority has one normative owner: [Authority Protocol v1](docs/authority-protocol-v1.md) and its [machine-validatable schema](protocol/authority-v1.schema.json). This README intentionally does not duplicate authority DTOs, error codes, or retry rules.
+
+The protocol is build-only until its documented H1, deployment, identity, timing, and approval gates are met. Validate its canonical fixtures without dependencies:
+
+```bash
+node scripts/validate-authority-contract.mjs
+```
+
 ## Provider pools
 
 The default mapping supports Pi's built-in Anthropic provider and four account-lane aliases:

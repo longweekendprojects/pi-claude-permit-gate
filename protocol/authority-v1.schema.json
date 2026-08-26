@@ -1,0 +1,2300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/longweekendprojects/pi-claude-permit-gate/protocol/authority-v1.schema.json",
+  "title": "Claude Permit Authority Protocol v1",
+  "description": "Canonical structural contract for authority protocol 2. Fixtures select a named definition from $defs; all definitions reject unknown JSON keys unless a protocol field explicitly permits null.",
+  "x-authorityProtocolV1": {
+    "protocolVersion": 2,
+    "requestBodyLimitBytes": 16384,
+    "responseBodyLimitBytes": 65536,
+    "safeIntegerMaximum": 9007199254740991,
+    "transport": {
+      "scheme": "https",
+      "contentType": "application/json",
+      "cacheControl": "no-store",
+      "unknownKeys": "rejected",
+      "timestampUnit": "epoch milliseconds unless the field is named EpochSeconds"
+    },
+    "authorization": {
+      "headerPattern": "Bearer <tokenId>.<base64url-32-byte-secret>",
+      "scopes": [
+        "permit:mutate",
+        "snapshot:read",
+        "allowance:publish"
+      ],
+      "bodyInstallationIdRule": "must equal the authenticated token installation before lookup or mutation"
+    },
+    "modes": {
+      "daemonMode": [
+        "local",
+        "authority"
+      ],
+      "clientMode": [
+        "local",
+        "authority-client"
+      ],
+      "monitorSource": [
+        "local",
+        "authority"
+      ]
+    },
+    "limits": {
+      "authenticatedInstallationPrincipalsPerAuthority": 32,
+      "liveSessionsPerPrincipal": 32,
+      "nonterminalTicketsPerSession": 16,
+      "nonterminalTicketsPerPrincipal": 64,
+      "nonterminalTicketsPerLane": 256,
+      "retainedTicketOrTombstoneRecordsPerLane": 4096,
+      "operationResultsPerTicket": 32,
+      "publisherPendingSnapshotsPerProvider": 64,
+      "publisherPendingSnapshotsPerInstallation": 256
+    },
+    "timing": {
+      "offerTtlMs": {
+        "minimum": 5000,
+        "maximum": 120000
+      },
+      "renewIntervalMs": {
+        "minimum": 5000,
+        "maximum": 300000
+      },
+      "renewDeadlineMs": {
+        "minimum": 15000,
+        "maximum": 3600000
+      },
+      "terminalRetentionMsMinimum": 86400000
+    },
+    "privacy": {
+      "forbiddenSharedFields": [
+        "bySession",
+        "installationId",
+        "sessionId",
+        "requestId",
+        "ticketId",
+        "leaseId",
+        "accountBindingId",
+        "token",
+        "verifier",
+        "oauth",
+        "headers",
+        "body",
+        "path",
+        "rawError"
+      ]
+    }
+  },
+  "$defs": {
+    "SafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "PositiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "EpochMilliseconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "EpochSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 253402300799
+    },
+    "AsciiString64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[\\x20-\\x7E]{1,64}$"
+    },
+    "AsciiIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+    },
+    "RedactedMessage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9 .,:;()/_-]{1,160}$"
+    },
+    "Uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 64,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "Provider": {
+      "type": "string",
+      "enum": [
+        "anthropic-a",
+        "anthropic-b",
+        "anthropic-c",
+        "anthropic-d"
+      ]
+    },
+    "LaneId": {
+      "type": "string",
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    "AuthorityPort": {
+      "type": "integer",
+      "enum": [
+        8791,
+        8792,
+        8793,
+        8794
+      ]
+    },
+    "AuthorityStatus": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "draining",
+        "degraded"
+      ]
+    },
+    "Scope": {
+      "type": "string",
+      "enum": [
+        "permit:mutate",
+        "snapshot:read",
+        "allowance:publish"
+      ]
+    },
+    "WindowStatus": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "allowed",
+        "allowed_warning",
+        "rejected",
+        "active",
+        "warning",
+        "rate_limited"
+      ]
+    },
+    "TicketState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "offered",
+        "active",
+        "uncertain",
+        "cancelled",
+        "released",
+        "throttled",
+        "offerExpired"
+      ]
+    },
+    "TerminalReason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "client_cancelled",
+        "authority_draining",
+        "offer_expired",
+        "released",
+        "assistant_rate_limit",
+        "assistant_overloaded",
+        "operator_reconciled"
+      ]
+    },
+    "AuthorizationHeader": {
+      "type": "string",
+      "pattern": "^Bearer [A-Za-z0-9._:-]{1,64}\\.[A-Za-z0-9_-]{43}$"
+    },
+    "JsonNoStoreHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        }
+      }
+    },
+    "JsonNoStoreRetryHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "Retry-After"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "Retry-After": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      }
+    },
+    "JsonNoStoreEtagHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "ETag"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "ETag": {
+          "type": "string",
+          "pattern": "^\\\"revision-[1-9][0-9]*\\\"$"
+        }
+      }
+    },
+    "JsonNoStoreCreateHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "ETag",
+        "Location"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "ETag": {
+          "type": "string",
+          "pattern": "^\\\"revision-[1-9][0-9]*\\\"$"
+        },
+        "Location": {
+          "type": "string",
+          "pattern": "^/v1/tickets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
+    },
+    "JsonNoStoreReplayHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "ETag",
+        "Idempotency-Replayed"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "ETag": {
+          "type": "string",
+          "pattern": "^\\\"revision-[1-9][0-9]*\\\"$"
+        },
+        "Idempotency-Replayed": {
+          "const": "true"
+        }
+      }
+    },
+    "KeychainReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "account"
+      ],
+      "properties": {
+        "service": {
+          "$ref": "#/$defs/AsciiString64"
+        },
+        "account": {
+          "$ref": "#/$defs/AsciiString64"
+        }
+      }
+    },
+    "AuthorityClientConfigV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "mode",
+        "origin",
+        "expectedAuthorityId",
+        "installationId",
+        "keychain",
+        "monitorSource",
+        "publisherEnabled",
+        "lanes"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "mode": {
+          "const": "authority-client"
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 253,
+          "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+        },
+        "expectedAuthorityId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "keychain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "permitMutate",
+            "snapshotRead",
+            "allowancePublish"
+          ],
+          "properties": {
+            "permitMutate": {
+              "$ref": "#/$defs/KeychainReferenceV1"
+            },
+            "snapshotRead": {
+              "$ref": "#/$defs/KeychainReferenceV1"
+            },
+            "allowancePublish": {
+              "$ref": "#/$defs/KeychainReferenceV1"
+            }
+          }
+        },
+        "monitorSource": {
+          "enum": [
+            "local",
+            "authority"
+          ]
+        },
+        "publisherEnabled": {
+          "type": "boolean"
+        },
+        "lanes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "anthropic-a",
+            "anthropic-b",
+            "anthropic-c",
+            "anthropic-d"
+          ],
+          "properties": {
+            "anthropic-a": {
+              "$ref": "#/$defs/LaneConfigA"
+            },
+            "anthropic-b": {
+              "$ref": "#/$defs/LaneConfigB"
+            },
+            "anthropic-c": {
+              "$ref": "#/$defs/LaneConfigC"
+            },
+            "anthropic-d": {
+              "$ref": "#/$defs/LaneConfigD"
+            }
+          }
+        }
+      }
+    },
+    "LaneConfigA": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "accountBindingId"
+      ],
+      "properties": {
+        "port": {
+          "const": 8791
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "LaneConfigB": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "accountBindingId"
+      ],
+      "properties": {
+        "port": {
+          "const": 8792
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "LaneConfigC": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "accountBindingId"
+      ],
+      "properties": {
+        "port": {
+          "const": 8793
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "LaneConfigD": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "accountBindingId"
+      ],
+      "properties": {
+        "port": {
+          "const": 8794
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "AuthorityHealthV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "protocolVersion",
+        "authorityId",
+        "laneTerm",
+        "instanceId",
+        "buildId",
+        "stateSchemaVersion",
+        "serverTimeEpochMs",
+        "status",
+        "provider",
+        "port",
+        "capabilities",
+        "active",
+        "offered",
+        "uncertain",
+        "queued",
+        "currentConcurrency",
+        "maximumConcurrency",
+        "cooldownUntilEpochMs",
+        "oldestWaitEpochMs"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "authorityId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "laneTerm": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "buildId": {
+          "$ref": "#/$defs/AsciiString64"
+        },
+        "stateSchemaVersion": {
+          "const": 2
+        },
+        "serverTimeEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "status": {
+          "$ref": "#/$defs/AuthorityStatus"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "port": {
+          "$ref": "#/$defs/AuthorityPort"
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "tickets",
+              "snapshot",
+              "allowance"
+            ]
+          }
+        },
+        "active": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "offered": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "uncertain": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "queued": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "currentConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maximumConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cooldownUntilEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "oldestWaitEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-a"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8791
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-b"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8792
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-c"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8793
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-d"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8794
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TrustedAuthorityHealthV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/AuthorityHealthV1"
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "ready",
+                "draining",
+                "degraded"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "AllowanceWindowV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "utilization",
+        "status",
+        "resetEpochSeconds"
+      ],
+      "properties": {
+        "utilization": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "status": {
+          "$ref": "#/$defs/WindowStatus"
+        },
+        "resetEpochSeconds": {
+          "$ref": "#/$defs/EpochSeconds"
+        }
+      }
+    },
+    "AllowanceWindowOrNullV1": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/AllowanceWindowV1"
+        }
+      ]
+    },
+    "NoAllowanceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observedAtEpochMs",
+        "fiveHour",
+        "sevenDay"
+      ],
+      "properties": {
+        "observedAtEpochMs": {
+          "const": null
+        },
+        "fiveHour": {
+          "const": null
+        },
+        "sevenDay": {
+          "const": null
+        }
+      }
+    },
+    "AcceptedAllowanceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observedAtEpochMs",
+        "fiveHour",
+        "sevenDay"
+      ],
+      "properties": {
+        "observedAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "fiveHour": {
+          "$ref": "#/$defs/AllowanceWindowOrNullV1"
+        },
+        "sevenDay": {
+          "$ref": "#/$defs/AllowanceWindowOrNullV1"
+        }
+      }
+    },
+    "AllowanceV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NoAllowanceV1"
+        },
+        {
+          "$ref": "#/$defs/AcceptedAllowanceV1"
+        }
+      ]
+    },
+    "LaneSnapshotDTOv1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "protocolVersion",
+        "authorityId",
+        "laneTerm",
+        "instanceId",
+        "buildId",
+        "stateSchemaVersion",
+        "serverTimeEpochMs",
+        "status",
+        "laneId",
+        "provider",
+        "port",
+        "active",
+        "offered",
+        "uncertain",
+        "queued",
+        "currentConcurrency",
+        "maximumConcurrency",
+        "cooldownUntilEpochMs",
+        "oldestWaitEpochMs",
+        "allowance"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "authorityId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "laneTerm": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "buildId": {
+          "$ref": "#/$defs/AsciiString64"
+        },
+        "stateSchemaVersion": {
+          "const": 2
+        },
+        "serverTimeEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "status": {
+          "$ref": "#/$defs/AuthorityStatus"
+        },
+        "laneId": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "port": {
+          "$ref": "#/$defs/AuthorityPort"
+        },
+        "active": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "offered": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "uncertain": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "queued": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "currentConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maximumConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cooldownUntilEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "oldestWaitEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "allowance": {
+          "$ref": "#/$defs/AllowanceV1"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "A"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-a"
+              },
+              "port": {
+                "const": 8791
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "B"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-b"
+              },
+              "port": {
+                "const": 8792
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "C"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-c"
+              },
+              "port": {
+                "const": 8793
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "D"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-d"
+              },
+              "port": {
+                "const": 8794
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TrustedLaneSnapshotDTOv1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/LaneSnapshotDTOv1"
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "ready",
+                "draining",
+                "degraded"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "LeaseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaseId",
+        "generation",
+        "claimedAtEpochMs",
+        "renewSequence",
+        "renewByEpochMs",
+        "serverDeadlineEpochMs"
+      ],
+      "properties": {
+        "leaseId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "claimedAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "renewSequence": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "renewByEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "serverDeadlineEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        }
+      }
+    },
+    "TicketV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "ticketId",
+        "requestId",
+        "provider",
+        "state",
+        "revision",
+        "createdAtEpochMs",
+        "enqueuedAtEpochMs",
+        "offeredAtEpochMs",
+        "offerExpiresAtEpochMs",
+        "terminalAtEpochMs",
+        "terminalReason",
+        "queueAhead",
+        "lease"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "ticketId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "state": {
+          "$ref": "#/$defs/TicketState"
+        },
+        "revision": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "createdAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "enqueuedAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "offeredAtEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "offerExpiresAtEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terminalAtEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terminalReason": {
+          "$ref": "#/$defs/TerminalReason"
+        },
+        "queueAhead": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "lease": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/LeaseV1"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "queued"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "offeredAtEpochMs": {
+                "const": null
+              },
+              "offerExpiresAtEpochMs": {
+                "const": null
+              },
+              "terminalAtEpochMs": {
+                "const": null
+              },
+              "terminalReason": {
+                "const": null
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "offered"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "offeredAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "offerExpiresAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalAtEpochMs": {
+                "const": null
+              },
+              "terminalReason": {
+                "const": null
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "active",
+                  "uncertain"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "offeredAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "offerExpiresAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalAtEpochMs": {
+                "const": null
+              },
+              "terminalReason": {
+                "const": null
+              },
+              "lease": {
+                "$ref": "#/$defs/LeaseV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "cancelled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminalAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalReason": {
+                "enum": [
+                  "client_cancelled",
+                  "authority_draining"
+                ]
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "released"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminalAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalReason": {
+                "const": "released"
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "throttled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminalAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalReason": {
+                "enum": [
+                  "assistant_rate_limit",
+                  "assistant_overloaded"
+                ]
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "offerExpired"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "offeredAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "offerExpiresAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalAtEpochMs": {
+                "$ref": "#/$defs/EpochMilliseconds"
+              },
+              "terminalReason": {
+                "const": "offer_expired"
+              },
+              "lease": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TicketCreateRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "provider",
+        "accountBindingId",
+        "installationId",
+        "sessionId",
+        "requestId",
+        "createdAtEpochMs"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "createdAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        }
+      }
+    },
+    "TicketClaimOrCancelRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "expectedRevision",
+        "installationId",
+        "provider",
+        "accountBindingId"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "operationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "TicketRenewRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "expectedRevision",
+        "installationId",
+        "provider",
+        "accountBindingId",
+        "leaseId",
+        "generation",
+        "renewSequence"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "operationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "leaseId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "renewSequence": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        }
+      }
+    },
+    "TicketCompleteRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "expectedRevision",
+        "installationId",
+        "provider",
+        "accountBindingId",
+        "leaseId",
+        "generation",
+        "outcome",
+        "reason"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "operationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "leaseId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "outcome": {
+          "enum": [
+            "released",
+            "throttled"
+          ]
+        },
+        "reason": {
+          "enum": [
+            null,
+            "assistant_rate_limit",
+            "assistant_overloaded"
+          ]
+        },
+        "cooldownMs": {
+          "$ref": "#/$defs/SafeInteger"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "released"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": null
+              }
+            },
+            "not": {
+              "required": [
+                "cooldownMs"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "throttled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "assistant_rate_limit",
+                  "assistant_overloaded"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AllowancePublishRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "installationId",
+        "provider",
+        "accountBindingId",
+        "publishId",
+        "publisherSequence",
+        "observedAtEpochMs",
+        "fiveHour",
+        "sevenDay"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "publishId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "publisherSequence": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "observedAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "fiveHour": {
+          "$ref": "#/$defs/AllowanceWindowOrNullV1"
+        },
+        "sevenDay": {
+          "$ref": "#/$defs/AllowanceWindowOrNullV1"
+        }
+      }
+    },
+    "AuthorityTimingV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "offerTtlMs",
+        "renewIntervalMs",
+        "renewDeadlineMs",
+        "terminalRetentionMs"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "offerTtlMs": {
+          "type": "integer",
+          "minimum": 5000,
+          "maximum": 120000
+        },
+        "renewIntervalMs": {
+          "type": "integer",
+          "minimum": 5000,
+          "maximum": 300000
+        },
+        "renewDeadlineMs": {
+          "type": "integer",
+          "minimum": 15000,
+          "maximum": 3600000
+        },
+        "terminalRetentionMs": {
+          "type": "integer",
+          "minimum": 86400000,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "VerifierRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokenId",
+        "verifierSha256",
+        "installationId",
+        "scope",
+        "laneAllowlist",
+        "generation",
+        "issuedAtEpochMs",
+        "expiresAtEpochMs",
+        "predecessorTokenId",
+        "revokedAtEpochMs"
+      ],
+      "properties": {
+        "tokenId": {
+          "$ref": "#/$defs/AsciiIdentifier"
+        },
+        "verifierSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "laneAllowlist": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Provider"
+          }
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "issuedAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "expiresAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "predecessorTokenId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/AsciiIdentifier"
+            }
+          ]
+        },
+        "revokedAtEpochMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "VerifierStoreV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "generation",
+        "verifiers"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "verifiers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 96,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/VerifierRecordV1"
+          }
+        }
+      }
+    },
+    "AuthorityStateHeaderV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stateSchemaVersion",
+        "authorityId",
+        "provider",
+        "port",
+        "laneTerm",
+        "ownerNonce",
+        "timingSchemaVersion",
+        "timingDigest",
+        "verifierGeneration"
+      ],
+      "properties": {
+        "stateSchemaVersion": {
+          "const": 2
+        },
+        "authorityId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "port": {
+          "$ref": "#/$defs/AuthorityPort"
+        },
+        "laneTerm": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "ownerNonce": {
+          "$ref": "#/$defs/AsciiIdentifier"
+        },
+        "timingSchemaVersion": {
+          "const": 1
+        },
+        "timingDigest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "verifierGeneration": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-a"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8791
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-b"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8792
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-c"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8793
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-d"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": {
+                "const": 8794
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ErrorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "error"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "retryAfterMs"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_json",
+                "invalid_request",
+                "unsupported_schema",
+                "unauthenticated",
+                "forbidden_scope",
+                "forbidden_lane",
+                "not_found",
+                "provider_mismatch",
+                "authority_mismatch",
+                "account_binding_mismatch",
+                "stale_revision",
+                "invalid_transition",
+                "operation_conflict",
+                "principal_limit",
+                "lane_limit",
+                "authority_starting",
+                "authority_draining",
+                "authority_degraded",
+                "persistence_unavailable",
+                "verifier_unavailable"
+              ]
+            },
+            "message": {
+              "$ref": "#/$defs/RedactedMessage"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1000,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "Error400BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "invalid_json",
+                    "invalid_request",
+                    "unsupported_schema"
+                  ]
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error401BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "const": "unauthenticated"
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error403BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "forbidden_scope",
+                    "forbidden_lane"
+                  ]
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error404BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "const": "not_found"
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error409BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "provider_mismatch",
+                    "authority_mismatch",
+                    "account_binding_mismatch",
+                    "stale_revision",
+                    "invalid_transition",
+                    "operation_conflict"
+                  ]
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error429BodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "principal_limit",
+                    "lane_limit"
+                  ]
+                },
+                "retryable": {
+                  "const": true
+                },
+                "retryAfterMs": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error503RetryableBodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "authority_starting",
+                    "authority_draining",
+                    "authority_degraded",
+                    "persistence_unavailable",
+                    "verifier_unavailable"
+                  ]
+                },
+                "retryable": {
+                  "const": true
+                },
+                "retryAfterMs": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Error503NonRetryableBodyV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorV1"
+        },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "authority_starting",
+                    "authority_draining",
+                    "authority_degraded",
+                    "persistence_unavailable",
+                    "verifier_unavailable"
+                  ]
+                },
+                "retryable": {
+                  "const": false
+                },
+                "retryAfterMs": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ErrorResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "type": "integer"
+        },
+        "headers": {
+          "type": "object"
+        },
+        "body": {
+          "type": "object"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 400
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error400BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 401
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error401BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 403
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error403BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 404
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error404BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 409
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error409BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 429
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreRetryHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error429BodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 503
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreRetryHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error503RetryableBodyV1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "httpStatus": {
+              "const": 503
+            },
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "$ref": "#/$defs/Error503NonRetryableBodyV1"
+            }
+          }
+        }
+      ]
+    },
+    "TicketResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreEtagHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TicketV1"
+        }
+      }
+    },
+    "TicketCreateResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 201
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreCreateHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TicketV1"
+        }
+      }
+    },
+    "TicketReplayResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreReplayHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TicketV1"
+        }
+      }
+    },
+    "HealthResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TrustedAuthorityHealthV1"
+        }
+      }
+    },
+    "SnapshotResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "$ref": "#/$defs/JsonNoStoreHeadersV1"
+        },
+        "body": {
+          "$ref": "#/$defs/TrustedLaneSnapshotDTOv1"
+        }
+      }
+    }
+  }
+}

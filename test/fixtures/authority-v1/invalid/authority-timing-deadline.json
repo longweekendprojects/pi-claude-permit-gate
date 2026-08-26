@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "offerTtlMs": 30000,
+  "renewIntervalMs": 10000,
+  "renewDeadlineMs": 20000,
+  "terminalRetentionMs": 86400000
+}

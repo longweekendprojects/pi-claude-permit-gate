@@ -1,0 +1,16 @@
+{
+  "httpStatus": 503,
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "schemaVersion": 1,
+    "error": {
+      "code": "verifier_unavailable",
+      "message": "authority unavailable",
+      "retryable": false,
+      "retryAfterMs": null
+    }
+  }
+}

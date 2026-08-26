@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "ticketId": "77777777-7777-4777-8777-777777777777",
+  "requestId": "66666666-6666-4666-8666-666666666666",
+  "provider": "anthropic-a",
+  "state": "uncertain",
+  "revision": 4,
+  "createdAtEpochMs": 1759999999000,
+  "enqueuedAtEpochMs": 1759999999000,
+  "offeredAtEpochMs": 1760000000000,
+  "offerExpiresAtEpochMs": 1760000030000,
+  "terminalAtEpochMs": null,
+  "terminalReason": null,
+  "queueAhead": 0,
+  "lease": {
+    "leaseId": "88888888-8888-4888-8888-888888888888",
+    "generation": 1,
+    "claimedAtEpochMs": 1760000001000,
+    "renewSequence": 1,
+    "renewByEpochMs": 1760000011000,
+    "serverDeadlineEpochMs": 1760000031000
+  }
+}

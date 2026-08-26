@@ -1,0 +1,237 @@
+{
+  "schemaSha256": "3c106ac501624158316605a39dc7427c1e2ad2911202235cd3074c6de132b92f",
+  "referenceNowEpochMs": 1760000000000,
+  "storedAllowanceObservedAtEpochMs": 1759999990000,
+  "valid": [
+    {
+      "file": "valid/allowance-publish-request.json",
+      "definition": "AllowancePublishRequestV1",
+      "semantics": ["allowance-observation-time"],
+      "sha256": "f8bcb5813838cfbe63c46b814ac97ae7ab2ee97e34ee0373cfca54b32a91a5d5"
+    },
+    {
+      "file": "valid/authorization-header.json",
+      "definition": "AuthorizationHeader",
+      "sha256": "a2212a93fb987a2ddb5459eb4aaee5db090cc26184b19bde7c89477253a80444"
+    },
+    {
+      "file": "valid/authority-client-config.json",
+      "definition": "AuthorityClientConfigV1",
+      "sha256": "f50b4469a21218296cabba0a5bb93ccebef130f3dd98e90d7c4c67a7a35b02b7"
+    },
+    {
+      "file": "valid/authority-state-header.json",
+      "definition": "AuthorityStateHeaderV2",
+      "sha256": "73b08993ba583b918a2d7cf2f3d8e6d3ef4f049b416a9da3961b7fba2e1610b1"
+    },
+    {
+      "file": "valid/authority-timing.json",
+      "definition": "AuthorityTimingV1",
+      "semantics": ["authority-timing"],
+      "sha256": "6039e51f884174879c62e286f0e4fa75b4b1d959f36af6352f18459f1aab4e71"
+    },
+    {
+      "file": "valid/error-degraded-response.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "sha256": "92d07fa116ef763ac555228f99e555fd96c9cab0e3ee76d70b47656afdf09a4c"
+    },
+    {
+      "file": "valid/error-rate-limit-response.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "sha256": "012008fc542a39666af5cca86e92fa2361c27ac58ef7f97075b414cb4504ceef"
+    },
+    {
+      "file": "valid/health-response.json",
+      "definition": "HealthResponseFixtureV1",
+      "semantics": ["aggregate-capacity"],
+      "sha256": "2653409d28ec7092349cae0e5b748551f0c2f214a89578ebfcd55736120827b7"
+    },
+    {
+      "file": "valid/snapshot-response.json",
+      "definition": "SnapshotResponseFixtureV1",
+      "semantics": ["aggregate-capacity"],
+      "sha256": "184fd712efe05dbbfedb8036ee81689de1e9c8fa911fc43bef775ba3b843f65c"
+    },
+    {
+      "file": "valid/ticket-active.json",
+      "definition": "TicketV1",
+      "sha256": "73876f164440a16d032a54862c3e0ffcc98b64355406e3617dc3716d8ff13968"
+    },
+    {
+      "file": "valid/ticket-cancelled.json",
+      "definition": "TicketV1",
+      "sha256": "93b9206836ef1f4b7c7e1e7879b2f496d0e7fbf60bcb90c560ea198094e32623"
+    },
+    {
+      "file": "valid/ticket-claim-cancel-request.json",
+      "definition": "TicketClaimOrCancelRequestV1",
+      "sha256": "f40c0521756bd58cfa2e9602ff336406ecafb7493c2de284283a4177fb825512"
+    },
+    {
+      "file": "valid/ticket-complete-request.json",
+      "definition": "TicketCompleteRequestV1",
+      "sha256": "a4c7a360e035daef6b99d33a73bbd5700b540f7e7cf439554bc2c144bedf91a8"
+    },
+    {
+      "file": "valid/ticket-create-request.json",
+      "definition": "TicketCreateRequestV1",
+      "semantics": ["ticket-create-time"],
+      "sha256": "1298fadc58aa16ee4e1c1ca88d7e5e41f8652924f85ce57bd5bac3c58d2fb5a9"
+    },
+    {
+      "file": "valid/ticket-create-response.json",
+      "definition": "TicketCreateResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "sha256": "a3ce5612894c95712c78a938c12fbae82293ddfbbc5ef1ac04c167f87545c4f6"
+    },
+    {
+      "file": "valid/ticket-offered.json",
+      "definition": "TicketV1",
+      "sha256": "f78eff3d24e65fd73dc1e6c186053a0b6afa5a403bc70031d9895950f002d92c"
+    },
+    {
+      "file": "valid/ticket-queued.json",
+      "definition": "TicketV1",
+      "sha256": "b837a2f7521d0cf87a6ec5e81e45315047b8b31ac7a96dbcdcb56d3da16a0a3c"
+    },
+    {
+      "file": "valid/ticket-renew-request.json",
+      "definition": "TicketRenewRequestV1",
+      "sha256": "700f168151379bb14308bcbeba89560b54bebff74f2a168cdcc00d701ec4c9f9"
+    },
+    {
+      "file": "valid/ticket-replay-response.json",
+      "definition": "TicketReplayResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "sha256": "e76acb34ceb3183fd81139c53bc14988a51ae95d80e2822a5fa1400b55f62cdd"
+    },
+    {
+      "file": "valid/ticket-response.json",
+      "definition": "TicketResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "sha256": "daa63373eb6396ea2450af1a377437a61827dfad08b89e432964501eae2076f3"
+    },
+    {
+      "file": "valid/ticket-uncertain.json",
+      "definition": "TicketV1",
+      "sha256": "83a83a7501bca4faea93bb956a27aa108a00e8821988db7f34d14c3dee40e8d4"
+    },
+    {
+      "file": "valid/verifier-store.json",
+      "definition": "VerifierStoreV1",
+      "semantics": ["verifier-store"],
+      "sha256": "27c48f69af42099ea7e434983969f9327a74b6331f3762c1d6eb09f52d04bdbe"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/allowance-future-observation.json",
+      "definition": "AllowancePublishRequestV1",
+      "semantics": ["allowance-observation-time"],
+      "expectedError": "no more than 30000ms in the future",
+      "sha256": "4b1bffecd8bd89529e226cd4318359bf7b29de5b7e0c8530636beaf5ad039280"
+    },
+    {
+      "file": "invalid/allowance-stale-observation.json",
+      "definition": "AllowancePublishRequestV1",
+      "semantics": ["allowance-observation-time"],
+      "expectedError": "more than 30000ms older",
+      "sha256": "ea62bfa04f8508eec683a74ecb2712e2fce592ede42ccdc361a49a52c58a96d8"
+    },
+    {
+      "file": "invalid/allowance-utilization-over-bound.json",
+      "definition": "AllowancePublishRequestV1",
+      "semantics": ["allowance-observation-time"],
+      "expectedError": "at most 1000",
+      "sha256": "8ee28335a8a4e2b0a9fc63d05180cdae4b0e21bfc1fa74c1178091ff24a0800a"
+    },
+    {
+      "file": "invalid/allowance-window-status.json",
+      "definition": "AllowancePublishRequestV1",
+      "semantics": ["allowance-observation-time"],
+      "expectedError": "allowed values",
+      "sha256": "d388c1fb1595386b85480276a5189fd8c7bab9d4588730d75ed7e05c85361407"
+    },
+    {
+      "file": "invalid/authorization-header-short-secret.json",
+      "definition": "AuthorizationHeader",
+      "expectedError": "must match",
+      "sha256": "cd788eab61594ec24a368cb050e0f0cc22a0e2a320eb19a86e1a5791d9442fc0"
+    },
+    {
+      "file": "invalid/authority-timing-deadline.json",
+      "definition": "AuthorityTimingV1",
+      "semantics": ["authority-timing"],
+      "expectedError": "at least three renew intervals",
+      "sha256": "7f0a81ceec9edf9e7f22bbc5e4336ef68e4e2eb63429594d5e6744f994d04be1"
+    },
+    {
+      "file": "invalid/config-origin-with-port.json",
+      "definition": "AuthorityClientConfigV1",
+      "expectedError": "must match",
+      "sha256": "37ea9201e1527fcce37b4c1a58e6db4ed73acdca24799b67e685c0e250b34bd8"
+    },
+    {
+      "file": "invalid/error-retry-after-drift.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "expectedError": "Retry-After seconds multiplied by 1000",
+      "sha256": "b1659089b2d373e9a83bd23ba7f0d22728674cb122f067eb397caf43bf6e0175"
+    },
+    {
+      "file": "invalid/error-unknown-code.json",
+      "definition": "ErrorResponseFixtureV1",
+      "semantics": ["error-response"],
+      "expectedError": "must match exactly one schema",
+      "sha256": "be9b208372696d31595675a2429655ec56fc52aacc60e09884d4687ae9a6dd25"
+    },
+    {
+      "file": "invalid/health-capacity-over-limit.json",
+      "definition": "HealthResponseFixtureV1",
+      "semantics": ["aggregate-capacity"],
+      "expectedError": "active plus offered plus uncertain",
+      "sha256": "76ffdab519e53910f3352c47de914376277fd16e5e082403effb633c45ec8b5b"
+    },
+    {
+      "file": "invalid/health-unknown-field.json",
+      "definition": "HealthResponseFixtureV1",
+      "expectedError": "is not allowed",
+      "sha256": "165f934f95e451fa3b30ea6cdfa7a7ed48aad26d849a87c8ae5229101225512c"
+    },
+    {
+      "file": "invalid/ticket-created-at-fraction.json",
+      "definition": "TicketCreateRequestV1",
+      "semantics": ["ticket-create-time"],
+      "expectedError": "must be integer",
+      "sha256": "cd9d35cbd3e9425f708ddbfac06aec99e290ef6961756fa3278ad3e62e14a16c"
+    },
+    {
+      "file": "invalid/ticket-nullable-key-missing.json",
+      "definition": "TicketV1",
+      "expectedError": "lease is required",
+      "sha256": "87f942a601e4bd452611001ea6fac57a39a61569d3085ad72e51e41cddd6caf7"
+    },
+    {
+      "file": "invalid/ticket-offered-null-time.json",
+      "definition": "TicketV1",
+      "expectedError": "must be integer",
+      "sha256": "d187359c7339bfc425772e0eac34757aae86bcb3ffdb05665a04613ddd2e8e0c"
+    },
+    {
+      "file": "invalid/ticket-response-etag-drift.json",
+      "definition": "TicketResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "expectedError": "ETag must match",
+      "sha256": "0e44fc805124b5b3abba41b598e4c311d8e9e3c48d2bb10d59df5f92fc321c27"
+    },
+    {
+      "file": "invalid/ticket-response-extra-header.json",
+      "definition": "TicketResponseFixtureV1",
+      "semantics": ["ticket-response"],
+      "expectedError": "is not allowed",
+      "sha256": "d87a707ba6d69609d5375905a93138db96b7f844a10a0cb2c324cf6a31916ebe"
+    }
+  ]
+}
