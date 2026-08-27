@@ -9,6 +9,11 @@
 //
 // The endpoint rate limits aggressively without a claude-code User-Agent, so one is always sent.
 //
+// Measured budget per account: five requests, then HTTP 429 with `retry-after: 300`. That is a
+// sustained rate of one per 60 seconds, so a flat 60-second poll sits exactly at the refill rate
+// and trips intermittently. Each trip costs five minutes of staleness, which is worse than simply
+// polling a little slower, so the job runs every 90 seconds and honours `retry-after` per lane.
+//
 // Each lane's OAuth access token is read from Pi's auth store and never refreshed here: refresh
 // belongs to Pi. A lane with an expired token is skipped and retried on the next run.
 //
@@ -27,6 +32,7 @@ const USER_AGENT = "claude-code/2.1.80";
 const AUTH_FILE = path.join(os.homedir(), ".pi/agent/auth.json");
 const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client.json");
 const SEQUENCE_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-publisher-sequence.json");
+const BACKOFF_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-prober-backoff.json");
 const PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
 const PROBER_KEYCHAIN_ACCOUNT = "prober";
 
@@ -38,6 +44,12 @@ const bearer = execFileSync("/usr/bin/security", ["find-generic-password", "-s",
 const readSequences = () => { try { return JSON.parse(fs.readFileSync(SEQUENCE_FILE, "utf8")); } catch { return {}; } };
 const sequences = readSequences();
 const writeSequences = () => fs.writeFileSync(SEQUENCE_FILE, JSON.stringify(sequences) + "\n", { mode: 0o600 });
+
+// A rate-limited lane stays skipped until its retry-after elapses, so a trip costs one lane rather
+// than pushing the whole account deeper into the limit.
+const readBackoff = () => { try { return JSON.parse(fs.readFileSync(BACKOFF_FILE, "utf8")); } catch { return {}; } };
+const backoff = readBackoff();
+const writeBackoff = () => fs.writeFileSync(BACKOFF_FILE, JSON.stringify(backoff) + "\n", { mode: 0o600 });
 
 // Anthropic reports utilization as a percentage; the wire format keeps that scale.
 function windowFrom(raw) {
@@ -55,9 +67,18 @@ for (const provider of PROVIDERS) {
   const token = auth[provider]?.access;
   const expires = auth[provider]?.expires;
   if (!token || (typeof expires === "number" && expires <= Date.now())) { results.push(`${provider}: skipped, token expired`); continue; }
+  if (typeof backoff[provider] === "number" && backoff[provider] > Date.now()) { results.push(`${provider}: backing off ${Math.ceil((backoff[provider] - Date.now()) / 1000)}s`); continue; }
   try {
     const response = await fetch(USAGE_URL, { headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "user-agent": USER_AGENT } });
+    if (response.status === 429) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      backoff[provider] = Date.now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 300) * 1000;
+      writeBackoff();
+      results.push(`${provider}: rate limited, backing off ${Math.ceil((backoff[provider] - Date.now()) / 1000)}s`);
+      continue;
+    }
     if (!response.ok) { results.push(`${provider}: usage HTTP ${response.status}`); continue; }
+    if (backoff[provider]) { delete backoff[provider]; writeBackoff(); }
     const usage = await response.json();
     const fiveHour = windowFrom(usage.five_hour);
     const sevenDay = windowFrom(usage.seven_day);

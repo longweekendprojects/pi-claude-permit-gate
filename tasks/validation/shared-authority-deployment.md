@@ -301,7 +301,9 @@ Allowance previously depended on real traffic: `anthropic-ratelimit-unified-5h/7
 
 `GET https://api.anthropic.com/api/oauth/usage` returns the same five-hour and seven-day windows with no inference and no token spend. It is the endpoint Claude Code itself uses. Zero-spend alternatives were tested and rejected: `GET /v1/models`, `POST /v1/messages/count_tokens`, and an intentionally invalid `POST /v1/messages` all returned 200/429 without any `anthropic-ratelimit-unified-*` header. The endpoint rate limits aggressively unless a `claude-code/*` User-Agent is sent, so the prober always sends one.
 
-`scripts/allowance-prober.mjs` polls all four lanes and publishes sanitized observations to the authority through `POST /v1/allowance`. It runs from `com.longweekendprojects.claude-allowance-prober` every 300 seconds (template in `deploy/`). Only Ruminaider needs it: both Macs read allowance from the authority, so one publisher keeps both menus fresh.
+`scripts/allowance-prober.mjs` polls all four lanes and publishes sanitized observations to the authority through `POST /v1/allowance`. It runs from `com.longweekendprojects.claude-allowance-prober` every 90 seconds (template in `deploy/`).
+
+Measured rate limit, 2-second interval against one account: requests 1-5 returned 200, request 6 onward returned 429 with `retry-after` counting down from 300. The budget is five requests per five minutes per account, a sustained rate of one per 60 seconds. A flat 60-second poll therefore sits exactly on the refill rate and trips intermittently, and each trip costs five minutes of staleness, so it is less fresh than polling slower. At 90 seconds each lane consumes about 3.3 of its 5 requests per window, leaving room for a retry or a manual run. The prober records `retry-after` per lane and skips only that lane until it elapses, so one rate-limited account cannot stall the other three. Only Ruminaider needs it: both Macs read allowance from the authority, so one publisher keeps both menus fresh.
 
 Two design points that cost a first attempt:
 
