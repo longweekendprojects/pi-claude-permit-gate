@@ -4,7 +4,7 @@ set -euo pipefail
 readonly PROVIDERS=(anthropic-a anthropic-b anthropic-c anthropic-d)
 readonly PORTS=(8791 8792 8793 8794)
 readonly LABEL_PREFIX="com.longweekendprojects.claude-permit-lane"
-readonly UUID_PATTERN='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+readonly UUID_PATTERN='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
 usage() {
   cat <<'USAGE'
