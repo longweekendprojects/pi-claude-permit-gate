@@ -1,12 +1,12 @@
 {
   "hosts": {
     "ruminaider": "100.103.181.53",
-    "operator-supplied-peer": "OPERATOR_SUPPLIED_PEER_TAILNET_IP"
+    "albert-aviary-mac": "100.100.166.117"
   },
   "acls": [
     {
       "action": "accept",
-      "src": ["ruminaider", "operator-supplied-peer"],
+      "src": ["ruminaider", "albert-aviary-mac"],
       "dst": ["ruminaider:8791-8794"]
     }
   ]

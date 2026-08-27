@@ -101,12 +101,56 @@ The peer runs the same check from a scratch clone of the `v0.3.0` tag, because i
 | --- | --- | --- | --- |
 | anthropic-a | `697832ea…6ea9e1` | `697832ea…6ea9e1` | Match, cleared for account binding |
 | anthropic-b | `3aa46977…eb7ea5` | `3aa46977…eb7ea5` | Match, cleared for account binding |
-| anthropic-c | `6a3fa6ae…95edba` | not measured, token expired | Blocked, reauthenticate on peer |
-| anthropic-d | `cfb10e66…695345` | not measured, token expired | Blocked, reauthenticate on peer |
+| anthropic-c | `6a3fa6ae…95edba` | `6a3fa6ae…95edba` | Match, cleared for account binding |
+| anthropic-d | `cfb10e66…695345` | `cfb10e66…695345` | Match, cleared for account binding |
 
-Lanes A and B are cryptographically the same account on both machines, using both the account and organization UUIDs rather than provider aliases. Lanes C and D reported `valid=NO` on the peer and their fingerprint runs failed at the profile request, which is an expired-token failure and not evidence of a different account. Treat them as unknown until the peer tokens are refreshed and the digests are taken again.
+All four lanes are cryptographically the same accounts on both machines, compared over both the account and organization UUIDs rather than provider aliases. Lanes C and D initially reported `valid=NO` on the peer and failed at the profile request, which is an expired-token failure rather than evidence of a different account; the operator reauthenticated both and the digests then matched. Lane C on Ruminaider needed the same treatment earlier.
 
 The peer's shallow clone emitted `warning: refs/tags/v0.3.0 1d3dd00460e65a3baa692f3dd6f55261e563882c is not a commit!`. This is cosmetic. `v0.3.0` is an annotated tag object at `1d3dd004` that peels to commit `b2e9dcc0`, `git ls-remote --tags origin v0.3.0` returns the same object on the remote, and the peer checked out `b2e9dcc0`. Git prints this warning when a shallow clone fetches an annotated tag whose object is not itself a commit.
+
+### Lane identifiers, 11:45 EDT
+
+Generated with `crypto.randomUUID()` only after all four fingerprints matched. These are random binding identifiers, not secrets, and they carry no account data.
+
+| Purpose | UUID |
+| --- | --- |
+| Authority ID | `ce298942-e550-44f2-8566-b45ea813d01c` |
+| Account binding, lane A | `6da67cea-ef88-4093-94b8-54b39c1b1ea2` |
+| Account binding, lane B | `49c0e5bf-478c-4752-ab23-89f7e8b64626` |
+| Account binding, lane C | `417c2d6d-edce-4811-bcb2-5567e6fbb683` |
+| Account binding, lane D | `5f612820-7146-4757-abd0-3cbab41732ee` |
+
+### Production timing, chosen 11:47 EDT
+
+| Setting | Value | Basis |
+| --- | --- | --- |
+| Offer TTL | 15000 ms | Transport p99 of 79 ms leaves roughly 190x headroom, so an offer expires only when a client is genuinely gone rather than merely slow. |
+| Renew interval | 30000 ms | Two renewals fit inside the deadline, so one lost renewal over a DERP hiccup does not drop a live lease. |
+| Renew deadline | 120000 ms | Reclaims capacity from a dead client within two minutes while tolerating transient relay loss. |
+| Terminal retention | 86400000 ms | Meets the protocol's 24-hour minimum for terminal records and the create retry horizon. |
+
+Provider-duration p99 remains unmeasured and the live daemons cannot supply it: `/health` exposes only counters (`granted`, `released`, `expired`, `throttles`, `peakActive`, `peakQueued`, `peakOldestWaitMs`) with no per-permit duration histogram. The values above are therefore bounded by transport latency and the protocol minimum rather than by observed provider durations. Revisit the renew deadline if live operation shows leases being reclaimed from healthy clients.
+
+Lane counters at 11:46 EDT for reference: 8791 granted 530 with no throttles; 8792 granted 957, 113 throttles, peak queue 6, peak wait 886 s; 8793 granted 3671, 100 throttles, peak queue 12, peak wait 1402 s; 8794 granted 493, 1 throttle. Lanes B and C carry the queueing pressure that shared capacity is meant to relieve.
+
+### Installer dry run, 11:48 EDT
+
+```sh
+scripts/install-authority.sh --dry-run --home /tmp/authdry/home --output /tmp/authdry/out \
+  --authority-id ce298942-… --account-binding-a 6da67cea-… --account-binding-b 49c0e5bf-… \
+  --account-binding-c 417c2d6d-… --account-binding-d 5f612820-… \
+  --offer-ttl-ms 15000 --renew-interval-ms 30000 --renew-deadline-ms 120000 \
+  --terminal-retention-ms 86400000 --h1-release v0.2.0 \
+  --h1-installed-build 7f3ce003252d272b6ce1f51033b4255c2bb4379f --h1-verified
+```
+
+Result: `authority artifacts are valid: four lintable, credential-free, immutable launchd definitions`. A first attempt failed with `H1 installed build does not match the immutable release` because `--h1-installed-build` requires the full 40-character commit of the `v0.2.0` tag, not the short form.
+
+The four staged plists contain no credential material. Each carries only lane environment values (`CLAUDE_PERMIT_GATE_PORT`, provider, authority ID, account binding, the four timing values, `CLAUDE_PERMIT_GATE_DAEMON_MODE=authority`, state directory, and build ID), `RunAtLoad`, `KeepAlive` on unsuccessful exit, and an absolute node path with the release directory as the working directory. Bearer tokens reach the daemon only through Keychain lookup at runtime.
+
+### Tailnet grant
+
+`deploy/tailscale/permit-authority-grant.hujson.example` no longer carries the unresolved peer placeholder. It now names `albert-aviary-mac` at 100.100.166.117 alongside `ruminaider` at 100.103.181.53, granting only those two sources access to `ruminaider:8791-8794`. Applying it still requires auditing the existing Tailnet policy for broader rules that would already match these ports.
 
 ## Still unmeasured
 
