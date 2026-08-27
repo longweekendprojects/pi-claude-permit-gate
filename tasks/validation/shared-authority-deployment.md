@@ -244,6 +244,14 @@ With both Macs restarted into authority-client mode, driving traffic on both sho
 
 Restart every Pi process on both Macs so it loads authority-client mode. Interactive sessions must be restarted by their operator. After restart, `local` mode and the old per-Mac daemons are gone, and any temporary `CLAUDE_PERMIT_GATE_DISABLE` can be removed. Peer local daemons on 8790-8794 stop being respawned once peer Pi runs in authority-client mode; stop any leftovers after the peer restart.
 
+### Client hang root cause, 13:10 EDT
+
+Restarted clients waited for a permit forever even with `CLAUDE_PERMIT_GATE_MODE=authority-client` confirmed in the launching shell. The cause was not the environment and not the daemon: **both Pi installations were still pinned to `v0.2.0`**, which contains no authority-client code at all (`grep -c authority-client index.ts` returned 0 on the installed checkout at `7f3ce00`). That build ignores the mode variable, always takes the local path, and tries to spawn a local daemon on 8791, which the authority now owns. The result is the local-mode message `remains unavailable after 600 attempts: daemon launch pending`, which only the local path can emit.
+
+Publication created the `v0.3.0` tag but never repinned the installations, so every restart kept loading v0.2.0. Both machines are now pinned to `git:github.com/longweekendprojects/pi-claude-permit-gate@v0.3.0` and their checkouts are at `b2e9dcc` with authority-client present. `settings.json` backups saved as `settings.json.bak-2026-08-27` on both.
+
+Diagnostic lesson: verify the installed build carries the feature before diagnosing configuration. Environment, config file, credentials, Serve route, and daemon health were all correct and independently proven while the running extension simply could not use them.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
