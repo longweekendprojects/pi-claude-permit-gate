@@ -4,7 +4,7 @@ set -euo pipefail
 readonly PROVIDERS=(anthropic-a anthropic-b anthropic-c anthropic-d)
 readonly PORTS=(8791 8792 8793 8794)
 readonly LABEL_PREFIX="com.longweekendprojects.claude-permit-lane"
-readonly UUID_PATTERN='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+readonly UUID_PATTERN='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
 usage() {
   cat <<'USAGE'
@@ -15,9 +15,8 @@ Usage:
     --offer-ttl-ms <ms> --renew-interval-ms <ms> --renew-deadline-ms <ms> \
     --terminal-retention-ms <ms> --h1-release v0.2.0 --h1-installed-build <commit> --h1-verified
 
-The non-dry-run install path uses the same checked inputs, stages an immutable release from the
-current clean commit, then loads four per-user LaunchAgents. --rollback-lane and --uninstall
-preserve authority state, verifier, logs, and staged releases.
+A dry run requires explicit --home and --output. It writes only below --output. Live installation
+stages an immutable commit release and atomically applies four user LaunchAgents with recovery.
 USAGE
 }
 
@@ -27,11 +26,13 @@ absolute_path() { case "$1" in /*) ;; *) fail "path must be absolute" ;; esac; }
 valid_uuid() { [[ "$1" =~ $UUID_PATTERN ]]; }
 valid_integer() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -le 9007199254740991 ]; }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
-xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
+label_for() { printf '%s.%s' "$LABEL_PREFIX" "$1"; }
 
 DRY_RUN=0
 HOME_DIRECTORY="${HOME:?HOME is required}"
+HOME_EXPLICIT=0
 OUTPUT_DIRECTORY=""
+OUTPUT_EXPLICIT=0
 RELEASE_ROOT=""
 AUTHORITY_ID=""
 ACCOUNT_BINDINGS=("" "" "" "")
@@ -51,8 +52,8 @@ while [ "$#" -gt 0 ]; do
     --home|--output|--release-root|--authority-id|--offer-ttl-ms|--renew-interval-ms|--renew-deadline-ms|--terminal-retention-ms|--h1-release|--h1-installed-build|--rollback-lane)
       require_value "$@"; option="$1"; value="$2"; shift 2
       case "$option" in
-        --home) HOME_DIRECTORY="$value" ;;
-        --output) OUTPUT_DIRECTORY="$value" ;;
+        --home) HOME_DIRECTORY="$value"; HOME_EXPLICIT=1 ;;
+        --output) OUTPUT_DIRECTORY="$value"; OUTPUT_EXPLICIT=1 ;;
         --release-root) RELEASE_ROOT="$value" ;;
         --authority-id) AUTHORITY_ID="$value" ;;
         --offer-ttl-ms) OFFER_TTL_MS="$value" ;;
@@ -81,8 +82,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 absolute_path "$HOME_DIRECTORY"
-if [ -n "$OUTPUT_DIRECTORY" ]; then absolute_path "$OUTPUT_DIRECTORY"; fi
+if [ "$OUTPUT_EXPLICIT" -eq 1 ]; then absolute_path "$OUTPUT_DIRECTORY"; fi
 if [ -n "$RELEASE_ROOT" ]; then absolute_path "$RELEASE_ROOT"; fi
+if [ "$DRY_RUN" -eq 1 ] && { [ "$HOME_EXPLICIT" -ne 1 ] || [ "$OUTPUT_EXPLICIT" -ne 1 ]; }; then fail "dry-run requires explicit --home and --output"; fi
 if [ "$UNINSTALL" -eq 1 ] && { [ "$DRY_RUN" -eq 1 ] || [ -n "$ROLLBACK_LANE" ]; }; then fail "uninstall cannot be combined with dry-run or rollback"; fi
 if [ -n "$ROLLBACK_LANE" ] && { [ "$DRY_RUN" -eq 1 ] || [ "$UNINSTALL" -eq 1 ]; }; then fail "rollback cannot be combined with dry-run or uninstall"; fi
 
@@ -93,33 +95,41 @@ LOG_DIRECTORY="$HOME_DIRECTORY/Library/Logs/Claude Permit Authority/lanes"
 DEPLOYMENT_RECORD="$AUTHORITY_DIRECTORY/deployment-v1.json"
 [ -n "$RELEASE_ROOT" ] || RELEASE_ROOT="$AUTHORITY_DIRECTORY/releases"
 
+launchctl_bin() {
+  if [ "${CLAUDE_PERMIT_GATE_TEST_MODE:-}" = "1" ] && [ -n "${CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL:-}" ]; then
+    printf '%s' "$CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL"
+  else
+    [ -z "${CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL:-}" ] || fail "test launchctl override requires test mode"
+    printf '%s' /bin/launchctl
+  fi
+}
+launchctl_call() { "$(launchctl_bin)" "$@"; }
+
 if [ "$UNINSTALL" -eq 1 ]; then
-  [ "$DRY_RUN" -eq 0 ] || fail "uninstall dry-run is not supported"
-  for index in "${!PROVIDERS[@]}"; do
-    label="$LABEL_PREFIX.${PROVIDERS[$index]}"
-    /bin/launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  for provider in "${PROVIDERS[@]}"; do
+    label="$(label_for "$provider")"
+    launchctl_call bootout "gui/$(id -u)/$label" 2>/dev/null || true
     rm -f "$AGENT_DIRECTORY/$label.plist"
   done
   rm -f "$DEPLOYMENT_RECORD"
-  printf '%s\n' 'authority jobs removed; state, verifiers, logs, and releases were preserved'
+  printf '%s\n' 'authority jobs removed; state, verifiers, logs, releases, and rollback artifacts were preserved'
   exit 0
 fi
 
 if [ -n "$ROLLBACK_LANE" ]; then
   case " ${PROVIDERS[*]} " in *" $ROLLBACK_LANE "*) ;; *) fail "rollback lane is invalid" ;; esac
-  label="$LABEL_PREFIX.$ROLLBACK_LANE"
+  label="$(label_for "$ROLLBACK_LANE")"
   current="$AGENT_DIRECTORY/$label.plist"
   rollback="$AGENT_DIRECTORY/$label.plist.rollback"
   [ -f "$rollback" ] || fail "no rollback artifact exists for lane"
   /usr/bin/plutil -lint "$rollback" >/dev/null || fail "rollback artifact is invalid"
-  /bin/launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  launchctl_call bootout "gui/$(id -u)/$label" 2>/dev/null || true
   cp -p "$rollback" "$current"
-  /bin/launchctl bootstrap "gui/$(id -u)" "$current"
+  launchctl_call bootstrap "gui/$(id -u)" "$current"
   printf '%s\n' "rolled back $ROLLBACK_LANE without changing authority state"
   exit 0
 fi
 
-[ "$DRY_RUN" -eq 0 ] || [ -n "$OUTPUT_DIRECTORY" ] || fail "dry-run requires --output"
 valid_uuid "$AUTHORITY_ID" || fail "authority ID is invalid"
 for binding in "${ACCOUNT_BINDINGS[@]}"; do valid_uuid "$binding" || fail "account binding ID is invalid"; done
 for value in "$OFFER_TTL_MS" "$RENEW_INTERVAL_MS" "$RENEW_DEADLINE_MS" "$TERMINAL_RETENTION_MS"; do valid_integer "$value" || fail "timing must be an integer millisecond value"; done
@@ -141,83 +151,130 @@ H1_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse --verify "refs/tags/$H1_RELEASE^{co
 git -C "$SOURCE_ROOT" merge-base --is-ancestor "$H1_COMMIT" "$COMMIT" || fail "H1 release is not an ancestor of this build"
 node "$SOURCE_ROOT/scripts/validate-authority-contract.mjs" >/dev/null || fail "authority schema validation failed"
 SCHEMA_SHA256="$(sha256_file "$SOURCE_ROOT/protocol/authority-v1.schema.json")"
-NODE_PATH="$(command -v node)"
-absolute_path "$NODE_PATH"
-BUILD_ID="pi-claude-permit-gate-$PACKAGE_VERSION+git.${COMMIT:0:12}"
+NODE_PATH="$(command -v node)"; absolute_path "$NODE_PATH"
+BUILD_ID="pi-claude-permit-gate-${PACKAGE_VERSION}+git.${COMMIT:0:12}"
 
-if [ "$DRY_RUN" -eq 1 ]; then
-  ARTIFACT_ROOT="$OUTPUT_DIRECTORY"
-  STAGED_RELEASE="$ARTIFACT_ROOT/releases/$COMMIT"
-else
-  ARTIFACT_ROOT="$AUTHORITY_DIRECTORY/staging/$COMMIT"
-  STAGED_RELEASE="$RELEASE_ROOT/$COMMIT"
-fi
-PLIST_DIRECTORY="$ARTIFACT_ROOT/LaunchAgents"
-[ ! -e "$STAGED_RELEASE" ] || fail "immutable release already exists"
-umask 077
-mkdir -p "$STAGED_RELEASE" "$PLIST_DIRECTORY" "$STATE_DIRECTORY" "$LOG_DIRECTORY"
-git -C "$SOURCE_ROOT" archive --format=tar "$COMMIT" | tar -xf - -C "$STAGED_RELEASE"
-[ "$(sha256_file "$STAGED_RELEASE/protocol/authority-v1.schema.json")" = "$SCHEMA_SHA256" ] || fail "staged schema hash does not match"
-chmod -R a-w "$STAGED_RELEASE"
+safe_output_root() {
+  local parent base
+  parent="$(dirname "$OUTPUT_DIRECTORY")"; base="$(basename "$OUTPUT_DIRECTORY")"
+  [ -d "$parent" ] || fail "output parent does not exist"
+  [ ! -L "$parent" ] || fail "output parent must not be a symlink"
+  OUTPUT_DIRECTORY="$(cd "$parent" && pwd -P)/$base"
+  [ ! -L "$OUTPUT_DIRECTORY" ] || fail "output must not be a symlink"
+  if [ -e "$OUTPUT_DIRECTORY" ] && [ ! -d "$OUTPUT_DIRECTORY" ]; then fail "output is not a directory"; fi
+}
 
-for index in "${!PROVIDERS[@]}"; do
-  provider="${PROVIDERS[$index]}"
-  port="${PORTS[$index]}"
-  label="$LABEL_PREFIX.$provider"
-  plist="$PLIST_DIRECTORY/$label.plist"
-  release_xml="$(xml_escape "$STAGED_RELEASE")"
-  sed \
-    -e "s|__LABEL__|$(xml_escape "$label")|g" \
-    -e "s|__NODE_PATH__|$(xml_escape "$NODE_PATH")|g" \
-    -e "s|__RELEASE_PATH__|$release_xml|g" \
-    -e "s|__PROVIDER__|$provider|g" \
-    -e "s|__PORT__|$port|g" \
-    -e "s|__AUTHORITY_ID__|$AUTHORITY_ID|g" \
-    -e "s|__ACCOUNT_BINDING_ID__|${ACCOUNT_BINDINGS[$index]}|g" \
-    -e "s|__STATE_DIRECTORY__|$(xml_escape "$STATE_DIRECTORY")|g" \
-    -e "s|__BUILD_ID__|$BUILD_ID|g" \
-    -e "s|__OFFER_TTL_MS__|$OFFER_TTL_MS|g" \
-    -e "s|__RENEW_INTERVAL_MS__|$RENEW_INTERVAL_MS|g" \
-    -e "s|__RENEW_DEADLINE_MS__|$RENEW_DEADLINE_MS|g" \
-    -e "s|__TERMINAL_RETENTION_MS__|$TERMINAL_RETENTION_MS|g" \
-    -e "s|__OUT_LOG_PATH__|$(xml_escape "$LOG_DIRECTORY/$provider.out.log")|g" \
-    -e "s|__ERR_LOG_PATH__|$(xml_escape "$LOG_DIRECTORY/$provider.err.log")|g" \
-    "$SOURCE_ROOT/deploy/com.longweekendprojects.claude-permit-lane.plist.in" > "$plist"
-  /usr/bin/plutil -lint "$plist" >/dev/null || fail "generated plist is invalid"
-done
+generate_plist() {
+  node --input-type=module - "$@" <<'NODE'
+import fs from "node:fs";
+const [file, label, nodePath, releasePath, provider, port, authorityId, bindingId, stateDirectory, buildId, offerTtl, renewInterval, renewDeadline, terminalRetention, outLog, errLog] = process.argv.slice(2);
+const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+const string = (value) => `    <string>${escape(value)}</string>`;
+const environment = [["CLAUDE_PERMIT_GATE_DAEMON_MODE", "authority"], ["CLAUDE_PERMIT_GATE_PROVIDER", provider], ["CLAUDE_PERMIT_GATE_PORT", port], ["CLAUDE_PERMIT_GATE_AUTHORITY_ID", authorityId], ["CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID", bindingId], ["CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR", stateDirectory], ["CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP", "1"], ["CLAUDE_PERMIT_GATE_BUILD_ID", buildId], ["CLAUDE_PERMIT_GATE_OFFER_TTL_MS", offerTtl], ["CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS", renewInterval], ["CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS", renewDeadline], ["CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS", terminalRetention]];
+const xml = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">", "<plist version=\"1.0\">", "<dict>", "  <key>Label</key>", `  <string>${escape(label)}</string>`, "  <key>ProgramArguments</key>", "  <array>", string(nodePath), string(`${releasePath}/permit-daemon.mjs`), "  </array>", "  <key>WorkingDirectory</key>", `  <string>${escape(releasePath)}</string>`, "  <key>EnvironmentVariables</key>", "  <dict>", ...environment.flatMap(([key, value]) => [`    <key>${key}</key>`, string(value)]), "  </dict>", "  <key>RunAtLoad</key>", "  <true/>", "  <key>KeepAlive</key>", "  <dict>", "    <key>SuccessfulExit</key>", "    <false/>", "  </dict>", "  <key>StandardOutPath</key>", `  <string>${escape(outLog)}</string>`, "  <key>StandardErrorPath</key>", `  <string>${escape(errLog)}</string>`, "</dict>", "</plist>", ""];
+fs.writeFileSync(file, xml.join("\n"), { mode: 0o600, flag: "wx" });
+NODE
+}
 
-MANIFEST="$ARTIFACT_ROOT/authority-artifacts-v1.json"
-node --input-type=module - "$MANIFEST" "$COMMIT" "$BUILD_ID" "$PACKAGE_VERSION" "$SCHEMA_SHA256" "$H1_RELEASE" "$H1_COMMIT" "$STAGED_RELEASE" "$PLIST_DIRECTORY" "$STATE_DIRECTORY" "$LOG_DIRECTORY" "${PROVIDERS[@]}" <<'NODE'
+write_manifest() {
+  node --input-type=module - "$@" <<'NODE'
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 const [manifestPath, commit, buildId, packageVersion, schemaSha256, h1Release, h1Commit, releasePath, plistDirectory, stateDirectory, logDirectory, ...providers] = process.argv.slice(2);
 const ports = [8791, 8792, 8793, 8794];
-const labelPrefix = "com.longweekendprojects.claude-permit-lane";
-const lanes = providers.map((provider, index) => {
-  const label = `${labelPrefix}.${provider}`;
-  const plistPath = path.join(plistDirectory, `${label}.plist`);
-  return { provider, port: ports[index], label, plistPath, plistSha256: "", statePath: path.join(stateDirectory, `lane-${ports[index]}.json`), outLogPath: path.join(logDirectory, `${provider}.out.log`), errLogPath: path.join(logDirectory, `${provider}.err.log`) };
-});
-for (const lane of lanes) lane.plistSha256 = (await import("node:crypto")).createHash("sha256").update(fs.readFileSync(lane.plistPath)).digest("hex");
-fs.writeFileSync(manifestPath, `${JSON.stringify({ schemaVersion: 1, packageName: "pi-claude-permit-gate", packageVersion, commit, buildId, schemaSha256, h1: { release: h1Release, commit: h1Commit, installedBuild: h1Commit, operatorVerified: true }, releasePath, lanes }, null, 2)}\n`, { mode: 0o600 });
+const prefix = "com.longweekendprojects.claude-permit-lane";
+const lanes = providers.map((provider, index) => { const label = `${prefix}.${provider}`; const plistPath = path.join(plistDirectory, `${label}.plist`); return { provider, port: ports[index], label, plistPath, plistSha256: crypto.createHash("sha256").update(fs.readFileSync(plistPath)).digest("hex"), statePath: path.join(stateDirectory, `lane-${ports[index]}.json`), outLogPath: path.join(logDirectory, `${provider}.out.log`), errLogPath: path.join(logDirectory, `${provider}.err.log`) }; });
+fs.writeFileSync(manifestPath, `${JSON.stringify({ schemaVersion: 1, packageName: "pi-claude-permit-gate", packageVersion, commit, buildId, schemaSha256, h1: { release: h1Release, commit: h1Commit, installedBuild: h1Commit, operatorVerified: true }, releasePath, lanes }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
 NODE
+}
 
-"$SOURCE_ROOT/scripts/validate-authority.sh" --artifacts-only --output "$ARTIFACT_ROOT" --source-root "$SOURCE_ROOT"
+build_artifacts() {
+  local root="$1" release_path="$2" release_tree="$3" plist_directory="$root/LaunchAgents" manifest="$root/authority-artifacts-v1.json"
+  mkdir -p "$release_tree" "$plist_directory"
+  git -C "$SOURCE_ROOT" archive --format=tar "$COMMIT" | tar -xf - -C "$release_tree"
+  [ "$(sha256_file "$release_tree/protocol/authority-v1.schema.json")" = "$SCHEMA_SHA256" ] || fail "staged schema hash does not match"
+  chmod -R a-w "$release_tree"
+  for index in "${!PROVIDERS[@]}"; do
+    local provider="${PROVIDERS[$index]}" port="${PORTS[$index]}" label plist
+    label="$(label_for "$provider")"; plist="$plist_directory/$label.plist"
+    generate_plist "$plist" "$label" "$NODE_PATH" "$release_path" "$provider" "$port" "$AUTHORITY_ID" "${ACCOUNT_BINDINGS[$index]}" "$STATE_DIRECTORY" "$BUILD_ID" "$OFFER_TTL_MS" "$RENEW_INTERVAL_MS" "$RENEW_DEADLINE_MS" "$TERMINAL_RETENTION_MS" "$LOG_DIRECTORY/$provider.out.log" "$LOG_DIRECTORY/$provider.err.log"
+    /usr/bin/plutil -lint "$plist" >/dev/null || fail "generated plist is invalid"
+  done
+  write_manifest "$manifest" "$COMMIT" "$BUILD_ID" "$PACKAGE_VERSION" "$SCHEMA_SHA256" "$H1_RELEASE" "$H1_COMMIT" "$release_path" "$plist_directory" "$STATE_DIRECTORY" "$LOG_DIRECTORY" "${PROVIDERS[@]}"
+  "$SOURCE_ROOT/scripts/validate-authority.sh" --artifacts-only --output "$root" --source-root "$SOURCE_ROOT" --release-tree "$release_tree"
+}
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  printf '%s\n' "dry-run staged four authority LaunchAgents at $ARTIFACT_ROOT"
+  safe_output_root
+  mkdir -p "$OUTPUT_DIRECTORY"
+  FINAL_RELEASE="$OUTPUT_DIRECTORY/releases/$COMMIT"; FINAL_PLISTS="$OUTPUT_DIRECTORY/LaunchAgents"; FINAL_MANIFEST="$OUTPUT_DIRECTORY/authority-artifacts-v1.json"
+  for destination in "$FINAL_RELEASE" "$FINAL_PLISTS" "$FINAL_MANIFEST"; do [ ! -e "$destination" ] || fail "artifact destination already exists"; done
+  STAGE_DIRECTORY="$(mktemp -d "$OUTPUT_DIRECTORY/.authority-stage.XXXXXX")"
+  published_releases=0; published_plists=0; published_manifest=0; succeeded=0
+  cleanup_dry() { status=$?; if [ "$succeeded" -ne 1 ]; then [ "$published_manifest" -eq 0 ] || rm -f "$FINAL_MANIFEST"; [ "$published_plists" -eq 0 ] || rm -rf "$FINAL_PLISTS"; [ "$published_releases" -eq 0 ] || rm -rf "$OUTPUT_DIRECTORY/releases"; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
+  trap cleanup_dry EXIT
+  build_artifacts "$STAGE_DIRECTORY" "$FINAL_RELEASE" "$STAGE_DIRECTORY/release"
+  mkdir -p "$OUTPUT_DIRECTORY/releases"
+  mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; published_releases=1
+  mv "$STAGE_DIRECTORY/LaunchAgents" "$FINAL_PLISTS"; published_plists=1
+  mv "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$FINAL_MANIFEST"; published_manifest=1
+  succeeded=1
+  printf '%s\n' "dry-run staged four authority LaunchAgents at $OUTPUT_DIRECTORY"
   exit 0
 fi
 
-mkdir -p "$AGENT_DIRECTORY" "$RELEASE_ROOT"
-[ -d "$RELEASE_ROOT/$COMMIT" ] || fail "immutable release staging is unavailable"
-for provider in "${PROVIDERS[@]}"; do
-  label="$LABEL_PREFIX.$provider"
-  source_plist="$PLIST_DIRECTORY/$label.plist"
-  destination_plist="$AGENT_DIRECTORY/$label.plist"
-  if [ -f "$destination_plist" ]; then cp -p "$destination_plist" "$destination_plist.rollback"; /bin/launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true; fi
-  cp -p "$source_plist" "$destination_plist"
-  /bin/launchctl bootstrap "gui/$(id -u)" "$destination_plist"
+# Live work is preflighted before any job mutation. It is intentionally not exercised by this task.
+STAGE_PARENT="$AUTHORITY_DIRECTORY/staging"
+mkdir -p "$STAGE_PARENT"
+STAGE_DIRECTORY="$(mktemp -d "$STAGE_PARENT/.authority-stage.XXXXXX")"
+FINAL_RELEASE="$RELEASE_ROOT/$COMMIT"
+RELEASE_WAS_PRESENT=0
+if [ -e "$FINAL_RELEASE" ]; then
+  [ -d "$FINAL_RELEASE" ] && [ ! -L "$FINAL_RELEASE" ] || fail "immutable release collision is invalid"
+  "$SOURCE_ROOT/scripts/validate-authority.sh" --release-only --source-root "$SOURCE_ROOT" --release-tree "$FINAL_RELEASE" --commit "$COMMIT"
+  RELEASE_WAS_PRESENT=1
+fi
+build_artifacts "$STAGE_DIRECTORY" "$FINAL_RELEASE" "$STAGE_DIRECTORY/release"
+
+prior_present=(); prior_loaded=(); prior_rollback_present=()
+for index in "${!PROVIDERS[@]}"; do
+  provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; current="$AGENT_DIRECTORY/$label.plist"; rollback="$current.rollback"
+  if [ -e "$current" ]; then [ -f "$current" ] && [ ! -L "$current" ] || fail "existing plist is invalid"; /usr/bin/plutil -lint "$current" >/dev/null || fail "existing plist is invalid"; prior_present[$index]=1; mkdir -p "$STAGE_DIRECTORY/prior"; cp -p "$current" "$STAGE_DIRECTORY/prior/$index.plist"; else prior_present[$index]=0; fi
+  if [ -e "$rollback" ]; then [ -f "$rollback" ] && [ ! -L "$rollback" ] || fail "existing rollback artifact is invalid"; /usr/bin/plutil -lint "$rollback" >/dev/null || fail "existing rollback artifact is invalid"; prior_rollback_present[$index]=1; mkdir -p "$STAGE_DIRECTORY/prior"; cp -p "$rollback" "$STAGE_DIRECTORY/prior/$index.rollback"; else prior_rollback_present[$index]=0; fi
+  if launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1; then prior_loaded[$index]=1; else prior_loaded[$index]=0; fi
 done
-cp -p "$MANIFEST" "$DEPLOYMENT_RECORD"
+if [ -e "$DEPLOYMENT_RECORD" ]; then [ -f "$DEPLOYMENT_RECORD" ] && [ ! -L "$DEPLOYMENT_RECORD" ] || fail "deployment record is invalid"; mkdir -p "$STAGE_DIRECTORY/prior"; cp -p "$DEPLOYMENT_RECORD" "$STAGE_DIRECTORY/prior/deployment.json"; deployment_present=1; else deployment_present=0; fi
+
+recovery_failures=""
+restore_attempt() {
+  set +e
+  for index in "${!PROVIDERS[@]}"; do
+    provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; current="$AGENT_DIRECTORY/$label.plist"; rollback="$current.rollback"
+    launchctl_call bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+    if [ "${prior_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.plist" "$current" || recovery_failures="$recovery_failures plist:$provider"; else rm -f "$current" || recovery_failures="$recovery_failures remove:$provider"; fi
+    if [ "${prior_rollback_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.rollback" "$rollback" || recovery_failures="$recovery_failures rollback:$provider"; else rm -f "$rollback" || recovery_failures="$recovery_failures remove-rollback:$provider"; fi
+    if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootstrap "gui/$(id -u)" "$current" >/dev/null 2>&1 || recovery_failures="$recovery_failures load:$provider"; fi
+  done
+  if [ "$deployment_present" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/deployment.json" "$DEPLOYMENT_RECORD" || recovery_failures="$recovery_failures deployment"; else rm -f "$DEPLOYMENT_RECORD" || recovery_failures="$recovery_failures remove-deployment"; fi
+  if [ "$RELEASE_WAS_PRESENT" = 0 ]; then rm -rf "$FINAL_RELEASE" || recovery_failures="$recovery_failures release"; fi
+  set -e
+}
+
+attempt_active=1
+on_live_exit() { status=$?; trap - EXIT; if [ "$attempt_active" = 1 ]; then restore_attempt; printf 'install-authority: rollout failed (exit %s); restoration failures:%s\n' "$status" "${recovery_failures:- none}" >&2; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
+trap on_live_exit EXIT
+mkdir -p "$AGENT_DIRECTORY" "$RELEASE_ROOT" "$STATE_DIRECTORY" "$LOG_DIRECTORY"
+if [ "$RELEASE_WAS_PRESENT" = 0 ]; then mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; fi
+for index in "${!PROVIDERS[@]}"; do
+  provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; source_plist="$STAGE_DIRECTORY/LaunchAgents/$label.plist"; destination_plist="$AGENT_DIRECTORY/$label.plist"
+  if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootout "gui/$(id -u)/$label"; fi
+  cp -p "$source_plist" "$destination_plist"
+  launchctl_call bootstrap "gui/$(id -u)" "$destination_plist"
+  if [ "${prior_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.plist" "$destination_plist.rollback"; fi
+done
+cp -p "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$DEPLOYMENT_RECORD"
+attempt_active=0
+trap - EXIT
+rm -rf "$STAGE_DIRECTORY"
 printf '%s\n' "installed four authority jobs from immutable commit $COMMIT"
