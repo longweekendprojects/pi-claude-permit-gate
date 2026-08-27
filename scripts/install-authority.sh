@@ -195,7 +195,6 @@ build_artifacts() {
   mkdir -p "$release_tree" "$plist_directory"
   git -C "$SOURCE_ROOT" archive --format=tar "$COMMIT" | tar -xf - -C "$release_tree"
   [ "$(sha256_file "$release_tree/protocol/authority-v1.schema.json")" = "$SCHEMA_SHA256" ] || fail "staged schema hash does not match"
-  chmod -R a-w "$release_tree"
   for index in "${!PROVIDERS[@]}"; do
     local provider="${PROVIDERS[$index]}" port="${PORTS[$index]}" label plist
     label="$(label_for "$provider")"; plist="$plist_directory/$label.plist"
@@ -218,6 +217,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   build_artifacts "$STAGE_DIRECTORY" "$FINAL_RELEASE" "$STAGE_DIRECTORY/release"
   mkdir -p "$OUTPUT_DIRECTORY/releases"
   mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; published_releases=1
+  chmod -R a-w "$FINAL_RELEASE"
   mv "$STAGE_DIRECTORY/LaunchAgents" "$FINAL_PLISTS"; published_plists=1
   mv "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$FINAL_MANIFEST"; published_manifest=1
   succeeded=1
@@ -266,7 +266,7 @@ attempt_active=1
 on_live_exit() { status=$?; trap - EXIT; if [ "$attempt_active" = 1 ]; then restore_attempt; printf 'install-authority: rollout failed (exit %s); restoration failures:%s\n' "$status" "${recovery_failures:- none}" >&2; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
 trap on_live_exit EXIT
 mkdir -p "$AGENT_DIRECTORY" "$RELEASE_ROOT" "$STATE_DIRECTORY" "$LOG_DIRECTORY"
-if [ "$RELEASE_WAS_PRESENT" = 0 ]; then mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; fi
+if [ "$RELEASE_WAS_PRESENT" = 0 ]; then mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; chmod -R a-w "$FINAL_RELEASE"; fi
 for index in "${!PROVIDERS[@]}"; do
   provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; source_plist="$STAGE_DIRECTORY/LaunchAgents/$label.plist"; destination_plist="$AGENT_DIRECTORY/$label.plist"
   if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootout "gui/$(id -u)/$label"; fi
