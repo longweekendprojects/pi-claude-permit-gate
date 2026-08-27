@@ -1,8 +1,20 @@
 {
-  "schemaSha256": "b749ea6bb8b0551960c511576c7b2f14aa6abd34f6a314eb215d022aadf8a9f8",
+  "schemaSha256": "d2bbd240177a87fd76bb1f3c89b69d0165cb32d6b39e3f3079fdb668bd2b6816",
   "referenceNowEpochMs": 1760000000000,
   "storedAllowanceObservedAtEpochMs": 1759999990000,
   "valid": [
+    {
+      "file": "valid/allowance-publish-accepted-response.json",
+      "definition": "AllowancePublishResponseFixtureV1",
+      "semantics": ["allowance-publish-response"],
+      "sha256": "96d9bb2e3b6e973de3ebeedeb7d721765f1c8a27937d1eb581ed6b846f0b2920"
+    },
+    {
+      "file": "valid/allowance-publish-replayed-response.json",
+      "definition": "AllowancePublishResponseFixtureV1",
+      "semantics": ["allowance-publish-response"],
+      "sha256": "8219e551e9e08ead62280f8a9b4813c2d93dae2709c0816e87cc79fb065d2d9d"
+    },
     {
       "file": "valid/allowance-publish-request.json",
       "definition": "AllowancePublishRequestV1",
@@ -149,6 +161,13 @@
     }
   ],
   "invalid": [
+    {
+      "file": "invalid/allowance-publish-replay-signal-mismatch.json",
+      "definition": "AllowancePublishResponseFixtureV1",
+      "semantics": ["allowance-publish-response"],
+      "expectedError": "disposition and Idempotency-Replayed must agree",
+      "sha256": "ca993fd967414634797a40ec78076a3d1cb7393f54a015cafbab1defa7d4509e"
+    },
     {
       "file": "invalid/allowance-future-observation.json",
       "definition": "AllowancePublishRequestV1",

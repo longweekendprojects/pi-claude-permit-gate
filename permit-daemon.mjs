@@ -242,7 +242,9 @@ function startAuthorityDaemon() {
         const authenticated = await authorityPrincipal(req, "allowance:publish", configuration, authority);
         const body = authorityRequestBody(req);
         const verifyGeneration = authorityPrecommitVerifier(req, "allowance:publish", configuration, authority, authenticated);
-        authorityReply(res, 200, await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(authenticated.principal, requestBody, { verifyGeneration }))));
+        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(authenticated.principal, requestBody, { verifyGeneration })));
+        const headers = result.replayed ? { "idempotency-replayed": "true" } : {};
+        authorityReply(res, 200, authority.allowancePublishResponse(result, { instanceId }), headers);
         return;
       }
       throw new AuthorityError("not_found", { message: "authority route is unavailable" });

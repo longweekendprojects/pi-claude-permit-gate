@@ -54,6 +54,8 @@ Environment and file origin, mode, and port mapping must agree. Invalid, incompl
 
 Successful ticket representations are `TicketV1` and always have every nullable key present. They include `ETag: "revision-<n>"`. A first create returns `201` with `Location: /v1/tickets/<ticketId>`. A replayed create returns `200` with both that same `Location` and `Idempotency-Replayed: true`; a replayed non-create mutation returns `200` with `Idempotency-Replayed: true` and no `Location`. Every replay returns the original representation.
 
+Successful allowance publications return `200 AllowancePublishResponseV1` with exact `Cache-Control: no-store` and `Content-Type: application/json; charset=utf-8`. The response includes schema and protocol versions, stable authority ID, lane term, process instance ID, lane/provider/port identity, submitted publish ID, `disposition`, and the authority-accepted allowance. `disposition: "accepted"` omits `Idempotency-Replayed`; `disposition: "replayed"` requires exactly `Idempotency-Replayed: true`. The header and disposition must agree.
+
 Every error body is `ErrorV1`:
 
 ```json
@@ -176,9 +178,9 @@ The store conforms to `VerifierStoreV1`, has a monotonic generation, and contain
 
 ## Allowance publication and monitor truth
 
-`POST /v1/allowance` requires `allowance:publish` and accepts exactly `AllowancePublishRequestV1`: schema version, installation UUID, provider, account-binding UUID, publish UUID, publisher sequence, observed-at milliseconds, and nullable 5-hour/7-day safe windows. Provider and lane derive from the token scope and must match the body. Duplicate publish IDs return the original result.
+`POST /v1/allowance` requires `allowance:publish` and accepts exactly `AllowancePublishRequestV1`: schema version, installation UUID, provider, account-binding UUID, publish UUID, publisher sequence, observed-at milliseconds, and nullable 5-hour/7-day safe windows. Provider and lane derive from the token scope and must match the body. It returns exactly `AllowancePublishResponseV1`, whose `accepted` value is `AcceptedAllowanceV1`; no `{allowance,replayed}` response shape exists. Duplicate publish IDs return the original accepted allowance and publish ID with `disposition: "replayed"`.
 
-The authority rejects observations more than 30 seconds in the future and those more than 30 seconds older than stored. Within the 30-second cross-machine uncertainty window, later authority receipt wins while original observation time still drives freshness. Unknown or raw fields fail validation.
+The authority rejects observations more than 30 seconds in the future and those more than 30 seconds older than stored. Within the 30-second cross-machine uncertainty window, later authority receipt wins while original observation time still drives freshness. Unknown or raw fields fail validation. It emits the acknowledgement only after the verifier fence and durable state commit complete.
 
 The monitor watches only `~/.pi/agent/usage-windows/<provider>.json`, validates the already-sanitized atomic file, and queues only this DTO. It never reads OAuth credentials, headers, or provider bodies. It retries while running and removes an item only after authority acknowledgement.
 

@@ -444,6 +444,14 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(snapshotAllowed.status, 200); assert.equal(snapshotWrongRole.status, 403); assert.equal(publishWrongRole.status, 403);
   assert.equal(await fs.readFile(laneAStatePath, "utf8"), laneABeforeDenials); assert.equal(await fs.readFile(laneBStatePath, "utf8"), laneBBeforeDenials);
 
+  const allowancePublish = { schemaVersion: 1, installationId: installationOne, provider: "anthropic-a", accountBindingId: laneBindings.get("anthropic-a"), publishId: authorityUuid(8_120), publisherSequence: 1, observedAtEpochMs: Date.now(), fiveHour: { utilization: 47.5, status: "allowed", resetEpochSeconds: 1_760_003_600 }, sevenDay: null };
+  const published = await request(sharedPorts[0], "POST", "/v1/allowance", allowancePublish, { authorization: bearer("publish-one", tokenPublish) });
+  const replayedPublish = await request(sharedPorts[0], "POST", "/v1/allowance", allowancePublish, { authorization: bearer("publish-one", tokenPublish) });
+  const acceptedAllowance = { observedAtEpochMs: allowancePublish.observedAtEpochMs, fiveHour: allowancePublish.fiveHour, sevenDay: allowancePublish.sevenDay };
+  const allowanceResponse = { schemaVersion: 1, protocolVersion: 2, authorityId: snapshotAllowed.body.authorityId, laneTerm: snapshotAllowed.body.laneTerm, instanceId: snapshotAllowed.body.instanceId, laneId: "A", provider: "anthropic-a", port: sharedPorts[0], publishId: allowancePublish.publishId, disposition: "accepted", accepted: acceptedAllowance };
+  assert.equal(published.status, 200); assert.deepEqual(published.headers["cache-control"], "no-store"); assert.deepEqual(published.headers["content-type"], "application/json; charset=utf-8"); assert.equal(published.headers["idempotency-replayed"], undefined); assert.deepEqual(published.body, allowanceResponse);
+  assert.equal(replayedPublish.status, 200); assert.deepEqual(replayedPublish.headers["cache-control"], "no-store"); assert.deepEqual(replayedPublish.headers["content-type"], "application/json; charset=utf-8"); assert.equal(replayedPublish.headers["idempotency-replayed"], "true"); assert.deepEqual(replayedPublish.body, { ...allowanceResponse, disposition: "replayed" });
+
   const precommitState = await fs.readFile(laneAStatePath, "utf8");
   const storeBeforeRevocation = await fs.readFile(verifierStore);
   const revokeResult = await runAuthorityAdmin(sharedHome, ["revoke", "--installation-id", installationOne]);
@@ -987,10 +995,19 @@ test("authority fails closed for migration, fsync faults, socket ownership, and 
 test("authority persists allowance scope, skew, replay, and accepted truth across restart", async (t) => {
   const gate = await durableAuthority(t);
   const principal = authorityPrincipal(11);
+  let failedPublishWrites = 0;
+  const failedPublishGate = await durableAuthority(t, { faultInjector: ({ phase }) => {
+    if (phase === "before-write" && ++failedPublishWrites === 2) return Object.assign(new Error("EIO"), { code: "EIO" });
+    return undefined;
+  } });
+  const failedPublishBefore = await fs.readFile(failedPublishGate.statePath, "utf8");
+  const failedPublish = { schemaVersion: 1, installationId: principal.installationId, provider: "anthropic-a", accountBindingId: principal.accountBindingId, publishId: authorityUuid(610), publisherSequence: 1, observedAtEpochMs: failedPublishGate.time.now, fiveHour: null, sevenDay: null };
+  await assert.rejects(() => failedPublishGate.authority.publishAllowance(principal, failedPublish), (error) => error instanceof AuthorityError && error.code === "persistence_unavailable");
+  assert.equal(await fs.readFile(failedPublishGate.statePath, "utf8"), failedPublishBefore);
   const first = { schemaVersion: 1, installationId: principal.installationId, provider: "anthropic-a", accountBindingId: principal.accountBindingId, publishId: authorityUuid(611), publisherSequence: 1, observedAtEpochMs: gate.time.now, fiveHour: { utilization: 47.5, status: "allowed", resetEpochSeconds: 1_760_003_600 }, sevenDay: null };
   const accepted = await gate.authority.publishAllowance(principal, first);
   const replay = await gate.authority.publishAllowance(principal, first);
-  assert.equal(accepted.replayed, false); assert.equal(replay.replayed, true); assert.deepEqual(replay.allowance, accepted.allowance);
+  assert.equal(accepted.replayed, false); assert.equal(replay.replayed, true); assert.equal(replay.publishId, first.publishId); assert.deepEqual(replay.accepted, accepted.accepted);
   await assert.rejects(() => gate.authority.publishAllowance({ ...principal, providers: ["anthropic-a", "anthropic-b"] }, { ...first, provider: "anthropic-b", publishId: authorityUuid(612), publisherSequence: 2 }), (error) => error instanceof AuthorityError && error.code === "provider_mismatch");
   await assert.rejects(() => gate.authority.publishAllowance(principal, { ...first, publishId: authorityUuid(613), publisherSequence: 2, accountBindingId: authorityUuid(712) }), (error) => error instanceof AuthorityError && error.code === "account_binding_mismatch");
   await assert.rejects(() => gate.authority.publishAllowance(principal, { ...first, publishId: authorityUuid(614), publisherSequence: 2, observedAtEpochMs: gate.time.now + 30_001 }), (error) => error instanceof AuthorityError && error.code === "invalid_request");
@@ -999,7 +1016,8 @@ test("authority persists allowance scope, skew, replay, and accepted truth acros
   await gate.authority.publishAllowance(principal, newest);
   await assert.rejects(() => gate.authority.publishAllowance(principal, { ...first, publishId: authorityUuid(616), publisherSequence: 3 }), (error) => error instanceof AuthorityError && error.code === "stale_revision");
   gate.restart();
-  assert.equal((await gate.authority.publishAllowance(principal, first)).replayed, true);
+  const restartedReplay = await gate.authority.publishAllowance(principal, first);
+  assert.equal(restartedReplay.replayed, true); assert.equal(restartedReplay.publishId, first.publishId); assert.deepEqual(restartedReplay.accepted, accepted.accepted);
   const snapshot = gate.authority.snapshot({ instanceId: authorityUuid(504), buildId: "test" });
   assert.equal(snapshot.allowance.observedAtEpochMs, newest.observedAtEpochMs); assert.equal(snapshot.allowance.fiveHour.status, "warning"); assert.equal("installationId" in snapshot, false);
 });

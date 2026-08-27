@@ -72,7 +72,7 @@ test("authority protocol fixtures enforce response allowlists, malformed classes
   assert.equal(first.status, 0, first.stderr);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(first.stdout, second.stdout);
-  assert.match(first.stdout, /26 valid fixtures, 20 invalid fixtures/);
+  assert.match(first.stdout, /28 valid fixtures, 21 invalid fixtures/);
 
   await expectContractFailure("unknown key", (contractRoot) => mutateFixture(contractRoot, "valid/health-response.json", (fixture) => { fixture.body.bySession = {}; }), /is not allowed/);
   await expectContractFailure("closed allowance status", (contractRoot) => mutateFixture(contractRoot, "valid/allowance-publish-request.json", (fixture) => { fixture.fiveHour.status = "unknown"; }), /allowed values/);

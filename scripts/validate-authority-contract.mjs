@@ -205,6 +205,9 @@ function semanticErrors(value, tags, manifest) {
       const revision = value.body.revision;
       if (value.headers.ETag !== `"revision-${revision}"`) errors.push("ETag must match the TicketV1 revision");
       if (value.headers.Location !== undefined && value.headers.Location !== `/v1/tickets/${value.body.ticketId}`) errors.push("Location must match the TicketV1 ticketId");
+    } else if (tag === "allowance-publish-response") {
+      const replayed = value.headers["Idempotency-Replayed"];
+      if (value.body.disposition === "replayed" && replayed !== "true" || value.body.disposition === "accepted" && replayed !== undefined) errors.push("disposition and Idempotency-Replayed must agree");
     } else {
       errors.push(`unknown semantic validator tag: ${tag}`);
     }

@@ -1723,7 +1723,7 @@ export class AuthorityState {
       const replay = next.allowancePublishes[key];
       if (replay) {
         if (replay.fingerprint !== fingerprint) fail("operation_conflict", "publish identifier was reused");
-        return { allowance: clone(replay.allowance), replayed: true };
+        return { accepted: clone(replay.allowance), publishId: parsePublisherKey(key, true).publishId, replayed: true };
       }
       const sequenceKey = publisherSequenceKey(checkedPrincipal.installationId, request.provider);
       if (!Object.hasOwn(next.publisherSequences, sequenceKey) && Object.keys(next.publisherSequences).length >= MAX_INSTALLATIONS) fail("principal_limit", "publisher principal limit reached");
@@ -1746,8 +1746,26 @@ export class AuthorityState {
         const [oldest] = principalKeys.shift();
         delete next.allowancePublishes[oldest];
       }
-      return { allowance, replayed: false };
+      return { accepted: allowance, publishId: request.publishId, replayed: false };
     }, { verifyGeneration });
+  }
+
+  allowancePublishResponse(result, { instanceId }) {
+    if (!isUuid(instanceId) || !isObject(result) || !isUuid(result.publishId) || typeof result.replayed !== "boolean") throw new StateFault("allowance publish response is invalid");
+    validatePrivateAllowance(result.accepted);
+    return {
+      schemaVersion: 1,
+      protocolVersion: 2,
+      authorityId: this.state.authorityId,
+      laneTerm: this.state.laneTerm,
+      instanceId,
+      laneId: LANE_IDS[this.state.provider],
+      provider: this.state.provider,
+      port: this.state.port,
+      publishId: result.publishId,
+      disposition: result.replayed ? "replayed" : "accepted",
+      accepted: clone(result.accepted),
+    };
   }
 
   drain() {

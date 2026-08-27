@@ -2349,6 +2349,223 @@
           "$ref": "#/$defs/TrustedLaneSnapshotDTOv1"
         }
       }
+    },
+    "JsonNoStoreAllowancePublishReplayHeadersV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Cache-Control",
+        "Content-Type",
+        "Idempotency-Replayed"
+      ],
+      "properties": {
+        "Cache-Control": {
+          "const": "no-store"
+        },
+        "Content-Type": {
+          "const": "application/json; charset=utf-8"
+        },
+        "Idempotency-Replayed": {
+          "const": "true"
+        }
+      }
+    },
+    "AllowancePublishResponseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "protocolVersion",
+        "authorityId",
+        "laneTerm",
+        "instanceId",
+        "laneId",
+        "provider",
+        "port",
+        "publishId",
+        "disposition",
+        "accepted"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "authorityId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "laneTerm": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "laneId": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "port": {
+          "$ref": "#/$defs/AuthorityPort"
+        },
+        "publishId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "disposition": {
+          "enum": [
+            "accepted",
+            "replayed"
+          ]
+        },
+        "accepted": {
+          "$ref": "#/$defs/AcceptedAllowanceV1"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "A"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-a"
+              },
+              "port": {
+                "const": 8791
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "B"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-b"
+              },
+              "port": {
+                "const": 8792
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "C"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-c"
+              },
+              "port": {
+                "const": 8793
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "laneId": {
+                "const": "D"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "const": "anthropic-d"
+              },
+              "port": {
+                "const": 8794
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AllowancePublishResponseFixtureV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "httpStatus",
+        "headers",
+        "body"
+      ],
+      "properties": {
+        "httpStatus": {
+          "const": 200
+        },
+        "headers": {
+          "type": "object"
+        },
+        "body": {
+          "$ref": "#/$defs/AllowancePublishResponseV1"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreHeadersV1"
+            },
+            "body": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/AllowancePublishResponseV1"
+                },
+                {
+                  "properties": {
+                    "disposition": {
+                      "const": "accepted"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "headers": {
+              "$ref": "#/$defs/JsonNoStoreAllowancePublishReplayHeadersV1"
+            },
+            "body": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/AllowancePublishResponseV1"
+                },
+                {
+                  "properties": {
+                    "disposition": {
+                      "const": "replayed"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }
