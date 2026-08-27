@@ -224,3 +224,31 @@ test("authority-client discards a persisted record whose reused request id yield
   assert.equal(creates, 2);
   assert.equal(Object.keys(ledger.tickets).includes(`${sessionId}:${staleRequestId}`), false);
 });
+
+test("authority-client breaks a ledger lock left behind by a killed session", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "permit-stale-lock-"));
+  const statePath = path.join(directory, "authority-client-tickets-v1.json");
+  try {
+    // A session killed mid-write leaves this directory behind and nothing else removes it.
+    await fs.mkdir(`${statePath}.lock`, { mode: 0o700 });
+    await fs.utimes(`${statePath}.lock`, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    const config = {
+      mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath,
+      keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+      lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+    };
+    const client = createAuthorityClient(config, {
+      sessionId: "bbbb2222-7777-4777-8777-777777777777",
+      token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      wait: async () => {},
+      request: async (request) => {
+        if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+        if (request.pathname === "/v1/tickets") return { status: 201, body: { schemaVersion: 1, ticketId: "9999aaaa-3333-4333-8333-333333333333", requestId: request.body.requestId, provider: "anthropic-a", state: "active", revision: 2, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: 2_050, offerExpiresAtEpochMs: 2_100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
+        throw new Error(`unexpected authority request ${request.pathname}`);
+      },
+    });
+    const record = await client.acquire("anthropic-a");
+    assert.equal(record.ticket.state, "active");
+    assert.equal(JSON.parse(await fs.readFile(statePath, "utf8")).schemaVersion, 1);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
