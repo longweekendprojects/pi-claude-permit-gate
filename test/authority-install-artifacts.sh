@@ -46,6 +46,7 @@ normal_home="$BASE/normal-home"; normal_output="$BASE/normal-output"
 manifest="$normal_output/authority-artifacts-v1.json"
 release="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).releasePath)' "$manifest")"
 for mutation in modified missing extra wrong-type; do
+  chmod -R u+w "$release"
   case "$mutation" in
     modified) printf changed >> "$release/README.md" ;;
     missing) rm "$release/README.md" ;;
