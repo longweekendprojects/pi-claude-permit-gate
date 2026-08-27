@@ -171,7 +171,41 @@ Two implementation facts cost a first attempt and are worth carrying forward:
 
 The first attempt therefore enrolled three verifiers whose secrets were never recoverable. Those tokens (`…-2026-08-27`, without the `b` suffix) are revoked and remain in the store as revoked records. Because `enroll` rejects a second record for the same installation and scope even when the earlier record is revoked, and `rotate` refuses a revoked predecessor, recovery required a fresh installation UUID. The original Ruminaider installation ID `0a78d101-2203-4203-a49c-090ec6ef7e9e` is burned and must not be reused. The verifier store is at generation 9 with 6 records, 3 revoked and 3 active.
 
-The peer's three credentials are not provisioned. The authority computes a verifier only from the secret itself, so the secret must exist on Ruminaider at enrollment and then reach the peer's Keychain without being written to a file, printed, or passed through chat.
+### Credential provisioning, peer side, 12:05-12:20 EDT
+
+Installation ID for albert-aviary-mac is `dad5f319-6001-4d90-aa8c-76129ea4ca02`. Three scoped credentials are live, same 90-day expiry and four-lane allowlist:
+
+| Scope | Token ID | Keychain item | Verifier digest |
+| --- | --- | --- | --- |
+| `permit:mutate` | `aviary-permit-mutate-2026-08-27c` | `claude-permit-authority-permit-mutate/aviary` | `53eb933b…` |
+| `snapshot:read` | `aviary-snapshot-read-2026-08-27c` | `claude-permit-authority-snapshot-read/aviary` | `3fc4d22e…` |
+| `allowance:publish` | `aviary-allowance-publish-2026-08-27c` | `claude-permit-authority-allowance-publish/aviary` | `deaf6be9…` |
+
+Verification ran on the peer and compared digests, never values: each item matches the client bearer pattern, carries the expected token ID, and its decoded secret hashes to the enrolled verifier.
+
+#### Transport mechanism
+
+macOS Keychain writes fail with `-25308 User interaction is not allowed` in any non-interactive SSH session, on both machines. This defeats two obvious designs: pushing the bearer to the peer over SSH, and having the peer invoke `enroll` on Ruminaider over SSH, because `enroll` itself writes a staging Keychain item before recording the verifier. The generic `authority-admin: rejected` message hides this; the real error appears only when the top-level catch is bypassed.
+
+The working design keeps every Keychain write inside a GUI session:
+
+1. Ruminaider creates a mode-600 FIFO at `/tmp/permit-pipe`.
+2. The peer's GUI Terminal, driven by `osascript` over SSH, runs `ssh albertgwo@100.103.181.53 cat /tmp/permit-pipe | security -i`.
+3. Ruminaider's GUI-derived session generates the secret, enrolls the verifier, deletes the staging item, and writes the composed `add-generic-password` command into the FIFO.
+
+The secret exists only in pipes on both machines. Ruminaider's Remote Login and the peer's authorized key make step 2 possible; the peer's key was already present in Ruminaider's `authorized_keys`.
+
+#### Burned credentials
+
+Three generations of peer tokens are revoked in the store and must never be reused:
+
+- `aviary-*-2026-08-27` (installation `d6c0f1cf`): enrolled before the SSH Keychain limitation was understood, secrets unrecoverable.
+- `aviary-*-2026-08-27b` (installation `28d832df`): provisioned successfully, then exposed. A verification command printed each full bearer to a peer log file and to the session transcript. The values were revoked within a minute, `/tmp/verify-safe.log` and the other temporary logs were deleted, and the peer's Terminal windows were closed to clear scrollback.
+- The Ruminaider `0a78d101` generation described above.
+
+Verification must compare SHA-256 digests, never Keychain values. Digests are safe to print; bearers are not. The replacement verification script computes the digest on the peer and emits only `format`, `tokenId`, and `digest`.
+
+Because `enroll` rejects a second record for the same installation and scope even after revocation, each recovery consumed a fresh installation UUID. The verifier store is at generation 26 with 6 active records and several revoked ones.
 
 ## Still unmeasured
 
