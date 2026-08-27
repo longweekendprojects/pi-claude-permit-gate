@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquirePermitResponse, classifyDaemonHealth, providerPorts } from "../index.ts";
+import { acquirePermitResponse, classifyDaemonHealth, createAuthorityClient, providerPorts, resolveClientMode } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = await fs.readFile(path.join(root, "index.ts"), "utf8");
@@ -83,4 +83,38 @@ test("aborting an acquire destroys its queued request and stops retries", async 
   await new Promise((resolve) => setImmediate(resolve)); controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
   assert.equal(attempts, 1);
+});
+
+test("authority-client rejects mixed configuration and resumes one acknowledged ticket without local capability", async () => {
+  assert.throws(() => resolveClientMode({ CLAUDE_PERMIT_GATE_MODE: "local", CLAUDE_PERMIT_GATE_ORIGIN: "https://authority.example" }), /local mode cannot contain authority settings/);
+  const config = {
+    mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
+    keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+    lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+  };
+  const calls = []; let ledger = { schemaVersion: 1, tickets: {} }; let requestId = "11111111-1111-4111-8111-111111111111"; const ticketId = "22222222-2222-4222-8222-222222222222";
+  const ticket = (state, revision, lease = null) => ({ schemaVersion: 1, ticketId, requestId, provider: "anthropic-a", state, revision, lease });
+  let poll = 0;
+  const client = createAuthorityClient(config, {
+    token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      calls.push(request);
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") { requestId = request.body.requestId; return { status: 201, body: ticket("queued", 1) }; }
+      if (request.pathname.endsWith("/claim")) return { status: 200, body: ticket("active", 2, { leaseId: "44444444-4444-4444-8444-444444444444", generation: 1, renewSequence: 0 }) };
+      if (request.pathname.endsWith("/complete")) throw new Error("response lost");
+      if (request.pathname.includes("/v1/tickets/")) return { status: 200, body: ticket(++poll === 1 ? "offered" : "released", poll === 1 ? 1 : 3) };
+      throw new Error("unexpected authority request");
+    },
+  });
+  const record = await client.acquire("anthropic-a");
+  assert.equal(record.ticket.state, "active");
+  await client.complete(record);
+  assert.equal(calls.filter((call) => call.pathname === "/v1/tickets").length, 1);
+  assert.equal(calls.filter((call) => call.pathname.endsWith("/complete")).length, 1);
+  const create = calls.find((call) => call.pathname === "/v1/tickets");
+  assert.equal(create.port, 8791); assert.equal(create.body.cwd, undefined); assert.match(create.authorization, /^token-id\./);
+  const authorityClientSource = source.slice(source.indexOf("export function createAuthorityClient"), source.indexOf("async function acquireAuthority"));
+  assert.doesNotMatch(authorityClientSource, /127\.0\.0\.1|spawn|fallback|ctx\.cwd/);
 });

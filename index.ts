@@ -1,19 +1,28 @@
-// Shared local concurrency gate for direct Anthropic-family providers in Pi.
+// Shared local concurrency gate and authenticated shared-authority client for direct Anthropic-family providers in Pi.
 // It gates requests before provider transport, never proxies traffic or rewrites payloads.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_PORTS: Record<string, number> = { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 };
+const AUTHORITY_PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"] as const;
 const DISABLED = process.env.CLAUDE_PERMIT_GATE_DISABLE === "1" || process.env.ANTHROPIC_PERMIT_GATE_DISABLE === "1";
 const VERBOSE = process.env.CLAUDE_PERMIT_GATE_VERBOSE === "1" || process.env.ANTHROPIC_PERMIT_GATE_VERBOSE === "1";
 const RETRY_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_RETRY_MS", 500, 10);
 const WARNING_ATTEMPTS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", 600, 1);
 const SPAWN_BACKOFF_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_SPAWN_BACKOFF_MS", "ANTHROPIC_PERMIT_GATE_SPAWN_BACKOFF_MS", 1000, 100);
 const MAX_SPAWN_BACKOFF_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS", "ANTHROPIC_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS", 30000, SPAWN_BACKOFF_MS);
+const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PROTOCOL_VERSION = 1;
+const AUTHORITY_PROTOCOL_VERSION = 2;
+const UNAVAILABLE_HEALTH = "health is unavailable or invalid";
 
 function positiveEnvInt(name: string, legacy: string, fallback: number, minimum: number): number {
   const parsed = Number.parseInt(process.env[name] ?? process.env[legacy] ?? "", 10);
@@ -30,18 +39,29 @@ export function providerPorts(value = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PO
   return parsed;
 }
 const PROVIDER_PORTS = providerPorts();
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+function abortError() { return Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function isAborted(signal?: AbortSignal) { return signal?.aborted === true; }
+function isUuid(value: unknown): value is string { return typeof value === "string" && INSTANCE_ID_PATTERN.test(value); }
+function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (isAborted(signal)) { reject(abortError()); return; }
+    const timer = setTimeout(done, ms);
+    const abort = () => { clearTimeout(timer); done(abortError()); };
+    function done(error?: Error) { signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
+// Local H1 transport and recovery remain deliberately separate from authority-client transport.
 type DaemonRecovery = { failures: number; nextSpawnAt: number; lastError?: string };
 const daemonRecovery = new Map<number, DaemonRecovery>();
 function recoveryFor(port: number): DaemonRecovery { const state = daemonRecovery.get(port) ?? { failures: 0, nextSpawnAt: 0 }; daemonRecovery.set(port, state); return state; }
 function recoveryMessage(port: number): string | undefined { return daemonRecovery.get(port)?.lastError; }
 function clearRecovery(port: number) { daemonRecovery.delete(port); }
-
 const COMPATIBILITIES = ["current", "legacy", "incompatible", "invalidOrUnavailable"] as const;
-const PROTOCOL_VERSION = 1;
-const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const UNAVAILABLE_HEALTH = "health is unavailable or invalid";
 export type DaemonCompatibility = (typeof COMPATIBILITIES)[number];
 type HealthRecord = Record<string, unknown>;
 type DaemonProvenance = { instanceId: string; provider: string; protocolVersion: number };
@@ -50,30 +70,25 @@ export type EnsureDaemonResult = DaemonHealthClassification & { spawned: boolean
 type HealthProbe = (signal?: AbortSignal) => Promise<unknown>;
 type SpawnedDaemon = { once(event: string, listener: (...args: any[]) => void): unknown; unref(): unknown };
 type EnsureDaemonOptions = { signal?: AbortSignal; probe?: HealthProbe; spawnDaemon?: (directory: string, port: number, provider: string) => SpawnedDaemon };
-
-function isHealthRecord(value: unknown): value is HealthRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
-function isInstanceId(value: unknown): value is string { return typeof value === "string" && INSTANCE_ID_PATTERN.test(value); }
+function isHealthRecord(value: unknown): value is HealthRecord { return isRecord(value); }
 function isCompatibleHealth(result: DaemonHealthClassification): boolean { return result.compatibility === "current" || result.compatibility === "legacy"; }
 export function classifyDaemonHealth(health: unknown, expectedProvider: string): DaemonHealthClassification {
   if (!isHealthRecord(health)) return { compatibility: "invalidOrUnavailable", diagnostic: UNAVAILABLE_HEALTH };
   if (health.ok !== true) return { compatibility: "invalidOrUnavailable", health, diagnostic: UNAVAILABLE_HEALTH };
-  const hasProvider = health.provider !== undefined;
-  const hasProtocol = health.protocolVersion !== undefined;
-  const hasInstanceId = health.instanceId !== undefined;
+  const hasProvider = health.provider !== undefined; const hasProtocol = health.protocolVersion !== undefined; const hasInstanceId = health.instanceId !== undefined;
   if (hasProvider && typeof health.provider !== "string") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health provider is invalid" };
   if (hasProtocol && typeof health.protocolVersion !== "number") return { compatibility: "invalidOrUnavailable", health, diagnostic: "health protocol version is invalid" };
-  if (hasInstanceId && !isInstanceId(health.instanceId)) return { compatibility: "invalidOrUnavailable", health, diagnostic: "health instance identity is invalid" };
+  if (hasInstanceId && !isUuid(health.instanceId)) return { compatibility: "invalidOrUnavailable", health, diagnostic: "health instance identity is invalid" };
   if (hasProvider && health.provider !== expectedProvider) return { compatibility: "incompatible", health, diagnostic: `provider ${JSON.stringify(health.provider)} does not match expected ${JSON.stringify(expectedProvider)}` };
   if (hasProtocol && health.protocolVersion !== PROTOCOL_VERSION) return { compatibility: "incompatible", health, diagnostic: `protocol ${health.protocolVersion} is unsupported; expected ${PROTOCOL_VERSION}` };
   if (!hasProvider || !hasProtocol || !hasInstanceId) return { compatibility: "legacy", health, diagnostic: "health omits provider, protocol, or instance identity; restart when idle" };
   return { compatibility: "current", health, diagnostic: "provider, protocol, and instance identity match" };
 }
-
 function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000, signal?: AbortSignal): Promise<T | undefined> {
   return new Promise((resolve) => {
     let settled = false; let req: ReturnType<typeof http.get> | undefined;
-    function finish(value: T | undefined) { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); resolve(value); }
-    function abort() { req?.destroy(); finish(undefined); }
+    const finish = (value: T | undefined) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); resolve(value); };
+    const abort = () => { req?.destroy(); finish(undefined); };
     if (signal?.aborted) { finish(undefined); return; }
     signal?.addEventListener("abort", abort, { once: true });
     req = http.get(`http://127.0.0.1:${port}${pathname}`, { timeout: timeoutMs }, (res) => {
@@ -89,230 +104,132 @@ function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs 
     const req = http.request(`http://127.0.0.1:${port}${pathname}`, { method: "POST", timeout: timeoutMs, headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
       let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } });
     });
-    const abort = () => req.destroy(abortError());
-    signal?.addEventListener("abort", abort, { once: true });
+    const abort = () => req.destroy(abortError()); signal?.addEventListener("abort", abort, { once: true });
     req.on("timeout", () => req.destroy(new Error("permit acquire timed out"))); req.on("error", reject); req.on("close", () => signal?.removeEventListener("abort", abort)); req.end(payload);
-  });
-}
-function abortError() { return Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }
-function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-function isAborted(signal?: AbortSignal) { return signal?.aborted === true; }
-function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (isAborted(signal)) { reject(abortError()); return; }
-    const timer = setTimeout(done, ms);
-    const abort = () => { clearTimeout(timer); done(abortError()); };
-    function done(error?: Error) { signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); }
-    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 function laneForProvider(provider: string): string | undefined { return provider.match(/^anthropic-([a-d])$/)?.[1]; }
 function daemonEnv(port: number, provider: string): NodeJS.ProcessEnv {
-  const lane = laneForProvider(provider)?.toUpperCase();
-  const laneValue = (suffix: string) => lane ? process.env[`CLAUDE_LANE_${lane}_${suffix}`] : undefined;
-  return {
-    ...process.env,
-    CLAUDE_PERMIT_GATE_PORT: String(port),
-    CLAUDE_PERMIT_GATE_PROVIDER: provider,
-    CLAUDE_PERMIT_GATE_MAX: laneValue("MAX") ?? process.env.CLAUDE_PERMIT_GATE_MAX ?? process.env.ANTHROPIC_PERMIT_GATE_MAX ?? "2",
-    CLAUDE_PERMIT_GATE_START: laneValue("START") ?? process.env.CLAUDE_PERMIT_GATE_START ?? process.env.ANTHROPIC_PERMIT_GATE_START ?? "2",
-    CLAUDE_PERMIT_GATE_MIN: laneValue("MIN") ?? process.env.CLAUDE_PERMIT_GATE_MIN ?? process.env.ANTHROPIC_PERMIT_GATE_MIN ?? "1",
-    CLAUDE_PERMIT_GATE_COOLDOWN_MS: laneValue("COOLDOWN_MS") ?? process.env.CLAUDE_PERMIT_GATE_COOLDOWN_MS ?? process.env.ANTHROPIC_PERMIT_GATE_COOLDOWN_MS ?? "20000",
-    CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS: laneValue("MAX_COOLDOWN_MS") ?? process.env.CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS ?? process.env.ANTHROPIC_PERMIT_GATE_MAX_COOLDOWN_MS ?? "60000",
-    CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS: laneValue("INCREASE_AFTER_MS") ?? process.env.CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS ?? process.env.ANTHROPIC_PERMIT_GATE_INCREASE_AFTER_MS ?? "120000",
-    CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: laneValue("PERMIT_TTL_MS") ?? process.env.CLAUDE_PERMIT_GATE_PERMIT_TTL_MS ?? process.env.ANTHROPIC_PERMIT_GATE_PERMIT_TTL_MS ?? "300000",
-  };
+  const lane = laneForProvider(provider)?.toUpperCase(); const laneValue = (suffix: string) => lane ? process.env[`CLAUDE_LANE_${lane}_${suffix}`] : undefined;
+  return { ...process.env, CLAUDE_PERMIT_GATE_PORT: String(port), CLAUDE_PERMIT_GATE_PROVIDER: provider, CLAUDE_PERMIT_GATE_MAX: laneValue("MAX") ?? process.env.CLAUDE_PERMIT_GATE_MAX ?? process.env.ANTHROPIC_PERMIT_GATE_MAX ?? "2", CLAUDE_PERMIT_GATE_START: laneValue("START") ?? process.env.CLAUDE_PERMIT_GATE_START ?? process.env.ANTHROPIC_PERMIT_GATE_START ?? "2", CLAUDE_PERMIT_GATE_MIN: laneValue("MIN") ?? process.env.CLAUDE_PERMIT_GATE_MIN ?? process.env.ANTHROPIC_PERMIT_GATE_MIN ?? "1", CLAUDE_PERMIT_GATE_COOLDOWN_MS: laneValue("COOLDOWN_MS") ?? process.env.CLAUDE_PERMIT_GATE_COOLDOWN_MS ?? process.env.ANTHROPIC_PERMIT_GATE_COOLDOWN_MS ?? "20000", CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS: laneValue("MAX_COOLDOWN_MS") ?? process.env.CLAUDE_PERMIT_GATE_MAX_COOLDOWN_MS ?? process.env.ANTHROPIC_PERMIT_GATE_MAX_COOLDOWN_MS ?? "60000", CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS: laneValue("INCREASE_AFTER_MS") ?? process.env.CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS ?? process.env.ANTHROPIC_PERMIT_GATE_INCREASE_AFTER_MS ?? "120000", CLAUDE_PERMIT_GATE_PERMIT_TTL_MS: laneValue("PERMIT_TTL_MS") ?? process.env.CLAUDE_PERMIT_GATE_PERMIT_TTL_MS ?? process.env.ANTHROPIC_PERMIT_GATE_PERMIT_TTL_MS ?? "300000" };
 }
-function launchDaemon(directory: string, port: number, provider: string): SpawnedDaemon {
-  return spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) });
-}
-async function probeHealth(probe: HealthProbe, provider: string, signal?: AbortSignal): Promise<DaemonHealthClassification> {
-  let health: unknown;
-  try { health = await probe(signal); } catch {}
-  return classifyDaemonHealth(health, provider);
-}
-async function occupiedPortRecovery(port: number, provider: string, probe: HealthProbe) {
-  const result = await probeHealth(probe, provider);
-  if (isCompatibleHealth(result)) { clearRecovery(port); return; }
-  recoveryFor(port).lastError = `daemon launch found an occupied port: ${result.diagnostic}`;
-}
+function launchDaemon(directory: string, port: number, provider: string): SpawnedDaemon { return spawn(process.execPath, [path.join(directory, "permit-daemon.mjs")], { detached: true, stdio: "ignore", env: daemonEnv(port, provider) }); }
+async function probeHealth(probe: HealthProbe, provider: string, signal?: AbortSignal): Promise<DaemonHealthClassification> { let health: unknown; try { health = await probe(signal); } catch {} return classifyDaemonHealth(health, provider); }
+async function occupiedPortRecovery(port: number, provider: string, probe: HealthProbe) { const result = await probeHealth(probe, provider); if (isCompatibleHealth(result)) { clearRecovery(port); return; } recoveryFor(port).lastError = `daemon launch found an occupied port: ${result.diagnostic}`; }
 export async function ensureDaemon(directory: string, port: number, provider: string, options: EnsureDaemonOptions = {}): Promise<EnsureDaemonResult> {
-  const signal = options.signal;
-  const probe = options.probe ?? ((probeSignal?: AbortSignal) => getJson(port, "/health", 1000, probeSignal));
-  if (isAborted(signal)) throw abortError();
-  const result = await probeHealth(probe, provider, signal);
-  if (isAborted(signal)) throw abortError();
-  if (isCompatibleHealth(result)) { clearRecovery(port); return { ...result, spawned: false }; }
-  const state = recoveryFor(port);
-  if (result.compatibility === "incompatible") { state.lastError = result.diagnostic; return { ...result, spawned: false }; }
-  const now = Date.now();
-  if (now < state.nextSpawnAt) return { ...result, diagnostic: state.lastError ?? result.diagnostic, spawned: false };
-
-  state.failures++;
-  const backoff = Math.min(MAX_SPAWN_BACKOFF_MS, SPAWN_BACKOFF_MS * 2 ** Math.min(state.failures - 1, 5));
-  state.nextSpawnAt = now + backoff;
-  state.lastError = `daemon launch pending; retrying in ${Math.ceil(backoff / 1000)}s`;
-  try {
-    const child = (options.spawnDaemon ?? launchDaemon)(directory, port, provider);
-    child.once("error", (error: Error) => { recoveryFor(port).lastError = `could not start daemon on port ${port}: ${error.message}`; });
-    child.once("exit", (code: number | null, signal: string | null) => {
-      if (code === 3 && !signal) { void occupiedPortRecovery(port, provider, probe); return; }
-      if (code === 0 && !signal) return;
-      recoveryFor(port).lastError = `daemon on port ${port} exited${signal ? ` from ${signal}` : ` with code ${code}`}; retrying in ${Math.ceil(backoff / 1000)}s`;
-    });
-    child.unref();
-    return { ...result, diagnostic: state.lastError, spawned: true };
-  } catch (error) {
-    state.lastError = `could not start daemon on port ${port}: ${errorText(error)}`;
-    return { ...result, diagnostic: state.lastError, spawned: false };
-  }
+  const signal = options.signal; const probe = options.probe ?? ((probeSignal?: AbortSignal) => getJson(port, "/health", 1000, probeSignal)); if (isAborted(signal)) throw abortError();
+  const result = await probeHealth(probe, provider, signal); if (isAborted(signal)) throw abortError(); if (isCompatibleHealth(result)) { clearRecovery(port); return { ...result, spawned: false }; }
+  const state = recoveryFor(port); if (result.compatibility === "incompatible") { state.lastError = result.diagnostic; return { ...result, spawned: false }; }
+  const now = Date.now(); if (now < state.nextSpawnAt) return { ...result, diagnostic: state.lastError ?? result.diagnostic, spawned: false };
+  state.failures++; const backoff = Math.min(MAX_SPAWN_BACKOFF_MS, SPAWN_BACKOFF_MS * 2 ** Math.min(state.failures - 1, 5)); state.nextSpawnAt = now + backoff; state.lastError = `daemon launch pending; retrying in ${Math.ceil(backoff / 1000)}s`;
+  try { const child = (options.spawnDaemon ?? launchDaemon)(directory, port, provider); child.once("error", (error: Error) => { recoveryFor(port).lastError = `could not start daemon on port ${port}: ${error.message}`; }); child.once("exit", (code: number | null, signal: string | null) => { if (code === 3 && !signal) { void occupiedPortRecovery(port, provider, probe); return; } if (code === 0 && !signal) return; recoveryFor(port).lastError = `daemon on port ${port} exited${signal ? ` from ${signal}` : ` with code ${code}`}; retrying in ${Math.ceil(backoff / 1000)}s`; }); child.unref(); return { ...result, diagnostic: state.lastError, spawned: true }; } catch (error) { state.lastError = `could not start daemon on port ${port}: ${errorText(error)}`; return { ...result, diagnostic: state.lastError, spawned: false }; }
 }
-
-type Permit = { permitId: string; port: number; renewTimer?: ReturnType<typeof setInterval> };
-let activePermit: Permit | undefined;
-let sessionId = "unknown";
-function startRenewal(permit: Permit, ttlMs: number) {
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
-  const interval = Math.max(10, Math.min(60000, Math.floor(ttlMs / 3)));
-  permit.renewTimer = setInterval(async () => { if (activePermit === permit) { try { await postJson(permit.port, "/renew", { permitId: permit.permitId }, 5000); } catch {} } }, interval);
-  permit.renewTimer.unref?.();
-}
+type LocalPermit = { kind: "local"; permitId: string; port: number; renewTimer?: ReturnType<typeof setInterval> };
+let activePermit: LocalPermit | AuthorityPermit | undefined;
+function startRenewal(permit: LocalPermit, ttlMs: number) { if (!Number.isFinite(ttlMs) || ttlMs <= 0) return; const interval = Math.max(10, Math.min(60000, Math.floor(ttlMs / 3))); permit.renewTimer = setInterval(async () => { if (activePermit === permit) { try { await postJson(permit.port, "/renew", { permitId: permit.permitId }, 5000); } catch {} } }, interval); permit.renewTimer.unref?.(); }
 type AcquirePermitOptions = { request?: (path: string, body: any, signal?: AbortSignal) => Promise<any>; release?: (body: any, signal?: AbortSignal) => Promise<unknown>; ensure?: (signal?: AbortSignal) => Promise<EnsureDaemonResult>; wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>; onUnavailable?: (message: string) => void; warningAfterAttempts?: number; retryMs?: number; signal?: AbortSignal };
 type ProvenanceValidation = { matches: boolean; diagnostic: string };
 function unavailableEnsureResult(diagnostic: string): EnsureDaemonResult { return { compatibility: "invalidOrUnavailable", diagnostic, spawned: false }; }
 function isEnsureDaemonResult(value: unknown): value is EnsureDaemonResult { return isHealthRecord(value) && typeof value.diagnostic === "string" && typeof value.spawned === "boolean" && (COMPATIBILITIES as readonly string[]).includes(String(value.compatibility)); }
-function currentProvenance(result: EnsureDaemonResult): DaemonProvenance | undefined {
-  const health = result.health;
-  if (result.compatibility !== "current" || !health || !isInstanceId(health.instanceId) || typeof health.provider !== "string" || health.protocolVersion !== PROTOCOL_VERSION) return undefined;
-  return { instanceId: health.instanceId, provider: health.provider, protocolVersion: health.protocolVersion };
-}
-function stableHealthIdentity(health?: HealthRecord): string | undefined {
-  const startedAt = health?.startedAt;
-  return parseDaemonStartedAt(startedAt) === undefined ? undefined : startedAt;
-}
-function acquireRequestBody(body: any, provenance: DaemonProvenance | undefined): any {
-  if (!provenance) return body;
-  return { ...body, expectedInstanceId: provenance.instanceId, expectedProvider: provenance.provider, expectedProtocolVersion: provenance.protocolVersion };
-}
-async function preflightDaemon(ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<EnsureDaemonResult> {
-  try {
-    const ensured = await ensure(signal);
-    return isEnsureDaemonResult(ensured) ? ensured : unavailableEnsureResult(UNAVAILABLE_HEALTH);
-  } catch (error) {
-    if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
-    return unavailableEnsureResult(errorText(error));
-  }
-}
-async function validateAcquiredPermitProvenance(preflight: EnsureDaemonResult, response: unknown, ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<ProvenanceValidation> {
-  const provenance = currentProvenance(preflight);
-  if (preflight.compatibility === "current") {
-    const matches = provenance !== undefined && isHealthRecord(response) && response.instanceId === provenance.instanceId && response.provider === provenance.provider && response.protocolVersion === provenance.protocolVersion;
-    return { matches, diagnostic: matches ? "acquire response matches preflight provenance" : "acquire response does not match preflight daemon provenance" };
-  }
-  const identity = stableHealthIdentity(preflight.health);
-  if (!identity) return { matches: false, diagnostic: "legacy health has no stable startedAt identity" };
-  const postflight = await preflightDaemon(ensure, signal);
-  const matches = isCompatibleHealth(postflight) && stableHealthIdentity(postflight.health) === identity;
-  return { matches, diagnostic: matches ? "legacy health identity matches after acquire" : `legacy daemon identity changed during acquire: ${postflight.diagnostic}` };
-}
+function currentProvenance(result: EnsureDaemonResult): DaemonProvenance | undefined { const health = result.health; if (result.compatibility !== "current" || !health || !isUuid(health.instanceId) || typeof health.provider !== "string" || health.protocolVersion !== PROTOCOL_VERSION) return undefined; return { instanceId: health.instanceId, provider: health.provider, protocolVersion: health.protocolVersion }; }
+function parseDaemonStartedAt(value: unknown): number | undefined { if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return undefined; const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : undefined; }
+function stableHealthIdentity(health?: HealthRecord): string | undefined { const startedAt = health?.startedAt; return parseDaemonStartedAt(startedAt) === undefined ? undefined : startedAt as string; }
+function acquireRequestBody(body: any, provenance: DaemonProvenance | undefined): any { return provenance ? { ...body, expectedInstanceId: provenance.instanceId, expectedProvider: provenance.provider, expectedProtocolVersion: provenance.protocolVersion } : body; }
+async function preflightDaemon(ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<EnsureDaemonResult> { try { const ensured = await ensure(signal); return isEnsureDaemonResult(ensured) ? ensured : unavailableEnsureResult(UNAVAILABLE_HEALTH); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); return unavailableEnsureResult(errorText(error)); } }
+async function validateAcquiredPermitProvenance(preflight: EnsureDaemonResult, response: unknown, ensure: NonNullable<AcquirePermitOptions["ensure"]>, signal?: AbortSignal): Promise<ProvenanceValidation> { const provenance = currentProvenance(preflight); if (preflight.compatibility === "current") { const matches = provenance !== undefined && isHealthRecord(response) && response.instanceId === provenance.instanceId && response.provider === provenance.provider && response.protocolVersion === provenance.protocolVersion; return { matches, diagnostic: matches ? "acquire response matches preflight provenance" : "acquire response does not match preflight daemon provenance" }; } const identity = stableHealthIdentity(preflight.health); if (!identity) return { matches: false, diagnostic: "legacy health has no stable startedAt identity" }; const postflight = await preflightDaemon(ensure, signal); const matches = isCompatibleHealth(postflight) && stableHealthIdentity(postflight.health) === identity; return { matches, diagnostic: matches ? "legacy health identity matches after acquire" : `legacy daemon identity changed during acquire: ${postflight.diagnostic}` }; }
 export async function acquirePermitResponse(port: number, body: any, directory: string, options: AcquirePermitOptions = {}): Promise<any> {
-  const signal = options.signal;
-  const expectedProvider = String(body.provider ?? "anthropic");
-  const ensure = options.ensure ?? ((ensureSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: ensureSignal }));
-  const request = options.request ?? ((pathname: string, payload: any, requestSignal?: AbortSignal) => postJson(port, pathname, payload, 7200000, requestSignal));
-  const releasePermit = options.release ?? ((payload: any, releaseSignal?: AbortSignal) => postJson(port, "/release", payload, 5000, releaseSignal));
-  const wait = options.wait ?? waitForRetry;
-  const warningAfterAttempts = options.warningAfterAttempts ?? WARNING_ATTEMPTS;
-  const retryMs = options.retryMs ?? RETRY_MS;
-  const releaseAcquiredPermit = async (permitId: unknown) => { try { await releasePermit({ permitId }); } catch {} };
+  const signal = options.signal; const expectedProvider = String(body.provider ?? "anthropic"); const ensure = options.ensure ?? ((ensureSignal?: AbortSignal) => ensureDaemon(directory, port, expectedProvider, { signal: ensureSignal })); const request = options.request ?? ((pathname: string, payload: any, requestSignal?: AbortSignal) => postJson(port, pathname, payload, 7200000, requestSignal)); const releasePermit = options.release ?? ((payload: any, releaseSignal?: AbortSignal) => postJson(port, "/release", payload, 5000, releaseSignal)); const wait = options.wait ?? waitForRetry; const warningAfterAttempts = options.warningAfterAttempts ?? WARNING_ATTEMPTS; const retryMs = options.retryMs ?? RETRY_MS; const releaseAcquiredPermit = async (permitId: unknown) => { try { await releasePermit({ permitId }); } catch {} };
   let warned = false; let reportedIncompatibility = false; let lastDiagnostic = UNAVAILABLE_HEALTH;
-  for (let attempt = 1; ; attempt++) {
-    if (isAborted(signal)) throw abortError();
-    const preflight = await preflightDaemon(ensure, signal);
-    lastDiagnostic = preflight.diagnostic;
-    if (isAborted(signal)) throw abortError();
-    let response: any;
-    if (isCompatibleHealth(preflight)) {
-      try { response = await request("/acquire", acquireRequestBody(body, currentProvenance(preflight)), signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); }
-    }
-    if (response?.permitId) {
-      let validation: ProvenanceValidation;
-      try { validation = await validateAcquiredPermitProvenance(preflight, response, ensure, signal); } catch (error) {
-        await releaseAcquiredPermit(response.permitId);
-        if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError();
-        validation = { matches: false, diagnostic: errorText(error) };
-      }
-      if (isAborted(signal)) { await releaseAcquiredPermit(response.permitId); throw abortError(); }
-      if (validation.matches) return response;
-      lastDiagnostic = validation.diagnostic;
-      await releaseAcquiredPermit(response.permitId);
-    }
-    if (preflight.compatibility === "incompatible" && !reportedIncompatibility) {
-      reportedIncompatibility = true;
-      options.onUnavailable?.(`Claude permit gate on port ${port} is incompatible: ${preflight.diagnostic}. Provider request remains blocked. Restart it only during approved idle maintenance.`);
-    }
-    if (!warned && attempt >= warningAfterAttempts) {
-      warned = true;
-      const detail = recoveryMessage(port) ?? lastDiagnostic;
-      options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`);
-    }
-    await wait(retryMs, signal);
-  }
+  for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); const preflight = await preflightDaemon(ensure, signal); lastDiagnostic = preflight.diagnostic; if (isAborted(signal)) throw abortError(); let response: any; if (isCompatibleHealth(preflight)) { try { response = await request("/acquire", acquireRequestBody(body, currentProvenance(preflight)), signal); } catch (error) { if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); } } if (response?.permitId) { let validation: ProvenanceValidation; try { validation = await validateAcquiredPermitProvenance(preflight, response, ensure, signal); } catch (error) { await releaseAcquiredPermit(response.permitId); if (isAborted(signal) || (error as Error)?.name === "AbortError") throw abortError(); validation = { matches: false, diagnostic: errorText(error) }; } if (isAborted(signal)) { await releaseAcquiredPermit(response.permitId); throw abortError(); } if (validation.matches) return response; lastDiagnostic = validation.diagnostic; await releaseAcquiredPermit(response.permitId); } if (preflight.compatibility === "incompatible" && !reportedIncompatibility) { reportedIncompatibility = true; options.onUnavailable?.(`Claude permit gate on port ${port} is incompatible: ${preflight.diagnostic}. Provider request remains blocked. Restart it only during approved idle maintenance.`); } if (!warned && attempt >= warningAfterAttempts) { warned = true; const detail = recoveryMessage(port) ?? lastDiagnostic; options.onUnavailable?.(`Claude permit gate on port ${port} remains unavailable after ${attempt} attempts${detail ? `: ${detail}` : ""}. Provider request remains blocked.`); } await wait(retryMs, signal); }
 }
-async function acquire(ctx: any, directory: string, port: number, provider: string) {
-  if (activePermit || isAborted(ctx.signal)) return;
-  ctx.ui?.setStatus?.("claude-permit-gate", "Claude: waiting for permit...");
-  try {
-    const response = await acquirePermitResponse(port, { session: sessionId, cwd: ctx.cwd, provider }, directory, { signal: ctx.signal, onUnavailable: (message) => { ctx.ui?.setStatus?.("claude-permit-gate", "Claude: blocked; permit gate unavailable"); ctx.ui?.notify?.(message, "error"); } });
-    if (isAborted(ctx.signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); return; }
-    const permit: Permit = { permitId: String(response.permitId), port }; activePermit = permit; startRenewal(permit, Number(response.permitTtlMs || 0));
-    const waited = Number(response.waitedMs || 0); ctx.ui?.setStatus?.("claude-permit-gate", waited > 1000 ? `Claude: permit after ${Math.round(waited / 1000)}s` : "Claude: permit active"); if (VERBOSE) ctx.ui?.notify?.(`Claude permit granted after ${waited}ms`, "info");
-  } catch (error) {
-    if (!isAborted(ctx.signal) && (error as Error)?.name !== "AbortError") throw error;
-  } finally {
-    if (isAborted(ctx.signal)) ctx.ui?.setStatus?.("claude-permit-gate", undefined);
-  }
-}
-async function release(throttle: boolean, reason: string, cooldownMs?: number) {
-  const permit = activePermit; if (!permit) return; activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer);
-  try { await postJson(permit.port, throttle ? "/throttle" : "/release", { permitId: permit.permitId, reason, cooldownMs }, 5000); } catch {}
-}
-function providerFailure(message: any): "rate-limit" | "overloaded" | undefined {
-  if (message?.stopReason !== "error" || !message?.errorMessage) return undefined;
-  const text = String(message.errorMessage); if (/overloaded_error|overloaded/i.test(text)) return "overloaded";
-  return /rate.?limit|rate_limit_error|too many requests|429|529/i.test(text) && !/quota|billing|balance|insufficient/i.test(text) ? "rate-limit" : undefined;
-}
-function cooldown(failure: "rate-limit" | "overloaded") { return failure === "overloaded" ? Number(process.env.CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS || 60000) : Number(process.env.CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS || 20000); }
-function parseDaemonStartedAt(value: unknown): number | undefined {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return undefined;
-  const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : undefined;
-}
-function formatDaemonAge(startedAt: unknown): string {
-  const timestamp = parseDaemonStartedAt(startedAt); if (timestamp === undefined) return "unknown";
-  const seconds = Math.floor(Math.max(0, Date.now() - timestamp) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-function doctorLine(provider: string, port: number, rawHealth: unknown, unavailable?: string): string {
-  const result = classifyDaemonHealth(rawHealth, provider); const health = result.health;
-  const schema = typeof health?.version === "number" ? `v${health.version}` : "unknown";
-  const protocol = typeof health?.protocolVersion === "number" ? String(health.protocolVersion) : "absent";
-  const owner = typeof health?.provider === "string" ? health.provider : "absent";
-  const compatibility = result.compatibility === "legacy" ? "legacy (restart when idle)" : result.compatibility;
-  const count = (field: string) => typeof health?.[field] === "number" ? String(health[field]) : "unknown";
-  const state = health?.ok === true ? `; active ${count("active")}, queued ${count("queued")}, concurrency ${count("current")}/${count("max")}, throttles ${count("throttles")}` : `; ${unavailable ?? result.diagnostic}`;
-  return `  ${provider} (${port}): compatibility ${compatibility}; schema ${schema}; protocol ${protocol}; provider ${owner}; daemon age ${formatDaemonAge(health?.startedAt)}${state}`;
-}
+async function acquire(ctx: any, directory: string, port: number, provider: string) { if (activePermit || isAborted(ctx.signal)) return; ctx.ui?.setStatus?.("claude-permit-gate", "Claude: waiting for permit..."); try { const response = await acquirePermitResponse(port, { session: sessionId, cwd: ctx.cwd, provider }, directory, { signal: ctx.signal, onUnavailable: (message) => { ctx.ui?.setStatus?.("claude-permit-gate", "Claude: blocked; permit gate unavailable"); ctx.ui?.notify?.(message, "error"); } }); if (isAborted(ctx.signal)) { await postJson(port, "/release", { permitId: response.permitId }, 5000).catch(() => {}); return; } const permit: LocalPermit = { kind: "local", permitId: String(response.permitId), port }; activePermit = permit; startRenewal(permit, Number(response.permitTtlMs || 0)); const waited = Number(response.waitedMs || 0); ctx.ui?.setStatus?.("claude-permit-gate", waited > 1000 ? `Claude: permit after ${Math.round(waited / 1000)}s` : "Claude: permit active"); if (VERBOSE) ctx.ui?.notify?.(`Claude permit granted after ${waited}ms`, "info"); } catch (error) { if (!isAborted(ctx.signal) && (error as Error)?.name !== "AbortError") throw error; } finally { if (isAborted(ctx.signal)) ctx.ui?.setStatus?.("claude-permit-gate", undefined); } }
 
+// Authority client. This module owns HTTPS requests and a local retry ledger only; it has no local daemon recovery path.
+type KeychainReference = { service: string; account: string };
+type AuthorityLane = { port: number; accountBindingId: string };
+export type AuthorityClientConfig = { mode: "authority-client"; origin: string; expectedAuthorityId: string; installationId: string; keychain: { permitMutate: KeychainReference; snapshotRead: KeychainReference; allowancePublish: KeychainReference }; monitorSource: "local" | "authority"; publisherEnabled: boolean; lanes: Record<(typeof AUTHORITY_PROVIDERS)[number], AuthorityLane>; statePath: string };
+type Ticket = Record<string, any>;
+type UnresolvedTicket = { provider: string; requestId: string; sessionId: string; createdAtEpochMs: number; ticket?: Ticket; operation?: { action: string; operationId: string }; completed?: boolean };
+type AuthorityLedger = { schemaVersion: 1; tickets: Record<string, UnresolvedTicket> };
+type AuthorityResponse = { status: number; body: any; headers?: Record<string, string | undefined> };
+type AuthorityRequest = (request: { method: string; provider: string; port: number; pathname: string; body?: any; authorization: string; signal?: AbortSignal }) => Promise<AuthorityResponse>;
+type AuthorityClientOptions = { request?: AuthorityRequest; token?: (reference: KeychainReference) => Promise<string>; readLedger?: () => Promise<AuthorityLedger>; writeLedger?: (ledger: AuthorityLedger) => Promise<void>; wait?: (ms: number, signal?: AbortSignal) => Promise<void> };
+
+function configError(message: string): never { throw new Error(`Claude permit authority configuration is invalid: ${message}`); }
+function hasOnlyKeys(value: Record<string, any>, keys: readonly string[]) { return Object.keys(value).every((key) => keys.includes(key)); }
+function validReference(value: unknown): value is KeychainReference { return isRecord(value) && hasOnlyKeys(value, ["service", "account"]) && typeof value.service === "string" && /^[ -~]{1,64}$/.test(value.service) && typeof value.account === "string" && /^[ -~]{1,64}$/.test(value.account); }
+function validOrigin(value: unknown): value is string { if (typeof value !== "string") return false; try { const parsed = new URL(value); const host = parsed.hostname; const dnsHost = host.includes(".") && !/^\d+\.\d+\.\d+\.\d+$/.test(host) && host.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)); return parsed.protocol === "https:" && parsed.username === "" && parsed.password === "" && parsed.port === "" && parsed.search === "" && parsed.hash === "" && dnsHost && value === `https://${host}`; } catch { return false; } }
+function authorityConfigFromFile(file: string): Omit<AuthorityClientConfig, "statePath"> {
+  let stat: fs.Stats; let raw: string; try { stat = fs.statSync(file); raw = fs.readFileSync(file, "utf8"); } catch { configError("configuration cannot be read"); }
+  if (!stat!.isFile() || (stat!.mode & 0o077) !== 0) configError("configuration must be an owner-only regular file");
+  let parsed: unknown; try { parsed = JSON.parse(raw!); } catch { configError("configuration is not JSON"); }
+  if (!isRecord(parsed) || !hasOnlyKeys(parsed, ["schemaVersion", "mode", "origin", "expectedAuthorityId", "installationId", "keychain", "monitorSource", "publisherEnabled", "lanes"])) configError("configuration fields are invalid");
+  if (parsed.schemaVersion !== 1 || parsed.mode !== "authority-client" || !validOrigin(parsed.origin) || !isUuid(parsed.expectedAuthorityId) || !isUuid(parsed.installationId) || !isRecord(parsed.keychain) || !hasOnlyKeys(parsed.keychain, ["permitMutate", "snapshotRead", "allowancePublish"]) || !validReference(parsed.keychain.permitMutate) || !validReference(parsed.keychain.snapshotRead) || !validReference(parsed.keychain.allowancePublish) || !["local", "authority"].includes(String(parsed.monitorSource)) || typeof parsed.publisherEnabled !== "boolean" || !isRecord(parsed.lanes) || !hasOnlyKeys(parsed.lanes, AUTHORITY_PROVIDERS)) configError("configuration fields are invalid");
+  const lanes = {} as AuthorityClientConfig["lanes"];
+  for (const [index, provider] of AUTHORITY_PROVIDERS.entries()) { const lane = parsed.lanes[provider]; if (!isRecord(lane) || !hasOnlyKeys(lane, ["port", "accountBindingId"]) || lane.port !== 8791 + index || !isUuid(lane.accountBindingId)) configError(`lane ${provider} is invalid`); lanes[provider] = { port: lane.port, accountBindingId: lane.accountBindingId }; }
+  return { mode: "authority-client", origin: parsed.origin, expectedAuthorityId: parsed.expectedAuthorityId, installationId: parsed.installationId, keychain: parsed.keychain as AuthorityClientConfig["keychain"], monitorSource: parsed.monitorSource as "local" | "authority", publisherEnabled: parsed.publisherEnabled, lanes };
+}
+export function resolveClientMode(environment: NodeJS.ProcessEnv = process.env): { mode: "local" } | AuthorityClientConfig {
+  const mode = environment.CLAUDE_PERMIT_GATE_MODE ?? "local";
+  if (mode !== "local" && mode !== "authority-client") configError("mode must be local or authority-client");
+  const authorityEnvironment = Object.keys(environment).filter((name) => name === "CLAUDE_PERMIT_GATE_ORIGIN" || name === "CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG" || name === "CLAUDE_PERMIT_GATE_DAEMON_MODE" || name.startsWith("CLAUDE_PERMIT_GATE_AUTHORITY_"));
+  if (mode === "local") { if (authorityEnvironment.length) configError("local mode cannot contain authority settings"); return { mode: "local" }; }
+  const origin = environment.CLAUDE_PERMIT_GATE_ORIGIN; const file = environment.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG;
+  if (!validOrigin(origin) || !file || !path.isAbsolute(file) || environment.CLAUDE_PERMIT_GATE_DAEMON_MODE !== undefined) configError("authority mode requires an HTTPS origin, an absolute configuration path, and no daemon mode");
+  const config = authorityConfigFromFile(file);
+  if (config.origin !== origin) configError("environment and configuration origin differ");
+  if (environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS !== undefined) { const ports = providerPorts(environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS); if (Object.keys(ports).length !== AUTHORITY_PROVIDERS.length || AUTHORITY_PROVIDERS.some((provider) => ports[provider] !== config.lanes[provider].port)) configError("environment and configuration ports differ"); }
+  return { ...config, statePath: path.join(path.dirname(file), "authority-client-tickets-v1.json") };
+}
+function keychainToken(reference: KeychainReference): Promise<string> { return new Promise((resolve, reject) => { execFile("/usr/bin/security", ["find-generic-password", "-s", reference.service, "-a", reference.account, "-w"], { encoding: "utf8", maxBuffer: 1024 }, (error, stdout) => { if (error) { reject(new Error("authority token is unavailable")); return; } const token = stdout.trim(); if (!/^[A-Za-z0-9._:-]{1,64}\.[A-Za-z0-9_-]{43}$/.test(token)) { reject(new Error("authority token is invalid")); return; } resolve(token); }); }); }
+function defaultLedgerReader(file: string): () => Promise<AuthorityLedger> { return async () => { try { const stat = await fsp.stat(file); if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error(); const parsed = JSON.parse(await fsp.readFile(file, "utf8")); if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isRecord(parsed.tickets)) throw new Error(); return parsed as AuthorityLedger; } catch (error: any) { if (error?.code === "ENOENT") return { schemaVersion: 1, tickets: {} }; throw new Error("authority retry state is unavailable"); } }; }
+function defaultLedgerWriter(file: string): (ledger: AuthorityLedger) => Promise<void> { return async (ledger) => { const directory = path.dirname(file); const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`; const payload = JSON.stringify(ledger); await fsp.mkdir(directory, { recursive: true, mode: 0o700 }); await fsp.writeFile(temporary, payload, { encoding: "utf8", mode: 0o600, flag: "wx" }); await fsp.rename(temporary, file); await fsp.chmod(file, 0o600); }; }
+function defaultAuthorityRequest(origin: string): AuthorityRequest { return async ({ method, port, pathname, body, authorization, signal }) => new Promise((resolve, reject) => { const base = new URL(origin); const payload = body === undefined ? undefined : JSON.stringify(body); const request = https.request({ protocol: "https:", hostname: base.hostname, servername: base.hostname, port, method, path: pathname, headers: { accept: "application/json", authorization, "cache-control": "no-store", "content-type": "application/json", ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (response) => { let text = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { text += chunk; if (Buffer.byteLength(text) > 65_536) request.destroy(new Error("authority response exceeds limit")); }); response.on("end", () => { let parsed: any = {}; try { parsed = text ? JSON.parse(text) : {}; } catch { reject(new Error("authority response is invalid")); return; } resolve({ status: response.statusCode ?? 0, body: parsed, headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value[0] : value])) }); }); }); const abort = () => request.destroy(abortError()); if (signal?.aborted) { abort(); return; } signal?.addEventListener("abort", abort, { once: true }); request.on("error", reject); request.on("close", () => signal?.removeEventListener("abort", abort)); request.setTimeout(30_000, () => request.destroy(new Error("authority request timed out"))); if (payload !== undefined) request.write(payload); request.end(); }); }
+class AuthorityResponseError extends Error { response?: AuthorityResponse; constructor(response?: AuthorityResponse) { super(response ? String(response.body?.error?.message ?? "authority request failed") : "authority request failed"); this.response = response; } get retryable() { return !this.response || this.response.status === 429 || (this.response.status === 503 && this.response.body?.error?.retryable === true); } get retryAfterMs() { const value = this.response?.body?.error?.retryAfterMs; return Number.isSafeInteger(value) && value >= 1000 ? value : RETRY_MS; } }
+function retryDelay(error: AuthorityResponseError, attempt: number) { return Math.min(30_000, Math.max(error.retryAfterMs, RETRY_MS) + Math.floor(Math.random() * Math.min(500, 25 * attempt))); }
+function validAuthorityHealth(value: unknown, config: AuthorityClientConfig, provider: string): boolean { const lane = config.lanes[provider as keyof AuthorityClientConfig["lanes"]]; return isRecord(value) && value.schemaVersion === 1 && value.protocolVersion === AUTHORITY_PROTOCOL_VERSION && value.authorityId === config.expectedAuthorityId && isUuid(value.instanceId) && value.provider === provider && value.port === lane.port && value.stateSchemaVersion === 2 && value.status === "ready"; }
+function validTicket(value: unknown, record: UnresolvedTicket): value is Ticket { return isRecord(value) && value.schemaVersion === 1 && isUuid(value.ticketId) && value.requestId === record.requestId && value.provider === record.provider && Number.isSafeInteger(value.revision) && typeof value.state === "string" && Object.hasOwn(value, "lease"); }
+export type AuthorityPermit = { kind: "authority"; client: ReturnType<typeof createAuthorityClient>; record: UnresolvedTicket; renewTimer?: ReturnType<typeof setInterval> };
+export function createAuthorityClient(config: AuthorityClientConfig, options: AuthorityClientOptions = {}) {
+  const request = options.request ?? defaultAuthorityRequest(config.origin); const token = options.token ?? keychainToken; const readLedger = options.readLedger ?? defaultLedgerReader(config.statePath); const writeLedger = options.writeLedger ?? defaultLedgerWriter(config.statePath); const wait = options.wait ?? waitForRetry;
+  const save = async (record: UnresolvedTicket) => { const ledger = await readLedger(); ledger.tickets[record.provider] = record; await writeLedger(ledger); };
+  const remove = async (provider: string) => { const ledger = await readLedger(); delete ledger.tickets[provider]; await writeLedger(ledger); };
+  const send = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal): Promise<any> => { const authorization = await token(config.keychain.permitMutate); const response = await request({ method, provider, port: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].port, pathname, body, authorization, signal }); if (response.status >= 200 && response.status < 300) return response.body; throw new AuthorityResponseError(response); };
+  const sendRetry = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); try { return await send(method, provider, pathname, body, signal); } catch (error) { if (isAborted(signal) || (error as Error).name === "AbortError") throw abortError(); const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
+  const sendOperation = async (provider: string, pathname: string, body: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { try { return await send("POST", provider, pathname, body, signal); } catch (error) { const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.response || !failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
+  const health = async (provider: string, signal?: AbortSignal) => { const result = await sendRetry("GET", provider, "/v1/health", undefined, signal); if (!validAuthorityHealth(result, config, provider)) throw new Error("authority health identity is invalid"); };
+  const get = async (provider: string, record: UnresolvedTicket, signal?: AbortSignal): Promise<Ticket> => { const result = await sendRetry("GET", provider, `/v1/tickets/${record.ticket!.ticketId}`, undefined, signal); if (!validTicket(result, record)) throw new Error("authority ticket identity is invalid"); record.ticket = result; await save(record); return result; };
+  const operation = async (provider: string, record: UnresolvedTicket, action: "claim" | "cancel" | "renew" | "complete", additions: Record<string, unknown>, signal?: AbortSignal): Promise<Ticket> => { if (!record.ticket || !validTicket(record.ticket, record)) throw new Error("authority retry state is invalid"); const operationId = record.operation?.action === action ? record.operation.operationId : crypto.randomUUID(); record.operation = { action, operationId }; await save(record); const body = () => ({ schemaVersion: 1, operationId, expectedRevision: record.ticket!.revision, installationId: config.installationId, provider, accountBindingId: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].accountBindingId, ...additions });
+    try { const result = await sendOperation(provider, `/v1/tickets/${record.ticket.ticketId}/${action}`, body(), signal); if (!validTicket(result, record)) throw new Error("authority ticket response is invalid"); record.ticket = result; record.operation = undefined; await save(record); return result; } catch (error) { if (error instanceof AuthorityResponseError && error.response?.status === 409 && error.response.body?.error?.code === "stale_revision") { const current = await get(provider, record, signal); const completed = action === "complete" && ["released", "throttled"].includes(current.state); const claimed = action === "claim" && ["active", "uncertain"].includes(current.state); const cancelled = action === "cancel" && current.state === "cancelled"; const renewed = action === "renew" && current.lease?.renewSequence === additions.renewSequence; if (completed || claimed || cancelled || renewed) { record.operation = undefined; await save(record); return current; } record.operation = { action, operationId }; await save(record); return operation(provider, record, action, additions, signal); }
+      if (error instanceof AuthorityResponseError && error.response && !error.retryable) throw error;
+      // Lost mutation replies are resolved from the authoritative ticket before the exact operation is retried.
+      const current = await get(provider, record, signal).catch(() => undefined); const completed = action === "complete" && ["released", "throttled"].includes(current?.state); const claimed = action === "claim" && ["active", "uncertain"].includes(current?.state); const cancelled = action === "cancel" && current?.state === "cancelled"; const renewed = action === "renew" && current?.lease?.renewSequence === additions.renewSequence; if (completed || claimed || cancelled || renewed) { record.operation = undefined; await save(record); return current!; } return operation(provider, record, action, additions, signal); }
+  };
+  const acquire = async (provider: string, signal?: AbortSignal): Promise<UnresolvedTicket> => { if (!(AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) throw new Error("provider is not configured for authority mode"); await health(provider, signal); const ledger = await readLedger(); let record = ledger.tickets[provider]; if (!record) { record = { provider, requestId: crypto.randomUUID(), sessionId: crypto.randomUUID(), createdAtEpochMs: Date.now() }; await save(record); }
+    if (!record.ticket) { const created = await sendRetry("POST", provider, "/v1/tickets", { schemaVersion: 1, provider, accountBindingId: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].accountBindingId, installationId: config.installationId, sessionId: record.sessionId, requestId: record.requestId, createdAtEpochMs: record.createdAtEpochMs }, signal); if (!validTicket(created, record)) throw new Error("authority create response is invalid"); record.ticket = created; await save(record); }
+    for (;;) { if (isAborted(signal)) { if (["queued", "offered"].includes(record.ticket!.state)) await operation(provider, record, "cancel", {}, signal).catch(() => {}); throw abortError(); } const ticket = record.ticket!; if (ticket.state === "active" || ticket.state === "uncertain") return record; if (ticket.state === "offered") { const claimed = await operation(provider, record, "claim", {}, signal); if (claimed.state === "active" || claimed.state === "uncertain") return record; } else if (["cancelled", "released", "throttled", "offerExpired"].includes(ticket.state)) { await remove(provider); return acquire(provider, signal); } else { await wait(RETRY_MS, signal); await get(provider, record, signal); } }
+  };
+  const renew = async (record: UnresolvedTicket) => { const lease = record.ticket?.lease; if (!lease || !isUuid(lease.leaseId)) throw new Error("authority lease is invalid"); return operation(record.provider, record, "renew", { leaseId: lease.leaseId, generation: lease.generation, renewSequence: lease.renewSequence + 1 }); };
+  const complete = async (record: UnresolvedTicket, failure?: "rate-limit" | "overloaded") => { const lease = record.ticket?.lease; if (!lease || !isUuid(lease.leaseId)) throw new Error("authority lease is invalid"); const additions = failure ? { leaseId: lease.leaseId, generation: lease.generation, outcome: "throttled", reason: failure === "rate-limit" ? "assistant_rate_limit" : "assistant_overloaded", cooldownMs: cooldown(failure) } : { leaseId: lease.leaseId, generation: lease.generation, outcome: "released", reason: null }; const completed = await operation(record.provider, record, "complete", additions); if (!["released", "throttled"].includes(completed.state)) throw new Error("authority completion was not acknowledged"); await remove(record.provider); };
+  return { acquire, renew, complete, cancel: async (record: UnresolvedTicket) => operation(record.provider, record, "cancel", {}), health };
+}
+async function acquireAuthority(ctx: any, client: ReturnType<typeof createAuthorityClient>, provider: string) { if (activePermit || isAborted(ctx.signal)) return; ctx.ui?.setStatus?.("claude-permit-gate", "Claude: waiting for shared permit..."); const record = await client.acquire(provider, ctx.signal); if (isAborted(ctx.signal)) { await client.cancel(record).catch(() => {}); return; } const permit: AuthorityPermit = { kind: "authority", client, record }; activePermit = permit; const interval = Math.max(5_000, Math.min(60_000, Math.floor(Number(record.ticket?.lease?.renewByEpochMs ?? Date.now() + 15_000) - Date.now()) / 2)); permit.renewTimer = setInterval(() => { if (activePermit === permit) void client.renew(record).catch(() => {}); }, interval); permit.renewTimer.unref?.(); ctx.ui?.setStatus?.("claude-permit-gate", "Claude: shared permit active"); }
+
+function providerFailure(message: any): "rate-limit" | "overloaded" | undefined { if (message?.stopReason !== "error" || !message?.errorMessage) return undefined; const text = String(message.errorMessage); if (/overloaded_error|overloaded/i.test(text)) return "overloaded"; return /rate.?limit|rate_limit_error|too many requests|429|529/i.test(text) && !/quota|billing|balance|insufficient/i.test(text) ? "rate-limit" : undefined; }
+function cooldown(failure: "rate-limit" | "overloaded") { return failure === "overloaded" ? Number(process.env.CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS || 60000) : Number(process.env.CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS || 20000); }
+async function release(throttle: boolean, reason: string, cooldownMs?: number) { const permit = activePermit; if (!permit) return; if (permit.kind === "authority") { const failure = throttle ? (reason.includes("overloaded") ? "overloaded" : "rate-limit") : undefined; await permit.client.complete(permit.record, failure); if (permit.renewTimer) clearInterval(permit.renewTimer); activePermit = undefined; return; } activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer); try { await postJson(permit.port, throttle ? "/throttle" : "/release", { permitId: permit.permitId, reason, cooldownMs }, 5000); } catch {} }
+function formatDaemonAge(startedAt: unknown): string { const timestamp = parseDaemonStartedAt(startedAt); if (timestamp === undefined) return "unknown"; const seconds = Math.floor(Math.max(0, Date.now() - timestamp) / 1000); if (seconds < 60) return `${seconds}s`; const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m`; return `${Math.floor(minutes / 60)}h ${minutes % 60}m`; }
+function doctorLine(provider: string, port: number, rawHealth: unknown, unavailable?: string): string { const result = classifyDaemonHealth(rawHealth, provider); const health = result.health; const schema = typeof health?.version === "number" ? `v${health.version}` : "unknown"; const protocol = typeof health?.protocolVersion === "number" ? String(health.protocolVersion) : "absent"; const owner = typeof health?.provider === "string" ? health.provider : "absent"; const compatibility = result.compatibility === "legacy" ? "legacy (restart when idle)" : result.compatibility; const count = (field: string) => typeof health?.[field] === "number" ? String(health[field]) : "unknown"; const state = health?.ok === true ? `; active ${count("active")}, queued ${count("queued")}, concurrency ${count("current")}/${count("max")}, throttles ${count("throttles")}` : `; ${unavailable ?? result.diagnostic}`; return `  ${provider} (${port}): compatibility ${compatibility}; schema ${schema}; protocol ${protocol}; provider ${owner}; daemon age ${formatDaemonAge(health?.startedAt)}${state}`; }
+let sessionId = "unknown";
 export default function (pi: ExtensionAPI) {
   if (DISABLED) return;
-  const directory = path.dirname(fileURLToPath(import.meta.url));
-  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const port = ctx.model && PROVIDER_PORTS[ctx.model.provider]; if (port) { try { await ensureDaemon(directory, port, ctx.model.provider); } catch {} if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); } });
-  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; ctx.ui.setStatus("claude-permit-gate", PROVIDER_PORTS[event.model?.provider] ? "Claude gate: ready" : undefined); });
-  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; const port = provider && PROVIDER_PORTS[provider]; if (!provider || !port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
-  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); if (ctx.hasUI && PROVIDER_PORTS[ctx.model?.provider]) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); return undefined; });
-  pi.on("agent_end", async () => { await release(false, "agent-end"); });
-  pi.on("session_shutdown", async () => { await release(false, "session-shutdown"); });
-  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const lines = ["Claude permit gate doctor:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  const mode = resolveClientMode(); // Configuration is complete before the first hook is registered.
+  const directory = mode.mode === "local" ? path.dirname(fileURLToPath(import.meta.url)) : undefined;
+  const authorityClient = mode.mode === "authority-client" ? createAuthorityClient(mode) : undefined;
+  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const port = provider && PROVIDER_PORTS[provider]; if (mode.mode === "local" && port) { try { await ensureDaemon(directory, port, provider); } catch {} } if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); });
+  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const ready = mode.mode === "authority-client" ? !!authorityClient && AUTHORITY_PROVIDERS.includes(provider) : !!PROVIDER_PORTS[provider]; ctx.ui.setStatus("claude-permit-gate", ready ? "Claude gate: ready" : undefined); });
+  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; if (!provider) return undefined; if (mode.mode === "authority-client") { if ((AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) await acquireAuthority(ctx, authorityClient!, provider); return undefined; } const port = PROVIDER_PORTS[provider]; if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
+  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); if (ctx.hasUI && (mode.mode === "authority-client" ? AUTHORITY_PROVIDERS.includes(ctx.model?.provider) : PROVIDER_PORTS[ctx.model?.provider])) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); return undefined; });
+  pi.on("agent_end", async () => { await release(false, "agent-end"); }); pi.on("session_shutdown", async () => { await release(false, "session-shutdown"); });
+  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { if (mode.mode === "authority-client") { ctx.ui.notify("Claude permit authority client is configured.", "info"); return; } const lines = ["Claude permit gate doctor:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
 }

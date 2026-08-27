@@ -106,6 +106,12 @@ Only providers in this map are gated. Every Pi process that should share a pool 
 
 ## Configuration
 
+`CLAUDE_PERMIT_GATE_MODE=local` is the default and preserves the local H1 daemon workflow. In local mode, `CLAUDE_PERMIT_GATE_ORIGIN`, `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG`, `CLAUDE_PERMIT_GATE_DAEMON_MODE`, and every `CLAUDE_PERMIT_GATE_AUTHORITY_*` setting must be absent.
+
+`CLAUDE_PERMIT_GATE_MODE=authority-client` is an explicit shared-authority client. It requires `CLAUDE_PERMIT_GATE_ORIGIN=https://<dns-host>` and an absolute `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG` path before Pi registers hooks. The owner-only (`0600`) non-secret JSON configuration must conform to `AuthorityClientConfigV1` in the [normative protocol](docs/authority-protocol-v1.md), including its matching origin, authority UUID, stable installation UUID, three Keychain references, monitor fields, and fixed A-D ports/account bindings. An optional `CLAUDE_PERMIT_GATE_PROVIDER_PORTS` must contain exactly that A-D mapping.
+
+Authority-client requests append each configured lane port to the HTTPS origin. They retrieve only the `permit:mutate` bearer from the configured Keychain reference, verify authority/provider/port/protocol identity before ticket creation, and persist unresolved tickets beside the configuration with owner-only permissions. They never probe loopback, start a daemon, use a local fallback, or include a working directory in authority payloads. A lost mutation response reads the ticket before retrying its operation ID, and Pi does not begin another provider request until the previous completion is acknowledged.
+
 The daemon reads its settings when it first starts. Each pool defaults to two concurrent requests, starts at two, backs off no lower than one, caps a throttle cooldown at one minute, and reclaims unrenewed permits after five minutes.
 
 | Variable | Default | Purpose |
