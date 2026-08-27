@@ -80,6 +80,21 @@ samples=20 min=19ms p50=30ms p90=41ms p99=79ms max=79ms
 
 This bounds transport latency for claim requests but is not the claim p99 itself. A claim adds TLS, bearer verification, scheduler work, and a durable ledger write. Measure claim p99 against live lane daemons before choosing offer TTL, renewal interval, renewal deadline, and terminal retention. A p99 near 79 ms of pure transport means an offer TTL in the low seconds is defensible, but no timing value should be fixed until measured end to end.
 
+### Account fingerprints, Ruminaider side, 11:25-11:35 EDT
+
+SHA-256 over `profile-v1\0<account.uuid>\0<organization.uuid>` from the Anthropic OAuth profile endpoint. Tokens were piped directly into `scripts/account-fingerprint.mjs` and never written to a file, argument, or log.
+
+| Lane | Ruminaider fingerprint |
+| --- | --- |
+| anthropic-a | `697832eaa258f1ecd7d82e809d38b2d55972af05eef8a92bfb5e1088666ea9e1` |
+| anthropic-b | `3aa4697715db0a3d0c1b571177c60998a1db392ebb89c477e4b85b05f9eb7ea5` |
+| anthropic-c | `6a3fa6aee7eca4faa1b10728a41109e4e7c53681dc48c807ec4e7c22f195edba` |
+| anthropic-d | `cfb10e6647ace1d7eba5c4c8da6b22bee372e9ca4489d336d05a613d7d695345` |
+
+All four digests are distinct, so the four lanes are four different accounts on this machine. Lane C was initially skipped because its token had expired at 2026-08-27T01:39Z; the operator reauthenticated it and the fingerprint was taken from the naturally refreshed token.
+
+The peer runs the same check from a scratch clone of the `v0.3.0` tag, because its installed package is pinned to `v0.2.0` at `7f3ce00`, which predates the script. Account-binding UUIDs may be created only after all four pairs match.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
