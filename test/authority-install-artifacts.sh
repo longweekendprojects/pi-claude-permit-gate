@@ -103,9 +103,11 @@ stage_parent="$stage_cleanup_home/Library/Application Support/Claude Permit Auth
 if find "$stage_parent" -mindepth 1 -maxdepth 1 -name '.authority-stage.*' -print -quit | grep -q .; then echo 'preflight stage was not cleaned' >&2; exit 1; fi
 
 bootstrap_live_states() {
+  local lanes
+  lanes="$(IFS=,; printf '%s' "${PROVIDERS[*]}")"
   node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | \
     CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_KEYCHAIN_WRITER=/bin/cat CLAUDE_PERMIT_GATE_TEST_ADMIN_ASSUME_OFFLINE=1 CLAUDE_PERMIT_GATE_OFFER_TTL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS=15000 CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS=86400000 HOME="$LIVE_HOME" \
-    node "$ROOT/scripts/authority-admin.mjs" enroll --installation-id "${BINDINGS[0]}" --scope permit:mutate --lanes "${PROVIDERS[*]// /,}" --token-id installer-test --keychain-service test.authority --keychain-account installer-test --expires-at-epoch-ms "$(( $(date +%s) * 1000 + 3600000 ))"
+    node "$ROOT/scripts/authority-admin.mjs" enroll --installation-id "${BINDINGS[0]}" --scope permit:mutate --lanes "$lanes" --token-id installer-test --keychain-service test.authority --keychain-account installer-test --expires-at-epoch-ms "$(( $(date +%s) * 1000 + 3600000 ))"
   for index in "${!PROVIDERS[@]}"; do
     CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_ADMIN_ASSUME_OFFLINE=1 CLAUDE_PERMIT_GATE_OFFER_TTL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS=15000 CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS=86400000 HOME="$LIVE_HOME" \
       node "$ROOT/scripts/authority-admin.mjs" bootstrap --provider "${PROVIDERS[$index]}" --authority-id "$AUTHORITY" >/dev/null
