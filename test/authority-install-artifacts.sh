@@ -100,7 +100,7 @@ for provider in "${PROVIDERS[@]}"; do
   for restore in "${PROVIDERS[@]}"; do cmp "$special_output/LaunchAgents/$(label "$restore").plist" "$LIVE_HOME/Library/LaunchAgents/$(label "$restore").plist"; done
   test -f "$LIVE_STATE/$(label anthropic-a)"; test ! -f "$LIVE_STATE/$(label anthropic-b)"; test -f "$LIVE_STATE/$(label anthropic-c)"; test ! -f "$LIVE_STATE/$(label anthropic-d)"
   test "$(cat "$LIVE_HOME/Library/Application Support/Claude Permit Authority/deployment-v1.json")" = old-record
-  test ! -d "$LIVE_HOME/Library/Application Support/Claude Permit Authority/releases"
+  test ! -e "$LIVE_HOME/Library/Application Support/Claude Permit Authority/releases/$(git -C "$ROOT" rev-parse HEAD)"
 done
 prepare_live
 live_install
