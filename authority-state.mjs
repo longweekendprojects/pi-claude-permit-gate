@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_EPOCH_MS = 253_402_300_799_999;
 const PROVIDER_PORTS = Object.freeze({ "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 });
 const LANE_IDS = Object.freeze({ "anthropic-a": "A", "anthropic-b": "B", "anthropic-c": "C", "anthropic-d": "D" });
 const TICKET_STATES = new Set(["queued", "offered", "active", "uncertain", "cancelled", "released", "throttled", "offerExpired"]);
@@ -17,6 +19,8 @@ const MAX_NONTERMINAL_PER_LANE = 256;
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_OPERATION_RESULTS = 32;
 const MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION = 256;
+const MAX_ALLOWANCE_REPLAY_RECORDS = MAX_INSTALLATIONS * MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION;
+const MAX_FINGERPRINT_LENGTH = 16_384;
 const MAX_REQUEST_AGE_MS = 30_000;
 const STATE_SCHEMA_VERSION = 2;
 
@@ -108,8 +112,8 @@ function assertSafeInteger(value, minimum = 0) {
 
 function assertPrincipal(principal) {
   if (!isObject(principal) || !isUuid(principal.installationId)) fail("unauthenticated", "principal is unavailable");
-  const providers = principal.providers ?? Object.keys(PROVIDER_PORTS);
-  if (!Array.isArray(providers) || !providers.every((provider) => provider in PROVIDER_PORTS)) fail("unauthenticated", "principal is unavailable");
+  const providers = principal.providers;
+  if (!Array.isArray(providers) || providers.length === 0 || providers.length > Object.keys(PROVIDER_PORTS).length || new Set(providers).size !== providers.length || !providers.every((provider) => provider in PROVIDER_PORTS)) fail("unauthenticated", "principal is unavailable");
   if (principal.accountBindingId !== undefined && !isUuid(principal.accountBindingId)) fail("unauthenticated", "principal is unavailable");
   return { installationId: principal.installationId, providers: new Set(providers), accountBindingId: principal.accountBindingId };
 }
@@ -199,9 +203,18 @@ function stateKeys() {
   ];
 }
 
+function hasExactKeys(value, keys) {
+  return isObject(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function isEpochMs(value) {
+  return isSafeInteger(value, 0, MAX_EPOCH_MS);
+}
+
 function validateWindow(window) {
   if (window === null) return;
-  if (!isObject(window) || Object.keys(window).length !== 3 || !("utilization" in window) || !("status" in window) || !("resetEpochSeconds" in window)) throw new StateFault("allowance window is invalid");
+  const keys = ["utilization", "status", "resetEpochSeconds"];
+  if (!hasExactKeys(window, keys)) throw new StateFault("allowance window is invalid");
   if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization) || window.utilization < 0 || window.utilization > 1_000) throw new StateFault("allowance utilization is invalid");
   if (window.status !== null && !WINDOW_STATUSES.has(window.status)) throw new StateFault("allowance status is invalid");
   if (!isSafeInteger(window.resetEpochSeconds, 1, 253_402_300_799)) throw new StateFault("allowance reset is invalid");
@@ -209,67 +222,208 @@ function validateWindow(window) {
 
 function validateLease(lease) {
   const keys = ["leaseId", "generation", "claimedAtEpochMs", "renewSequence", "renewByEpochMs", "serverDeadlineEpochMs"];
-  if (!isObject(lease) || Object.keys(lease).length !== keys.length || keys.some((key) => !(key in lease)) || !isUuid(lease.leaseId) || !isSafeInteger(lease.generation, 1) || !isSafeInteger(lease.claimedAtEpochMs) || !isSafeInteger(lease.renewSequence) || !isSafeInteger(lease.renewByEpochMs) || !isSafeInteger(lease.serverDeadlineEpochMs) || lease.serverDeadlineEpochMs < lease.renewByEpochMs) throw new StateFault("ticket lease is invalid");
+  if (!hasExactKeys(lease, keys) || !isUuid(lease.leaseId) || !isSafeInteger(lease.generation, 1) || !isEpochMs(lease.claimedAtEpochMs) || !isSafeInteger(lease.renewSequence) || !isEpochMs(lease.renewByEpochMs) || !isEpochMs(lease.serverDeadlineEpochMs) || lease.renewByEpochMs < lease.claimedAtEpochMs || lease.serverDeadlineEpochMs < lease.renewByEpochMs) throw new StateFault("ticket lease is invalid");
+}
+
+function validatePublicTicket(ticket, response) {
+  const keys = ["schemaVersion", "ticketId", "requestId", "provider", "state", "revision", "createdAtEpochMs", "enqueuedAtEpochMs", "offeredAtEpochMs", "offerExpiresAtEpochMs", "terminalAtEpochMs", "terminalReason", "queueAhead", "lease"];
+  if (!hasExactKeys(response, keys) || response.schemaVersion !== 1 || response.ticketId !== ticket.ticketId || response.requestId !== ticket.requestId || response.provider !== ticket.provider || !TICKET_STATES.has(response.state) || !isSafeInteger(response.revision, 1) || response.revision > ticket.revision || response.createdAtEpochMs !== ticket.createdAtEpochMs || response.enqueuedAtEpochMs !== ticket.enqueuedAtEpochMs || !isSafeInteger(response.queueAhead, 0, MAX_RETAINED_RECORDS)) throw new StateFault("ticket replay response is invalid");
+  if (response.offeredAtEpochMs !== null && !isEpochMs(response.offeredAtEpochMs) || response.offerExpiresAtEpochMs !== null && !isEpochMs(response.offerExpiresAtEpochMs) || response.terminalAtEpochMs !== null && !isEpochMs(response.terminalAtEpochMs) || (response.offeredAtEpochMs === null) !== (response.offerExpiresAtEpochMs === null) || response.offeredAtEpochMs !== null && response.offerExpiresAtEpochMs < response.offeredAtEpochMs) throw new StateFault("ticket replay response is invalid");
+  if (response.state === "queued") {
+    if (response.offeredAtEpochMs !== null || response.offerExpiresAtEpochMs !== null || response.terminalAtEpochMs !== null || response.terminalReason !== null || response.lease !== null) throw new StateFault("ticket replay response is invalid");
+  } else if (response.state === "offered") {
+    if (response.offeredAtEpochMs === null || response.offerExpiresAtEpochMs === null || response.terminalAtEpochMs !== null || response.terminalReason !== null || response.lease !== null) throw new StateFault("ticket replay response is invalid");
+  } else if (response.state === "active" || response.state === "uncertain") {
+    if (response.offeredAtEpochMs === null || response.offerExpiresAtEpochMs === null || response.terminalAtEpochMs !== null || response.terminalReason !== null) throw new StateFault("ticket replay response is invalid");
+    validateLease(response.lease);
+  } else {
+    const validReason = response.state === "cancelled" ? ["client_cancelled", "authority_draining"] : response.state === "released" ? ["released", "operator_reconciled"] : response.state === "throttled" ? ["assistant_rate_limit", "assistant_overloaded"] : ["offer_expired"];
+    if (response.terminalAtEpochMs === null || response.lease !== null || !validReason.includes(response.terminalReason)) throw new StateFault("ticket replay response is invalid");
+  }
+}
+
+function parseStoredFingerprint(fingerprint, actions, message) {
+  if (typeof fingerprint !== "string" || fingerprint.length === 0 || fingerprint.length > MAX_FINGERPRINT_LENGTH) throw new StateFault(message);
+  const separator = fingerprint.indexOf(":");
+  const action = separator > 0 ? fingerprint.slice(0, separator) : "";
+  const encodedRequest = separator > 0 ? fingerprint.slice(separator + 1) : "";
+  if (!actions.has(action)) throw new StateFault(message);
+  let request;
+  try { request = JSON.parse(encodedRequest); } catch { throw new StateFault(message); }
+  if (!isObject(request) || canonical(request) !== encodedRequest) throw new StateFault(message);
+  return { action, request };
+}
+
+function validateOperationResult(ticket, result) {
+  const keys = ["operationId", "fingerprint", "response", "recordedAtEpochMs"];
+  if (!hasExactKeys(result, keys) || !isUuid(result.operationId) || !isEpochMs(result.recordedAtEpochMs)) throw new StateFault("ticket operation ledger is invalid");
+  const { action, request } = parseStoredFingerprint(result.fingerprint, new Set(["claim", "cancel", "renew", "complete"]), "ticket operation ledger is invalid");
+  try { validateMutationRequest(request, action); } catch { throw new StateFault("ticket operation ledger is invalid"); }
+  if (request.operationId !== result.operationId || request.installationId !== ticket.installationId || request.provider !== ticket.provider || request.accountBindingId !== ticket.accountBindingId) throw new StateFault("ticket operation ledger is invalid");
+  validatePublicTicket(ticket, result.response);
+  if (result.response.revision !== request.expectedRevision + 1 || action === "claim" && result.response.state !== "active" || action === "cancel" && result.response.state !== "cancelled" || action === "renew" && (result.response.state !== "active" || result.response.lease?.leaseId !== request.leaseId || result.response.lease?.generation !== request.generation || result.response.lease?.renewSequence !== request.renewSequence) || action === "complete" && (result.response.state !== request.outcome || result.response.lease !== null)) throw new StateFault("ticket operation ledger is invalid");
 }
 
 function validateTicketState(ticket) {
   const keys = ["ticketId", "requestId", "provider", "installationId", "accountBindingId", "sessionId", "state", "revision", "createdAtEpochMs", "enqueuedAtEpochMs", "offeredAtEpochMs", "offerExpiresAtEpochMs", "terminalAtEpochMs", "terminalReason", "lease", "operationResults", "createResponse", "queueSequence"];
-  if (!isObject(ticket) || Object.keys(ticket).length !== keys.length || keys.some((key) => !(key in ticket)) || !isUuid(ticket.ticketId) || !isUuid(ticket.requestId) || !(ticket.provider in PROVIDER_PORTS) || !isUuid(ticket.installationId) || !isUuid(ticket.accountBindingId) || !isUuid(ticket.sessionId)) throw new StateFault("ticket identity is invalid");
-  if (!TICKET_STATES.has(ticket.state) || !isSafeInteger(ticket.revision, 1) || !isSafeInteger(ticket.createdAtEpochMs) || !isSafeInteger(ticket.enqueuedAtEpochMs) || !isSafeInteger(ticket.queueSequence, 1)) throw new StateFault("ticket state is invalid");
-  if (ticket.offeredAtEpochMs !== null && !isSafeInteger(ticket.offeredAtEpochMs)) throw new StateFault("ticket offer is invalid");
-  if (ticket.offerExpiresAtEpochMs !== null && !isSafeInteger(ticket.offerExpiresAtEpochMs)) throw new StateFault("ticket offer deadline is invalid");
-  if (ticket.terminalAtEpochMs !== null && !isSafeInteger(ticket.terminalAtEpochMs)) throw new StateFault("ticket terminal state is invalid");
+  if (!hasExactKeys(ticket, keys) || !isUuid(ticket.ticketId) || !isUuid(ticket.requestId) || !(ticket.provider in PROVIDER_PORTS) || !isUuid(ticket.installationId) || !isUuid(ticket.accountBindingId) || !isUuid(ticket.sessionId)) throw new StateFault("ticket identity is invalid");
+  if (!TICKET_STATES.has(ticket.state) || !isSafeInteger(ticket.revision, 1) || !isEpochMs(ticket.createdAtEpochMs) || !isEpochMs(ticket.enqueuedAtEpochMs) || !isSafeInteger(ticket.queueSequence, 1)) throw new StateFault("ticket state is invalid");
+  if (ticket.offeredAtEpochMs !== null && !isEpochMs(ticket.offeredAtEpochMs) || ticket.offerExpiresAtEpochMs !== null && !isEpochMs(ticket.offerExpiresAtEpochMs) || ticket.terminalAtEpochMs !== null && !isEpochMs(ticket.terminalAtEpochMs) || (ticket.offeredAtEpochMs === null) !== (ticket.offerExpiresAtEpochMs === null) || ticket.offeredAtEpochMs !== null && ticket.offerExpiresAtEpochMs < ticket.offeredAtEpochMs) throw new StateFault("ticket state is invalid");
   if (![null, "client_cancelled", "authority_draining", "offer_expired", "released", "assistant_rate_limit", "assistant_overloaded", "operator_reconciled"].includes(ticket.terminalReason)) throw new StateFault("ticket terminal reason is invalid");
-  if (!Array.isArray(ticket.operationResults) || ticket.operationResults.length > MAX_OPERATION_RESULTS || ticket.operationResults.some((result) => !isObject(result) || !isUuid(result.operationId) || typeof result.fingerprint !== "string" || !isObject(result.response) || !isSafeInteger(result.recordedAtEpochMs))) throw new StateFault("ticket operation ledger is invalid");
-  if (ticket.createResponse !== null && !isObject(ticket.createResponse)) throw new StateFault("ticket replay state is invalid");
+  if (!Array.isArray(ticket.operationResults) || ticket.operationResults.length > MAX_OPERATION_RESULTS || new Set(ticket.operationResults.map((result) => result?.operationId)).size !== ticket.operationResults.length) throw new StateFault("ticket operation ledger is invalid");
+  for (const result of ticket.operationResults) validateOperationResult(ticket, result);
+  if (ticket.createResponse === null) throw new StateFault("ticket replay state is invalid");
+  validatePublicTicket(ticket, ticket.createResponse);
   if (ticket.state === "queued") {
     if (ticket.offeredAtEpochMs !== null || ticket.offerExpiresAtEpochMs !== null || ticket.terminalAtEpochMs !== null || ticket.terminalReason !== null || ticket.lease !== null) throw new StateFault("queued ticket fields are invalid");
   } else if (ticket.state === "offered") {
-    if (!isSafeInteger(ticket.offeredAtEpochMs) || !isSafeInteger(ticket.offerExpiresAtEpochMs) || ticket.terminalAtEpochMs !== null || ticket.terminalReason !== null || ticket.lease !== null) throw new StateFault("offered ticket fields are invalid");
+    if (ticket.offeredAtEpochMs === null || ticket.offerExpiresAtEpochMs === null || ticket.terminalAtEpochMs !== null || ticket.terminalReason !== null || ticket.lease !== null) throw new StateFault("offered ticket fields are invalid");
   } else if (ticket.state === "active" || ticket.state === "uncertain") {
-    if (!isSafeInteger(ticket.offeredAtEpochMs) || !isSafeInteger(ticket.offerExpiresAtEpochMs) || ticket.terminalAtEpochMs !== null || ticket.terminalReason !== null) throw new StateFault("active ticket fields are invalid");
+    if (ticket.offeredAtEpochMs === null || ticket.offerExpiresAtEpochMs === null || ticket.terminalAtEpochMs !== null || ticket.terminalReason !== null) throw new StateFault("active ticket fields are invalid");
     validateLease(ticket.lease);
   } else {
-    if (!isSafeInteger(ticket.terminalAtEpochMs) || ticket.lease !== null) throw new StateFault("terminal ticket fields are invalid");
     const validReason = ticket.state === "cancelled" ? ["client_cancelled", "authority_draining"] : ticket.state === "released" ? ["released", "operator_reconciled"] : ticket.state === "throttled" ? ["assistant_rate_limit", "assistant_overloaded"] : ["offer_expired"];
-    if (!validReason.includes(ticket.terminalReason)) throw new StateFault("terminal ticket reason is invalid");
+    if (ticket.terminalAtEpochMs === null || ticket.lease !== null || !validReason.includes(ticket.terminalReason)) throw new StateFault("terminal ticket fields are invalid");
   }
 }
 
+function parseCreateKey(key) {
+  const parts = typeof key === "string" ? key.split("\u0000") : [];
+  if (parts.length !== 3 || !isUuid(parts[0]) || !(parts[1] in PROVIDER_PORTS) || !isUuid(parts[2])) throw new StateFault("create replay key is invalid");
+  return { installationId: parts[0], provider: parts[1], requestId: parts[2] };
+}
+
+function parsePublisherKey(key, includesPublishId = false) {
+  const parts = typeof key === "string" ? key.split("\u0000") : [];
+  const expectedLength = includesPublishId ? 3 : 2;
+  if (parts.length !== expectedLength || !isUuid(parts[0]) || !(parts[1] in PROVIDER_PORTS) || includesPublishId && !isUuid(parts[2])) throw new StateFault("allowance replay key is invalid");
+  return { installationId: parts[0], provider: parts[1], publishId: parts[2] };
+}
+
+function validatePrivateAllowance(allowance) {
+  const keys = ["observedAtEpochMs", "fiveHour", "sevenDay"];
+  if (!hasExactKeys(allowance, keys) || !isEpochMs(allowance.observedAtEpochMs)) throw new StateFault("allowance replay state is invalid");
+  validateWindow(allowance.fiveHour);
+  validateWindow(allowance.sevenDay);
+}
+
+function validateAllowanceReplay(key, replay) {
+  const keys = ["fingerprint", "allowance", "receivedAtEpochMs"];
+  if (!hasExactKeys(replay, keys) || !isEpochMs(replay.receivedAtEpochMs)) throw new StateFault("allowance replay state is invalid");
+  const keyed = parsePublisherKey(key, true);
+  if (typeof replay.fingerprint !== "string" || replay.fingerprint.length === 0 || replay.fingerprint.length > MAX_FINGERPRINT_LENGTH) throw new StateFault("allowance replay state is invalid");
+  let request;
+  try { request = JSON.parse(replay.fingerprint); } catch { throw new StateFault("allowance replay state is invalid"); }
+  if (!isObject(request) || canonical(request) !== replay.fingerprint) throw new StateFault("allowance replay state is invalid");
+  try { validateAllowanceRequestShape(request); } catch { throw new StateFault("allowance replay state is invalid"); }
+  if (keyed.installationId !== request.installationId || keyed.provider !== request.provider || keyed.publishId !== request.publishId) throw new StateFault("allowance replay state is invalid");
+  validatePrivateAllowance(replay.allowance);
+  const expectedAllowance = { observedAtEpochMs: request.observedAtEpochMs, fiveHour: request.fiveHour, sevenDay: request.sevenDay };
+  if (canonical(replay.allowance) !== canonical(expectedAllowance)) throw new StateFault("allowance replay state is invalid");
+  return request;
+}
+
+function cursorSuccessorIsValid(order, cursor) {
+  return order.length === 0 ? cursor === 0 : isSafeInteger(cursor, 0, order.length - 1);
+}
+
 function validateState(state, { provider, port, timing, allowTestPort = false } = {}) {
-  if (!isObject(state)) throw new StateFault("authority state is invalid");
-  const allowed = new Set(stateKeys());
-  if (Object.keys(state).some((key) => !allowed.has(key)) || state.stateSchemaVersion !== STATE_SCHEMA_VERSION) throw new StateFault("authority state schema is unsupported");
+  if (!hasExactKeys(state, stateKeys()) || state.stateSchemaVersion !== STATE_SCHEMA_VERSION) throw new StateFault("authority state schema is unsupported");
   if (!isUuid(state.authorityId) || !(state.provider in PROVIDER_PORTS) || !isSafeInteger(state.port, 1, 65535) || !isSafeInteger(state.laneTerm, 1) || !isUuid(state.ownerNonce)) throw new StateFault("authority state header is invalid");
   if (!allowTestPort && PROVIDER_PORTS[state.provider] !== state.port) throw new StateFault("authority state provider and port do not match");
   if (provider && state.provider !== provider) throw new StateFault("authority state provider does not match configuration");
   if (port && state.port !== port) throw new StateFault("authority state port does not match configuration");
   if (state.timingSchemaVersion !== 1 || typeof state.timingDigest !== "string" || !/^[0-9a-f]{64}$/.test(state.timingDigest) || !isSafeInteger(state.verifierGeneration, 1)) throw new StateFault("authority state timing header is invalid");
+  if (!["ready", "draining", "degraded"].includes(state.lifecycleState)) throw new StateFault("authority lifecycle state is invalid");
+  const schedulerKeys = ["minimumConcurrency", "currentConcurrency", "maximumConcurrency", "cooldownUntilEpochMs", "lastThrottleAtEpochMs", "lastIncreaseAtEpochMs"];
+  if (!hasExactKeys(state.scheduler, schedulerKeys) || !isSafeInteger(state.scheduler.minimumConcurrency, 1, 64) || !isSafeInteger(state.scheduler.currentConcurrency, 1, 64) || !isSafeInteger(state.scheduler.maximumConcurrency, 1, 64) || state.scheduler.minimumConcurrency > state.scheduler.currentConcurrency || state.scheduler.currentConcurrency > state.scheduler.maximumConcurrency || state.scheduler.cooldownUntilEpochMs !== null && !isEpochMs(state.scheduler.cooldownUntilEpochMs) || state.scheduler.lastThrottleAtEpochMs !== null && !isEpochMs(state.scheduler.lastThrottleAtEpochMs) || !isEpochMs(state.scheduler.lastIncreaseAtEpochMs)) throw new StateFault("authority scheduler is invalid");
+  if (!isObject(state.tickets) || !isObject(state.createTombstones) || !isObject(state.fairness) || !isObject(state.allowance) || !isObject(state.allowancePublishes) || !isObject(state.publisherSequences) || !isObject(state.counters)) throw new StateFault("authority state is incomplete");
+  const ticketIds = new Set();
+  const createKeys = new Set();
+  const queueSequences = new Set();
+  const ticketPairs = new Map();
+  const liveTicketPairs = new Map();
+  let highestQueueSequence = 0;
+  for (const [ticketId, ticket] of Object.entries(state.tickets)) {
+    if (!isUuid(ticketId) || ticketId !== ticket?.ticketId || ticket.provider !== state.provider || ticketIds.has(ticketId)) throw new StateFault("authority ticket key is invalid");
+    validateTicketState(ticket);
+    const createKey = createKeyForState(ticket.installationId, ticket.provider, ticket.requestId);
+    if (createKeys.has(createKey) || queueSequences.has(ticket.queueSequence)) throw new StateFault("authority ticket ordering is invalid");
+    ticketIds.add(ticketId);
+    createKeys.add(createKey);
+    queueSequences.add(ticket.queueSequence);
+    highestQueueSequence = Math.max(highestQueueSequence, ticket.queueSequence);
+    const sessions = ticketPairs.get(ticket.installationId) ?? new Set();
+    sessions.add(ticket.sessionId);
+    ticketPairs.set(ticket.installationId, sessions);
+    if (!TERMINAL_STATES.has(ticket.state)) {
+      const liveSessions = liveTicketPairs.get(ticket.installationId) ?? new Set();
+      liveSessions.add(ticket.sessionId);
+      liveTicketPairs.set(ticket.installationId, liveSessions);
+    }
+  }
+  if (!hasExactKeys(state.counters, ["nextQueueSequence"]) || !isSafeInteger(state.counters.nextQueueSequence, 1) || state.counters.nextQueueSequence <= highestQueueSequence) throw new StateFault("authority counters are invalid");
+  if (capacityInUse(state) > state.scheduler.currentConcurrency) throw new StateFault("authority capacity state is unsafe");
   if (timing && state.timingDigest !== timing.digest) {
-    const hasLiveWork = Object.values(state.tickets ?? {}).some((ticket) => ACTIVE_STATES.has(ticket.state));
+    const hasLiveWork = Object.values(state.tickets).some((ticket) => ACTIVE_STATES.has(ticket.state));
     if (hasLiveWork || state.lifecycleState !== "draining") throw new StateFault("authority timing changed without a drained restart");
   }
-  if (!["ready", "draining", "degraded"].includes(state.lifecycleState)) throw new StateFault("authority lifecycle state is invalid");
-  if (!isObject(state.scheduler) || !isSafeInteger(state.scheduler.minimumConcurrency, 1, 64) || !isSafeInteger(state.scheduler.currentConcurrency, 1, 64) || !isSafeInteger(state.scheduler.maximumConcurrency, 1, 64) || state.scheduler.minimumConcurrency > state.scheduler.currentConcurrency || state.scheduler.currentConcurrency > state.scheduler.maximumConcurrency) throw new StateFault("authority scheduler is invalid");
-  if (state.scheduler.cooldownUntilEpochMs !== null && !isSafeInteger(state.scheduler.cooldownUntilEpochMs) || state.scheduler.lastThrottleAtEpochMs !== null && !isSafeInteger(state.scheduler.lastThrottleAtEpochMs) || !isSafeInteger(state.scheduler.lastIncreaseAtEpochMs)) throw new StateFault("authority cooldown is invalid");
-  if (!isObject(state.tickets) || !isObject(state.createTombstones) || !isObject(state.fairness) || !isObject(state.allowance) || !isObject(state.allowancePublishes) || !isObject(state.publisherSequences) || !isObject(state.counters)) throw new StateFault("authority state is incomplete");
-  if (!Array.isArray(state.fairness.machineOrder) || state.fairness.machineOrder.length > MAX_INSTALLATIONS || new Set(state.fairness.machineOrder).size !== state.fairness.machineOrder.length || !state.fairness.machineOrder.every(isUuid) || !isSafeInteger(state.fairness.machineCursor) || state.fairness.machineOrder.length === 0 && state.fairness.machineCursor !== 0 || state.fairness.machineOrder.length > 0 && state.fairness.machineCursor >= state.fairness.machineOrder.length || !isObject(state.fairness.sessionOrder) || !isObject(state.fairness.sessionCursor) || Object.keys(state.fairness.sessionCursor).some((installationId) => !(installationId in state.fairness.sessionOrder))) throw new StateFault("authority fairness state is invalid");
-  for (const [installationId, sessions] of Object.entries(state.fairness.sessionOrder)) {
-    if (!isUuid(installationId) || !Array.isArray(sessions) || sessions.length > MAX_SESSIONS_PER_INSTALLATION || new Set(sessions).size !== sessions.length || !sessions.every(isUuid) || !isSafeInteger(state.fairness.sessionCursor[installationId]) || sessions.length === 0 && state.fairness.sessionCursor[installationId] !== 0 || sessions.length > 0 && state.fairness.sessionCursor[installationId] >= sessions.length) throw new StateFault("authority fairness state is invalid");
-  }
-  if (!isSafeInteger(state.counters.nextQueueSequence, 1)) throw new StateFault("authority counters are invalid");
-  for (const [ticketId, ticket] of Object.entries(state.tickets)) {
-    if (ticketId !== ticket.ticketId || ticket.provider !== state.provider) throw new StateFault("authority ticket key is invalid");
-    validateTicketState(ticket);
-  }
-  if (capacityInUse(state) > state.scheduler.currentConcurrency) throw new StateFault("authority capacity state is unsafe");
   if (Object.keys(state.tickets).length + Object.keys(state.createTombstones).length > MAX_RETAINED_RECORDS) throw new StateFault("authority retained state exceeds the protocol bound");
-  if (!Object.hasOwn(state.allowance, "observedAtEpochMs") || !Object.hasOwn(state.allowance, "fiveHour") || !Object.hasOwn(state.allowance, "sevenDay") || !Object.hasOwn(state.allowance, "receivedAtEpochMs")) throw new StateFault("authority allowance state is incomplete");
-  if (state.allowance.observedAtEpochMs !== null && !isSafeInteger(state.allowance.observedAtEpochMs)) throw new StateFault("authority allowance observation is invalid");
-  if (state.allowance.receivedAtEpochMs !== null && !isSafeInteger(state.allowance.receivedAtEpochMs)) throw new StateFault("authority allowance receipt is invalid");
+  for (const [key, tombstone] of Object.entries(state.createTombstones)) {
+    const parsed = parseCreateKey(key);
+    if (parsed.provider !== state.provider || !hasExactKeys(tombstone, ["createdAtEpochMs", "compactedAtEpochMs"]) || !isEpochMs(tombstone.createdAtEpochMs) || !isEpochMs(tombstone.compactedAtEpochMs) || tombstone.compactedAtEpochMs < tombstone.createdAtEpochMs || createKeys.has(createKeyForState(parsed.installationId, parsed.provider, parsed.requestId))) throw new StateFault("create replay state is invalid");
+  }
+  const fairnessKeys = ["machineOrder", "machineCursor", "sessionOrder", "sessionCursor"];
+  if (!hasExactKeys(state.fairness, fairnessKeys) || !Array.isArray(state.fairness.machineOrder) || state.fairness.machineOrder.length > MAX_INSTALLATIONS || new Set(state.fairness.machineOrder).size !== state.fairness.machineOrder.length || !state.fairness.machineOrder.every(isUuid) || !cursorSuccessorIsValid(state.fairness.machineOrder, state.fairness.machineCursor) || !isObject(state.fairness.sessionOrder) || !isObject(state.fairness.sessionCursor) || Object.keys(state.fairness.sessionOrder).length !== Object.keys(state.fairness.sessionCursor).length) throw new StateFault("authority fairness state is invalid");
+  for (const installationId of state.fairness.machineOrder) {
+    if (!ticketPairs.has(installationId) || !Object.hasOwn(state.fairness.sessionOrder, installationId)) throw new StateFault("authority fairness state is invalid");
+  }
+  for (const [installationId, sessions] of Object.entries(state.fairness.sessionOrder)) {
+    const knownSessions = ticketPairs.get(installationId);
+    if (!state.fairness.machineOrder.includes(installationId) || !isUuid(installationId) || !Array.isArray(sessions) || sessions.length === 0 || sessions.length > MAX_SESSIONS_PER_INSTALLATION || new Set(sessions).size !== sessions.length || !sessions.every((sessionId) => isUuid(sessionId) && knownSessions?.has(sessionId)) || !Object.hasOwn(state.fairness.sessionCursor, installationId) || !cursorSuccessorIsValid(sessions, state.fairness.sessionCursor[installationId])) throw new StateFault("authority fairness state is invalid");
+  }
+  for (const [installationId, sessions] of liveTicketPairs) {
+    if (!state.fairness.machineOrder.includes(installationId) || !sessionsIsSubset(sessions, state.fairness.sessionOrder[installationId])) throw new StateFault("authority fairness state is invalid");
+  }
+  const allowanceKeys = ["observedAtEpochMs", "fiveHour", "sevenDay", "receivedAtEpochMs"];
+  if (!hasExactKeys(state.allowance, allowanceKeys) || state.allowance.observedAtEpochMs !== null && !isEpochMs(state.allowance.observedAtEpochMs) || state.allowance.receivedAtEpochMs !== null && !isEpochMs(state.allowance.receivedAtEpochMs) || (state.allowance.observedAtEpochMs === null) !== (state.allowance.receivedAtEpochMs === null)) throw new StateFault("authority allowance state is invalid");
   validateWindow(state.allowance.fiveHour);
   validateWindow(state.allowance.sevenDay);
+  if (state.allowance.observedAtEpochMs === null && (state.allowance.fiveHour !== null || state.allowance.sevenDay !== null)) throw new StateFault("authority allowance state is invalid");
+  const replayEntries = Object.entries(state.allowancePublishes);
+  if (replayEntries.length > MAX_ALLOWANCE_REPLAY_RECORDS) throw new StateFault("allowance replay state exceeds the protocol bound");
+  const replaySequences = new Map();
+  const replayCounts = new Map();
+  let currentAllowanceMatched = state.allowance.observedAtEpochMs === null;
+  for (const [key, replay] of replayEntries) {
+    const request = validateAllowanceReplay(key, replay);
+    if (request.provider !== state.provider) throw new StateFault("allowance replay state is invalid");
+    const sequenceKey = publisherSequenceKey(request.installationId, request.provider);
+    const sequences = replaySequences.get(sequenceKey) ?? [];
+    sequences.push(request.publisherSequence);
+    replaySequences.set(sequenceKey, sequences);
+    const count = (replayCounts.get(request.installationId) ?? 0) + 1;
+    if (count > MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION) throw new StateFault("allowance replay state exceeds the protocol bound");
+    replayCounts.set(request.installationId, count);
+    if (state.allowance.observedAtEpochMs !== null && replay.receivedAtEpochMs === state.allowance.receivedAtEpochMs && canonical(replay.allowance) === canonical({ observedAtEpochMs: state.allowance.observedAtEpochMs, fiveHour: state.allowance.fiveHour, sevenDay: state.allowance.sevenDay })) currentAllowanceMatched = true;
+  }
+  if (Object.keys(state.publisherSequences).length > MAX_INSTALLATIONS || Object.keys(state.publisherSequences).length !== replaySequences.size) throw new StateFault("publisher sequence state is invalid");
+  for (const [key, sequence] of Object.entries(state.publisherSequences)) {
+    const publisher = parsePublisherKey(key);
+    if (publisher.provider !== state.provider) throw new StateFault("publisher sequence state is invalid");
+    const replays = replaySequences.get(key);
+    if (!isSafeInteger(sequence, 1) || !replays || new Set(replays).size !== replays.length || Math.max(...replays) !== sequence) throw new StateFault("publisher sequence state is invalid");
+  }
+  if (!currentAllowanceMatched) throw new StateFault("allowance replay state is invalid");
   return state;
+}
+
+function createKeyForState(installationId, provider, requestId) {
+  return `${installationId}\u0000${provider}\u0000${requestId}`;
+}
+
+function sessionsIsSubset(sessions, order) {
+  return Array.isArray(order) && [...sessions].every((sessionId) => order.includes(sessionId));
 }
 
 function initialState({ authorityId, provider, port, timing, minimumConcurrency, currentConcurrency, maximumConcurrency, verifierGeneration }) {
@@ -303,48 +457,74 @@ function initialState({ authorityId, provider, port, timing, minimumConcurrency,
 }
 
 function migrateV1(state, configuration) {
-  const required = ["stateSchemaVersion", "authorityId", "provider", "port", "laneTerm", "timingSchemaVersion", "timingDigest", "verifierGeneration", "lifecycleState", "scheduler", "tickets", "fairness", "allowance", "counters"];
-  if (!isObject(state) || state.stateSchemaVersion !== 1 || required.some((key) => !(key in state))) throw new StateFault("authority state migration is unsafe");
-  const migrated = {
-    ...state,
-    stateSchemaVersion: STATE_SCHEMA_VERSION,
-    ownerNonce: crypto.randomUUID(),
-    createTombstones: state.createTombstones ?? {},
-    allowancePublishes: state.allowancePublishes ?? {},
-    publisherSequences: state.publisherSequences ?? {},
-  };
+  const legacyKeys = stateKeys().filter((key) => !["ownerNonce", "createTombstones", "allowancePublishes", "publisherSequences"].includes(key));
+  if (!hasExactKeys(state, legacyKeys) || state.stateSchemaVersion !== 1 || !hasExactKeys(state.counters, ["nextQueueSequence"]) || !isSafeInteger(state.counters.nextQueueSequence, 1) || !isObject(state.tickets)) throw new StateFault("authority state migration is unsafe");
+  const migrated = clone(state);
+  migrated.stateSchemaVersion = STATE_SCHEMA_VERSION;
+  migrated.ownerNonce = crypto.randomUUID();
+  migrated.createTombstones = {};
+  migrated.allowancePublishes = {};
+  migrated.publisherSequences = {};
+  let nextQueueSequence = migrated.counters.nextQueueSequence;
   for (const ticket of Object.values(migrated.tickets)) {
     if (!isObject(ticket)) throw new StateFault("authority state migration is unsafe");
     ticket.operationResults ??= [];
-    ticket.createResponse ??= null;
-    ticket.queueSequence ??= migrated.counters.nextQueueSequence++;
+    ticket.queueSequence ??= nextQueueSequence++;
     ticket.lease ??= null;
+  }
+  const highestQueueSequence = Math.max(0, ...Object.values(migrated.tickets).map((ticket) => ticket.queueSequence));
+  migrated.counters.nextQueueSequence = Math.max(nextQueueSequence, highestQueueSequence + 1);
+  for (const ticket of Object.values(migrated.tickets)) {
+    ticket.createResponse ??= ticketPublic(migrated, ticket);
   }
   validateState(migrated, configuration);
   return migrated;
 }
 
-function readJsonFile(file) {
+function readJsonSnapshot(file) {
   let raw;
   try {
     const stat = fs.statSync(file);
-    if ((stat.mode & 0o077) !== 0) throw new StateFault("authority state permissions are unsafe");
-    raw = fs.readFileSync(file, "utf8");
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new StateFault("authority state permissions are unsafe");
+    raw = fs.readFileSync(file);
   } catch (error) {
     if (error instanceof StateFault) throw error;
     if (error?.code === "ENOENT") return undefined;
     throw new StateFault("authority state cannot be read");
   }
   try {
-    return JSON.parse(raw);
+    return { raw, state: JSON.parse(raw.toString("utf8")) };
   } catch {
     throw new StateFault("authority state is corrupt");
   }
 }
 
-function fsyncDirectory(directory) {
+async function readJsonFileAsync(file) {
+  let raw;
+  try {
+    const stat = await fsPromises.stat(file);
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new StateFault("authority state permissions are unsafe");
+    raw = await fsPromises.readFile(file);
+  } catch (error) {
+    if (error instanceof StateFault) throw error;
+    if (error?.code === "ENOENT") return undefined;
+    throw new StateFault("authority state cannot be read");
+  }
+  try {
+    return JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw new StateFault("authority state is corrupt");
+  }
+}
+
+function fsyncDirectorySync(directory) {
   const descriptor = fs.openSync(directory, "r");
   try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+}
+
+async function fsyncDirectory(directory) {
+  const descriptor = await fsPromises.open(directory, "r");
+  try { await descriptor.sync(); } finally { await descriptor.close(); }
 }
 
 function invokeFault(faultInjector, phase, file) {
@@ -353,7 +533,13 @@ function invokeFault(faultInjector, phase, file) {
   if (result instanceof Error) throw result;
 }
 
-function writeDurableJson(file, value, faultInjector) {
+async function invokeFaultAsync(faultInjector, phase, file) {
+  if (!faultInjector) return;
+  const result = await faultInjector({ phase, file });
+  if (result instanceof Error) throw result;
+}
+
+function writeDurableJsonSync(file, value, faultInjector) {
   const directory = path.dirname(file);
   const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   let descriptor;
@@ -372,10 +558,37 @@ function writeDurableJson(file, value, faultInjector) {
     fs.renameSync(temporary, file);
     invokeFault(faultInjector, "after-rename", file);
     invokeFault(faultInjector, "before-directory-fsync", file);
-    fsyncDirectory(directory);
+    fsyncDirectorySync(directory);
   } catch (error) {
     if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch {}
     try { fs.unlinkSync(temporary); } catch {}
+    throw error;
+  }
+}
+
+async function writeDurableJson(file, value, faultInjector) {
+  const directory = path.dirname(file);
+  const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  let descriptor;
+  try {
+    await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fsPromises.chmod(directory, 0o700);
+    await invokeFaultAsync(faultInjector, "before-write", file);
+    descriptor = await fsPromises.open(temporary, "wx", 0o600);
+    await descriptor.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+    await descriptor.chmod(0o600);
+    await descriptor.sync();
+    await descriptor.close();
+    descriptor = undefined;
+    await invokeFaultAsync(faultInjector, "after-file-fsync", file);
+    await invokeFaultAsync(faultInjector, "before-rename", file);
+    await fsPromises.rename(temporary, file);
+    await invokeFaultAsync(faultInjector, "after-rename", file);
+    await invokeFaultAsync(faultInjector, "before-directory-fsync", file);
+    await fsyncDirectory(directory);
+  } catch (error) {
+    if (descriptor !== undefined) try { await descriptor.close(); } catch {}
+    try { await fsPromises.unlink(temporary); } catch {}
     throw error;
   }
 }
@@ -418,6 +631,17 @@ function capacityInUse(state) {
   return Object.values(state.tickets).filter((ticket) => ACTIVE_STATES.has(ticket.state)).length;
 }
 
+function successorCursor(priorOrder, priorCursor, survivingOrder) {
+  if (survivingOrder.length === 0 || priorOrder.length === 0) return 0;
+  const start = priorCursor % priorOrder.length;
+  for (let offset = 0; offset < priorOrder.length; offset += 1) {
+    const survivor = priorOrder[(start + offset) % priorOrder.length];
+    const index = survivingOrder.indexOf(survivor);
+    if (index !== -1) return index;
+  }
+  return 0;
+}
+
 function pruneFairness(state) {
   const live = nonterminalTickets(state);
   const liveMachines = new Map();
@@ -427,9 +651,9 @@ function pruneFairness(state) {
     liveMachines.set(ticket.installationId, sessions);
   }
   const priorMachines = state.fairness.machineOrder;
-  const priorNextMachine = priorMachines[priorMachines.length ? state.fairness.machineCursor % priorMachines.length : 0];
-  state.fairness.machineOrder = priorMachines.filter((installationId) => liveMachines.has(installationId));
-  state.fairness.machineCursor = Math.max(0, state.fairness.machineOrder.indexOf(priorNextMachine));
+  const machines = priorMachines.filter((installationId) => liveMachines.has(installationId));
+  state.fairness.machineOrder = machines;
+  state.fairness.machineCursor = successorCursor(priorMachines, state.fairness.machineCursor, machines);
   for (const installationId of Object.keys(state.fairness.sessionOrder)) {
     const liveSessions = liveMachines.get(installationId);
     if (!liveSessions) {
@@ -438,11 +662,11 @@ function pruneFairness(state) {
       continue;
     }
     const priorSessions = state.fairness.sessionOrder[installationId];
-    const priorNextSession = priorSessions[priorSessions.length ? state.fairness.sessionCursor[installationId] % priorSessions.length : 0];
     const sessions = priorSessions.filter((sessionId) => liveSessions.has(sessionId));
+    const cursor = successorCursor(priorSessions, state.fairness.sessionCursor[installationId], sessions);
     for (const sessionId of liveSessions) if (!sessions.includes(sessionId)) sessions.push(sessionId);
     state.fairness.sessionOrder[installationId] = sessions;
-    state.fairness.sessionCursor[installationId] = Math.max(0, sessions.indexOf(priorNextSession));
+    state.fairness.sessionCursor[installationId] = cursor;
   }
 }
 
@@ -591,7 +815,7 @@ function validateMutationRequest(request, action) {
   }
 }
 
-function validateAllowanceRequest(request, now) {
+function validateAllowanceRequestShape(request) {
   assertExactObject(request, ["schemaVersion", "installationId", "provider", "accountBindingId", "publishId", "publisherSequence", "observedAtEpochMs", "fiveHour", "sevenDay"]);
   assertSchemaVersion(request.schemaVersion);
   assertUuid(request.installationId);
@@ -600,9 +824,13 @@ function validateAllowanceRequest(request, now) {
   assertUuid(request.publishId);
   assertSafeInteger(request.publisherSequence, 1);
   assertSafeInteger(request.observedAtEpochMs);
-  if (request.observedAtEpochMs > now + MAX_REQUEST_AGE_MS) fail("invalid_request", "allowance observation is in the future");
   validateWindowRequest(request.fiveHour);
   validateWindowRequest(request.sevenDay);
+}
+
+function validateAllowanceRequest(request, now) {
+  validateAllowanceRequestShape(request);
+  if (request.observedAtEpochMs > now + MAX_REQUEST_AGE_MS) fail("invalid_request", "allowance observation is in the future");
 }
 
 function validateWindowRequest(window) {
@@ -681,6 +909,7 @@ function normalizeConfiguration(options) {
     bootstrap: options.bootstrap === true,
     clock: options.clock ?? Date.now,
     faultInjector: options.faultInjector,
+    runtimeFaultInjector: options.runtimeFaultInjector ?? options.faultInjector,
   };
 }
 
@@ -689,6 +918,7 @@ export class AuthorityState {
     this.state = state;
     this.configuration = configuration;
     this.degraded = false;
+    this._tail = Promise.resolve();
   }
 
   get status() {
@@ -711,22 +941,36 @@ export class AuthorityState {
 
   _degrade(error) {
     this.degraded = true;
-    this.state.lifecycleState = "degraded";
     if (error instanceof AuthorityError) throw error;
     throw new StateFault("authority persistence failed");
   }
 
-  _assertStoredHeader() {
-    let stored;
-    try { stored = readJsonFile(this.configuration.statePath); } catch (error) { this._degrade(error); }
-    if (!stored || !sameHeader(stored, this.state)) this._degrade(new StateFault("authority ownership fence changed"));
+  _enqueue(operation) {
+    const run = this._tail.then(operation, operation);
+    this._tail = run.catch(() => {});
+    return run;
   }
 
-  _commit(next) {
-    this._assertStoredHeader();
+  _validateCurrent() {
+    try { validateState(this.state, this.configuration); } catch (error) { this._degrade(error); }
+  }
+
+  async _assertStoredHeader() {
+    let stored;
+    try {
+      stored = await readJsonFileAsync(this.configuration.statePath);
+      if (stored) validateState(stored, this.configuration);
+    } catch (error) {
+      this._degrade(error);
+    }
+    if (!stored || !sameHeader(stored, this.state) || canonical(stored) !== canonical(this.state)) this._degrade(new StateFault("authority ownership fence changed"));
+  }
+
+  async _commit(next) {
+    await this._assertStoredHeader();
     try {
       validateState(next, this.configuration);
-      writeDurableJson(this.configuration.statePath, next, this.configuration.faultInjector);
+      await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
     } catch (error) {
       this._degrade(error);
     }
@@ -734,30 +978,36 @@ export class AuthorityState {
   }
 
   _transition(mutate, { allowDraining = false } = {}) {
-    if (this.degraded || this.state.lifecycleState === "degraded") fail("authority_degraded", "authority is degraded");
-    if (!allowDraining && this.state.lifecycleState === "draining") fail("authority_draining", "authority is draining");
-    const next = clone(this.state);
-    const now = this._now();
-    const result = mutate(next, now);
-    this._commit(next);
-    return result;
+    return this._enqueue(async () => {
+      if (this.degraded || this.state.lifecycleState === "degraded") fail("authority_degraded", "authority is degraded");
+      if (!allowDraining && this.state.lifecycleState === "draining") fail("authority_draining", "authority is draining");
+      this._validateCurrent();
+      const next = clone(this.state);
+      const now = this._now();
+      const result = mutate(next, now);
+      await this._commit(next);
+      return result;
+    });
   }
 
   reconcile() {
-    if (this.degraded || this.state.lifecycleState === "degraded") return false;
-    const next = clone(this.state);
-    const now = this._now();
-    const changed = expireAndQuarantine(next, now, this.configuration.timing);
-    const offered = next.lifecycleState === "ready" ? scheduleOffers(next, now, this.configuration.timing) : [];
-    if (!changed && offered.length === 0) return false;
-    this._commit(next);
-    return true;
+    return this._enqueue(async () => {
+      if (this.degraded || this.state.lifecycleState === "degraded") return false;
+      this._validateCurrent();
+      const next = clone(this.state);
+      const now = this._now();
+      const changed = expireAndQuarantine(next, now, this.configuration.timing);
+      const offered = next.lifecycleState === "ready" ? scheduleOffers(next, now, this.configuration.timing) : [];
+      if (!changed && offered.length === 0) return false;
+      await this._commit(next);
+      return true;
+    });
   }
 
   createTicket(principal, request) {
-    validateCreateRequest(request);
-    const checkedPrincipal = assertPrincipalMatches(principal, request);
     return this._transition((next, transitionNow) => {
+      validateCreateRequest(request);
+      const checkedPrincipal = assertPrincipalMatches(principal, request);
       if (request.provider !== next.provider) fail("provider_mismatch", "request provider does not match lane");
       expireAndQuarantine(next, transitionNow, this.configuration.timing);
       compactRetainedState(next, transitionNow, this.configuration.timing);
@@ -766,7 +1016,7 @@ export class AuthorityState {
       if (existing) {
         const sameRequest = existing.accountBindingId === request.accountBindingId && existing.sessionId === request.sessionId && existing.createdAtEpochMs === request.createdAtEpochMs;
         if (!sameRequest) fail("operation_conflict", "request identifier was reused");
-        return { ticket: clone(existing.createResponse ?? ticketPublic(next, existing)), replayed: true, created: false };
+        return { ticket: clone(existing.createResponse), replayed: true, created: false };
       }
       if (Math.abs(transitionNow - request.createdAtEpochMs) > MAX_REQUEST_AGE_MS) fail("invalid_request", "request timestamp is outside the accepted window");
       if (next.createTombstones[key]) fail("invalid_request", "request timestamp cannot recreate compacted work");
@@ -809,17 +1059,18 @@ export class AuthorityState {
 
   getTicket(principal, ticketId) {
     const checkedPrincipal = assertPrincipal(principal);
+    if (!checkedPrincipal.providers.has(this.state.provider)) fail("forbidden_lane", "lane is not allowed");
     if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");
-    this.reconcile();
+    this._validateCurrent();
     return ticketPublic(this.state, ticketForOwner(this.state, checkedPrincipal, ticketId));
   }
 
   mutateTicket(principal, ticketId, action, request) {
-    if (!["claim", "cancel", "renew", "complete"].includes(action)) throw new StateFault("authority operation is invalid");
-    validateMutationRequest(request, action);
-    const checkedPrincipal = assertPrincipalMatches(principal, request);
-    if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");
     return this._transition((next, now) => {
+      if (!["claim", "cancel", "renew", "complete"].includes(action)) throw new StateFault("authority operation is invalid");
+      validateMutationRequest(request, action);
+      const checkedPrincipal = assertPrincipalMatches(principal, request);
+      if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");
       const expiryChanged = expireAndQuarantine(next, now, this.configuration.timing);
       if (expiryChanged) scheduleOffers(next, now, this.configuration.timing);
       const ticket = ticketForOwner(next, checkedPrincipal, ticketId);
@@ -880,10 +1131,9 @@ export class AuthorityState {
   }
 
   publishAllowance(principal, request) {
-    const now = this._now();
-    validateAllowanceRequest(request, now);
-    const checkedPrincipal = assertPrincipalMatches(principal, request);
     return this._transition((next, transitionNow) => {
+      validateAllowanceRequest(request, transitionNow);
+      const checkedPrincipal = assertPrincipalMatches(principal, request);
       if (request.provider !== next.provider) fail("provider_mismatch", "allowance provider does not match lane");
       const key = publisherKey(checkedPrincipal.installationId, request.provider, request.publishId);
       const fingerprint = canonical(request);
@@ -893,6 +1143,7 @@ export class AuthorityState {
         return { allowance: clone(replay.allowance), replayed: true };
       }
       const sequenceKey = publisherSequenceKey(checkedPrincipal.installationId, request.provider);
+      if (!Object.hasOwn(next.publisherSequences, sequenceKey) && Object.keys(next.publisherSequences).length >= MAX_INSTALLATIONS) fail("principal_limit", "publisher principal limit reached");
       const priorSequence = next.publisherSequences[sequenceKey] ?? 0;
       if (request.publisherSequence <= priorSequence) fail("stale_revision", "publisher sequence is stale");
       const priorObservation = next.allowance.observedAtEpochMs;
@@ -983,39 +1234,39 @@ export class AuthorityState {
 export function openAuthorityState(options) {
   const configuration = normalizeConfiguration(options);
   if (typeof configuration.statePath !== "string" || !configuration.statePath) throw new StateFault("authority state path is required");
-  let stored = readJsonFile(configuration.statePath);
+  const source = readJsonSnapshot(configuration.statePath);
   let state;
-  let migrated = false;
-  if (stored === undefined) {
+  if (source === undefined) {
     if (!configuration.bootstrap) throw new StateFault("authority state is missing and bootstrap was not requested");
     state = initialState(configuration);
+    validateState(state, configuration);
     const authority = new AuthorityState(state, configuration);
     try {
-      writeDurableJson(configuration.statePath, state, configuration.faultInjector);
+      writeDurableJsonSync(configuration.statePath, state, configuration.faultInjector);
     } catch (error) {
       authority._degrade(error);
     }
     return authority;
   }
-  if (stored.stateSchemaVersion === 1) {
+  if (source.state.stateSchemaVersion === 1) {
     if (!configuration.allowMigration) throw new StateFault("authority state migration was not allowed");
-    state = migrateV1(stored, configuration);
-    migrated = true;
+    state = migrateV1(source.state, configuration);
   } else {
-    state = stored;
+    state = source.state;
   }
   validateState(state, configuration);
   if (configuration.authorityId && configuration.authorityId !== state.authorityId) throw new StateFault("authority identifier does not match state");
   const authority = new AuthorityState(state, configuration);
-  const current = readJsonFile(configuration.statePath);
-  if (!current || (!migrated && !sameHeader(current, state))) throw new StateFault("authority ownership changed before term commit");
+  try { invokeFault(configuration.faultInjector, "before-term-commit", configuration.statePath); } catch (error) { throw error instanceof AuthorityError ? error : new StateFault("authority state changed before term commit"); }
+  const current = readJsonSnapshot(configuration.statePath);
+  if (!current || !current.raw.equals(source.raw)) throw new StateFault("authority ownership changed before term commit");
   const next = clone(state);
   next.laneTerm += 1;
   next.ownerNonce = crypto.randomUUID();
   if (next.timingDigest !== configuration.timing.digest) next.timingDigest = configuration.timing.digest;
   try {
     validateState(next, configuration);
-    writeDurableJson(configuration.statePath, next, configuration.faultInjector);
+    writeDurableJsonSync(configuration.statePath, next, configuration.faultInjector);
   } catch (error) {
     authority._degrade(error);
   }

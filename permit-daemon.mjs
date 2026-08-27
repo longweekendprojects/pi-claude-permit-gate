@@ -68,7 +68,9 @@ function testAuthorityPrincipal(req, requiredScope) {
   if (process.env.CLAUDE_PERMIT_GATE_TEST_MODE !== "1" || process.env.CLAUDE_PERMIT_GATE_TEST_AUTH !== "1") throw new AuthorityError("verifier_unavailable", { message: "verifier is unavailable" });
   const installationId = req.headers["x-authority-test-installation"];
   const accountBindingId = req.headers["x-authority-test-account-binding"];
-  const providers = String(req.headers["x-authority-test-providers"] ?? "anthropic-a,anthropic-b,anthropic-c,anthropic-d").split(",").filter(Boolean);
+  const providerHeader = req.headers["x-authority-test-providers"];
+  const providers = providerHeader === undefined ? undefined : String(providerHeader).split(",").filter(Boolean);
+  if (!Array.isArray(providers) || providers.length === 0 || providers.length > 4 || new Set(providers).size !== providers.length || !providers.every((provider) => ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"].includes(provider))) throw new AuthorityError("unauthenticated", { message: "principal is unavailable" });
   const scopes = new Set(String(req.headers["x-authority-test-scopes"] ?? "permit:mutate,snapshot:read,allowance:publish").split(",").filter(Boolean));
   if (requiredScope && !scopes.has(requiredScope)) throw new AuthorityError("forbidden_scope", { message: "scope is not allowed" });
   return { installationId, accountBindingId, providers };
@@ -88,7 +90,8 @@ function startAuthorityDaemon() {
     const minimumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MIN", 1);
     const maximumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MAX", 2);
     const currentConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_START", 2);
-    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency) throw new Error("authority configuration is invalid");
+    const durableWriteDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS", 0);
+    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode) throw new Error("authority configuration is invalid");
     configuration = {
       provider,
       port,
@@ -100,6 +103,9 @@ function startAuthorityDaemon() {
       maximumConcurrency,
       currentConcurrency,
       allowTestPort: testMode,
+      runtimeFaultInjector: durableWriteDelayMs === 0 ? undefined : async ({ phase }) => {
+        if (phase === "before-write") await new Promise((resolve) => setTimeout(resolve, durableWriteDelayMs));
+      },
     };
   } catch {
     process.stderr.write("authority daemon configuration is invalid\n");
@@ -112,7 +118,14 @@ function startAuthorityDaemon() {
   let startupFault;
   let reconcileTimer;
   let shuttingDown = false;
+  let mutationTail = Promise.resolve();
   const server = http.createServer((req, res) => { void handleAuthorityRequest(req, res); });
+
+  function serializeAuthorityMutation(operation) {
+    const result = mutationTail.then(operation, operation);
+    mutationTail = result.catch(() => {});
+    return result;
+  }
 
   async function handleAuthorityRequest(req, res) {
     try {
@@ -149,7 +162,8 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && pathname === "/v1/tickets") {
         const principal = testAuthorityPrincipal(req, "permit:mutate");
-        const result = authority.createTicket(principal, await authorityRequestBody(req));
+        const body = authorityRequestBody(req);
+        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.createTicket(principal, requestBody)));
         const headers = { etag: `"revision-${result.ticket.revision}"`, location: `/v1/tickets/${result.ticket.ticketId}` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, result.created ? 201 : 200, result.ticket, headers);
@@ -157,7 +171,8 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && ticket && ticket[2]) {
         const principal = testAuthorityPrincipal(req, "permit:mutate");
-        const result = authority.mutateTicket(principal, ticket[1], ticket[2], await authorityRequestBody(req));
+        const body = authorityRequestBody(req);
+        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.mutateTicket(principal, ticket[1], ticket[2], requestBody)));
         const headers = { etag: `"revision-${result.ticket.revision}"` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, 200, result.ticket, headers);
@@ -165,7 +180,8 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && pathname === "/v1/allowance") {
         const principal = testAuthorityPrincipal(req, "allowance:publish");
-        authorityReply(res, 200, authority.publishAllowance(principal, await authorityRequestBody(req)));
+        const body = authorityRequestBody(req);
+        authorityReply(res, 200, await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(principal, requestBody))));
         return;
       }
       throw new AuthorityError("not_found", { message: "authority route is unavailable" });
@@ -187,7 +203,7 @@ function startAuthorityDaemon() {
       if (shuttingDown) return;
       try {
         authority = openAuthorityState(configuration);
-        reconcileTimer = setInterval(() => { try { authority.reconcile(); } catch {} }, 1_000);
+        reconcileTimer = setInterval(() => { void serializeAuthorityMutation(() => authority.reconcile()).catch(() => {}); }, 1_000);
         reconcileTimer.unref?.();
       } catch {
         startupFault = true;
