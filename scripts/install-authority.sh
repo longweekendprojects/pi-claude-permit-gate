@@ -190,7 +190,8 @@ NODE
 }
 
 build_artifacts() {
-  local root="$1" release_path="$2" release_tree="$3" plist_directory="$root/LaunchAgents" manifest="$root/authority-artifacts-v1.json"
+  local root release_path release_tree plist_directory manifest
+  root="$1"; release_path="$2"; release_tree="$3"; plist_directory="$root/LaunchAgents"; manifest="$root/authority-artifacts-v1.json"
   mkdir -p "$release_tree" "$plist_directory"
   git -C "$SOURCE_ROOT" archive --format=tar "$COMMIT" | tar -xf - -C "$release_tree"
   [ "$(sha256_file "$release_tree/protocol/authority-v1.schema.json")" = "$SCHEMA_SHA256" ] || fail "staged schema hash does not match"
