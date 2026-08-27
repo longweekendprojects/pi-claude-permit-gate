@@ -6,6 +6,206 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { AuthorityError, authorityErrorBody, authorityStatePath, authorityTimingFromEnvironment, openAuthorityState } from "./authority-state.mjs";
+
+const DAEMON_MODE = process.env.CLAUDE_PERMIT_GATE_DAEMON_MODE ?? "local";
+
+if (DAEMON_MODE === "authority") void startAuthorityDaemon();
+else if (DAEMON_MODE === "local") startLocalDaemon();
+else {
+  process.stderr.write("CLAUDE_PERMIT_GATE_DAEMON_MODE must be local or authority\n");
+  process.exitCode = 1;
+}
+
+function authorityInteger(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined && fallback !== undefined) return fallback;
+  if (!/^\d+$/.test(value ?? "")) throw new Error(`${name} must be an integer`);
+  return Number(value);
+}
+
+function authorityError(res, error) {
+  const response = authorityErrorBody(error);
+  const headers = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+  if (response.retryable && response.retryAfterMs !== null) headers["retry-after"] = String(response.retryAfterMs / 1000);
+  res.writeHead(response.status, headers);
+  res.end(JSON.stringify(response.body));
+}
+
+function authorityReply(res, status, body, headers = {}) {
+  const payload = JSON.stringify(body);
+  if (Buffer.byteLength(payload) > 65_536) throw new AuthorityError("persistence_unavailable", { message: "response exceeds authority limit" });
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
+  res.end(payload);
+}
+
+function authorityRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let bytes = 0;
+    let text = "";
+    let settled = false;
+    const rejectOnce = (error) => { if (!settled) { settled = true; reject(error); } };
+    const resolveOnce = (value) => { if (!settled) { settled = true; resolve(value); } };
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      if (settled) return;
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > 16_384) {
+        rejectOnce(new AuthorityError("invalid_request", { message: "request exceeds authority limit" }));
+        return;
+      }
+      text += chunk;
+    });
+    req.on("error", () => rejectOnce(new AuthorityError("invalid_json", { message: "request body is invalid" })));
+    req.on("end", () => {
+      try { resolveOnce(text ? JSON.parse(text) : {}); } catch { rejectOnce(new AuthorityError("invalid_json", { message: "request body is invalid" })); }
+    });
+  });
+}
+
+function testAuthorityPrincipal(req, requiredScope) {
+  // Production authority mode remains fail-closed until the verifier store arrives in Task 3.
+  if (process.env.CLAUDE_PERMIT_GATE_TEST_MODE !== "1" || process.env.CLAUDE_PERMIT_GATE_TEST_AUTH !== "1") throw new AuthorityError("verifier_unavailable", { message: "verifier is unavailable" });
+  const installationId = req.headers["x-authority-test-installation"];
+  const accountBindingId = req.headers["x-authority-test-account-binding"];
+  const providers = String(req.headers["x-authority-test-providers"] ?? "anthropic-a,anthropic-b,anthropic-c,anthropic-d").split(",").filter(Boolean);
+  const scopes = new Set(String(req.headers["x-authority-test-scopes"] ?? "permit:mutate,snapshot:read,allowance:publish").split(",").filter(Boolean));
+  if (requiredScope && !scopes.has(requiredScope)) throw new AuthorityError("forbidden_scope", { message: "scope is not allowed" });
+  return { installationId, accountBindingId, providers };
+}
+
+function startAuthorityDaemon() {
+  let configuration;
+  let buildId;
+  try {
+    const provider = process.env.CLAUDE_PERMIT_GATE_PROVIDER;
+    const port = authorityInteger("CLAUDE_PERMIT_GATE_PORT");
+    const testMode = process.env.CLAUDE_PERMIT_GATE_TEST_MODE === "1";
+    const providerPorts = { "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 };
+    const authorityId = process.env.CLAUDE_PERMIT_GATE_AUTHORITY_ID || undefined;
+    buildId = process.env.CLAUDE_PERMIT_GATE_BUILD_ID || "development";
+    if ((authorityId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorityId)) || !/^[\x20-\x7e]{1,64}$/.test(buildId)) throw new Error("authority identity is invalid");
+    const minimumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MIN", 1);
+    const maximumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MAX", 2);
+    const currentConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_START", 2);
+    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency) throw new Error("authority configuration is invalid");
+    configuration = {
+      provider,
+      port,
+      statePath: authorityStatePath({ home: os.homedir(), stateDirectory: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR, port }),
+      bootstrap: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP === "1",
+      authorityId,
+      timing: authorityTimingFromEnvironment(process.env),
+      minimumConcurrency,
+      maximumConcurrency,
+      currentConcurrency,
+      allowTestPort: testMode,
+    };
+  } catch {
+    process.stderr.write("authority daemon configuration is invalid\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  const instanceId = crypto.randomUUID();
+  let authority;
+  let startupFault;
+  let reconcileTimer;
+  let shuttingDown = false;
+  const server = http.createServer((req, res) => { void handleAuthorityRequest(req, res); });
+
+  async function handleAuthorityRequest(req, res) {
+    try {
+      if (!authority) {
+        authorityError(res, startupFault
+          ? new AuthorityError("authority_degraded", { message: "authority state is unavailable" })
+          : new AuthorityError("authority_starting", { message: "authority is starting", retryable: true, retryAfterMs: 1_000 }));
+        return;
+      }
+      if (authority.status === "degraded") {
+        authorityError(res, new AuthorityError("authority_degraded", { message: "authority is degraded" }));
+        return;
+      }
+      const url = new URL(req.url, "http://127.0.0.1");
+      if (url.search) throw new AuthorityError("invalid_request", { message: "authority route cannot include a query" });
+      const pathname = url.pathname;
+      if (req.method === "POST" && req.headers["content-type"] !== "application/json") throw new AuthorityError("invalid_request", { message: "authority requests require JSON" });
+      if (req.method === "GET" && pathname === "/v1/health") {
+        testAuthorityPrincipal(req);
+        authorityReply(res, 200, authority.health({ instanceId, buildId }));
+        return;
+      }
+      if (req.method === "GET" && pathname === "/v1/snapshot") {
+        testAuthorityPrincipal(req, "snapshot:read");
+        authorityReply(res, 200, authority.snapshot({ instanceId, buildId }));
+        return;
+      }
+      const ticket = pathname.match(/^\/v1\/tickets\/([0-9a-f-]{36})(?:\/(claim|cancel|renew|complete))?$/i);
+      if (req.method === "GET" && ticket && !ticket[2]) {
+        const principal = testAuthorityPrincipal(req, "permit:mutate");
+        const result = authority.getTicket(principal, ticket[1]);
+        authorityReply(res, 200, result, { etag: `"revision-${result.revision}"` });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/tickets") {
+        const principal = testAuthorityPrincipal(req, "permit:mutate");
+        const result = authority.createTicket(principal, await authorityRequestBody(req));
+        const headers = { etag: `"revision-${result.ticket.revision}"`, location: `/v1/tickets/${result.ticket.ticketId}` };
+        if (result.replayed) headers["idempotency-replayed"] = "true";
+        authorityReply(res, result.created ? 201 : 200, result.ticket, headers);
+        return;
+      }
+      if (req.method === "POST" && ticket && ticket[2]) {
+        const principal = testAuthorityPrincipal(req, "permit:mutate");
+        const result = authority.mutateTicket(principal, ticket[1], ticket[2], await authorityRequestBody(req));
+        const headers = { etag: `"revision-${result.ticket.revision}"` };
+        if (result.replayed) headers["idempotency-replayed"] = "true";
+        authorityReply(res, 200, result.ticket, headers);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/allowance") {
+        const principal = testAuthorityPrincipal(req, "allowance:publish");
+        authorityReply(res, 200, authority.publishAllowance(principal, await authorityRequestBody(req)));
+        return;
+      }
+      throw new AuthorityError("not_found", { message: "authority route is unavailable" });
+    } catch (error) {
+      if (!res.headersSent) authorityError(res, error);
+      else res.destroy();
+    }
+  }
+
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") process.exit(3);
+    else {
+      process.stderr.write("authority daemon listener failed\n");
+      process.exit(1);
+    }
+  });
+  server.listen(configuration.port, "127.0.0.1", () => {
+    setImmediate(() => {
+      if (shuttingDown) return;
+      try {
+        authority = openAuthorityState(configuration);
+        reconcileTimer = setInterval(() => { try { authority.reconcile(); } catch {} }, 1_000);
+        reconcileTimer.unref?.();
+      } catch {
+        startupFault = true;
+      }
+    });
+  });
+  function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (reconcileTimer) clearInterval(reconcileTimer);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 500).unref?.();
+  }
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+function startLocalDaemon() {
 
 function envInt(name, legacy, fallback, minimum = 1) {
   const value = process.env[name] ?? process.env[legacy];
@@ -138,3 +338,4 @@ server.listen(PORT, "127.0.0.1", () => log(`permit daemon listening on 127.0.0.1
 const sweepTimer = setInterval(sweepStalePermits, 30000); sweepTimer.unref?.();
 function shutdown() { saveState(); for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
+}
