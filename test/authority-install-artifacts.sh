@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BASE="$(mktemp -d /private/tmp/authority-installer-test.XXXXXX)"
-trap 'rm -rf "$BASE"' EXIT
+trap 'chmod -R u+w "$BASE" 2>/dev/null || true; rm -rf "$BASE"' EXIT
 H1="$(git -C "$ROOT" rev-parse 'v0.2.0^{commit}')"
 AUTHORITY=11111111-1111-4111-8111-111111111111
 BINDINGS=(22222222-2222-4222-8222-222222222222 33333333-3333-4333-8333-333333333333 44444444-4444-4444-8444-444444444444 55555555-5555-4555-8555-555555555555)

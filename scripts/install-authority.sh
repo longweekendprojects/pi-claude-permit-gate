@@ -217,14 +217,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
   for destination in "$FINAL_RELEASE" "$FINAL_PLISTS" "$FINAL_MANIFEST"; do [ ! -e "$destination" ] || fail "artifact destination already exists"; done
   STAGE_DIRECTORY="$(mktemp -d "$OUTPUT_DIRECTORY/.authority-stage.XXXXXX")"
   published_releases=0; published_plists=0; published_manifest=0; succeeded=0
-  cleanup_dry() { status=$?; if [ "$succeeded" -ne 1 ]; then [ "$published_manifest" -eq 0 ] || rm -f "$FINAL_MANIFEST"; [ "$published_plists" -eq 0 ] || rm -rf "$FINAL_PLISTS"; [ "$published_releases" -eq 0 ] || rm -rf "$OUTPUT_DIRECTORY/releases"; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
+  cleanup_dry() { status=$?; if [ "$succeeded" -ne 1 ]; then [ "$published_manifest" -eq 0 ] || rm -f "$FINAL_MANIFEST"; [ "$published_plists" -eq 0 ] || rm -rf "$FINAL_PLISTS"; if [ "$published_releases" -eq 1 ]; then chmod -R u+w "$FINAL_RELEASE" 2>/dev/null || true; rm -rf "$FINAL_RELEASE"; rmdir "$OUTPUT_DIRECTORY/releases" 2>/dev/null || true; fi; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
   trap cleanup_dry EXIT
   build_artifacts "$STAGE_DIRECTORY" "$FINAL_RELEASE" "$STAGE_DIRECTORY/release"
   mkdir -p "$OUTPUT_DIRECTORY/releases"
   mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; published_releases=1
   chmod -R a-w "$FINAL_RELEASE"
   mv "$STAGE_DIRECTORY/LaunchAgents" "$FINAL_PLISTS"; published_plists=1
+  rm "$STAGE_DIRECTORY/authority-artifacts-v1.json"
+  write_manifest "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$COMMIT" "$BUILD_ID" "$PACKAGE_VERSION" "$SCHEMA_SHA256" "$H1_RELEASE" "$H1_COMMIT" "$FINAL_RELEASE" "$FINAL_PLISTS" "$STATE_DIRECTORY" "$LOG_DIRECTORY" "${PROVIDERS[@]}"
   mv "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$FINAL_MANIFEST"; published_manifest=1
+  "$SOURCE_ROOT/scripts/validate-authority.sh" --artifacts-only --output "$OUTPUT_DIRECTORY" --source-root "$SOURCE_ROOT"
   succeeded=1
   printf '%s\n' "dry-run staged four authority LaunchAgents at $OUTPUT_DIRECTORY"
   exit 0
@@ -279,7 +282,8 @@ for index in "${!PROVIDERS[@]}"; do
   launchctl_call bootstrap "gui/$(id -u)" "$destination_plist"
   if [ "${prior_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.plist" "$destination_plist.rollback"; fi
 done
-cp -p "$STAGE_DIRECTORY/authority-artifacts-v1.json" "$DEPLOYMENT_RECORD"
+write_manifest "$STAGE_DIRECTORY/deployment-v1.json" "$COMMIT" "$BUILD_ID" "$PACKAGE_VERSION" "$SCHEMA_SHA256" "$H1_RELEASE" "$H1_COMMIT" "$FINAL_RELEASE" "$AGENT_DIRECTORY" "$STATE_DIRECTORY" "$LOG_DIRECTORY" "${PROVIDERS[@]}"
+cp -p "$STAGE_DIRECTORY/deployment-v1.json" "$DEPLOYMENT_RECORD"
 attempt_active=0
 trap - EXIT
 rm -rf "$STAGE_DIRECTORY"
