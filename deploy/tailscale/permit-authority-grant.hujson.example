@@ -1,0 +1,13 @@
+{
+  "hosts": {
+    "ruminaider": "100.103.181.53",
+    "operator-supplied-peer": "OPERATOR_SUPPLIED_PEER_TAILNET_IP"
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["ruminaider", "operator-supplied-peer"],
+      "dst": ["ruminaider:8791-8794"]
+    }
+  ]
+}

@@ -5,6 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/validate-authority.sh --artifacts-only --output <artifact-directory> [--source-root <repository-directory>] [--release-tree <directory>]
+  scripts/validate-authority.sh --artifacts-only --policy <policy.hujson>
   scripts/validate-authority.sh --release-only --source-root <repository-directory> --release-tree <directory> --commit <commit>
 
 Validation reads artifacts only. It never invokes launchctl, Keychain, listeners, Serve, or Tailnet.
@@ -17,6 +18,7 @@ absolute_path() { case "$1" in /*) ;; *) fail "path must be absolute" ;; esac; }
 ARTIFACTS_ONLY=0
 RELEASE_ONLY=0
 OUTPUT_DIRECTORY=""
+POLICY_PATH=""
 RELEASE_TREE=""
 COMMIT_ARGUMENT=""
 SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -24,11 +26,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifacts-only) ARTIFACTS_ONLY=1; shift ;;
     --release-only) RELEASE_ONLY=1; shift ;;
-    --output|--source-root|--release-tree|--commit)
+    --output|--policy|--source-root|--release-tree|--commit)
       [ "$#" -ge 2 ] || fail "missing value"
       option="$1"; value="$2"; shift 2
       case "$option" in
         --output) OUTPUT_DIRECTORY="$value" ;;
+        --policy) POLICY_PATH="$value" ;;
         --source-root) SOURCE_ROOT="$value" ;;
         --release-tree) RELEASE_TREE="$value" ;;
         --commit) COMMIT_ARGUMENT="$value" ;;
@@ -42,8 +45,80 @@ done
 [ $((ARTIFACTS_ONLY + RELEASE_ONLY)) -eq 1 ] || fail "choose exactly one validation mode"
 absolute_path "$SOURCE_ROOT"
 [ -d "$SOURCE_ROOT/.git" ] || fail "source root is not a repository"
-if [ "$ARTIFACTS_ONLY" -eq 1 ]; then [ -n "$OUTPUT_DIRECTORY" ] || fail "artifact validation requires --output"; absolute_path "$OUTPUT_DIRECTORY"; fi
+if [ "$ARTIFACTS_ONLY" -eq 1 ]; then
+  [ -n "$OUTPUT_DIRECTORY" ] || [ -n "$POLICY_PATH" ] || fail "artifact validation requires --output or --policy"
+  [ -z "$OUTPUT_DIRECTORY" ] || [ -z "$POLICY_PATH" ] || fail "artifact validation accepts either --output or --policy"
+fi
+if [ -n "$OUTPUT_DIRECTORY" ]; then absolute_path "$OUTPUT_DIRECTORY"; fi
 if [ -n "$RELEASE_TREE" ]; then absolute_path "$RELEASE_TREE"; fi
+
+if [ -n "$POLICY_PATH" ]; then
+  [ "$ARTIFACTS_ONLY" -eq 1 ] || fail "policy validation requires --artifacts-only"
+  [ -f "$POLICY_PATH" ] || fail "policy file is unavailable"
+  node --input-type=module - "$POLICY_PATH" <<'NODE'
+import fs from "node:fs";
+
+const [policyPath] = process.argv.slice(2);
+const fail = (message) => { throw new Error(message); };
+let policy;
+try {
+  policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
+} catch (error) {
+  fail(`policy is not lintable HuJSON/JSON: ${error.message}`);
+}
+if (!policy || typeof policy !== "object" || Array.isArray(policy)) fail("policy root must be an object");
+const exactKeys = (value, keys, name) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${name} must be an object`);
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) fail(`${name} has unexpected entries`);
+};
+const stringArray = (value, name) => {
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string")) fail(`${name} must be a non-empty string array`);
+  return value;
+};
+const sameSet = (actual, expected) => actual.length === expected.length && actual.every((value) => expected.includes(value));
+const expectedSources = ["ruminaider", "operator-supplied-peer"];
+const expectedDestination = "ruminaider:8791-8794";
+exactKeys(policy, ["hosts", "acls"], "policy");
+exactKeys(policy.hosts, ["ruminaider", "operator-supplied-peer"], "hosts");
+if (policy.hosts.ruminaider !== "100.103.181.53") fail("Ruminaider must use confirmed IP 100.103.181.53");
+if (policy.hosts["operator-supplied-peer"] !== "OPERATOR_SUPPLIED_PEER_TAILNET_IP") fail("peer must remain the explicit unresolved operator-supplied placeholder");
+if (!Array.isArray(policy.acls) || policy.acls.length !== 1) fail("policy must contain one narrow authority ACL");
+const forbidden = [];
+const inspect = (value, path = "policy") => {
+  if (typeof value === "string") {
+    if (/funnel/i.test(value)) forbidden.push(`${path} contains Funnel`);
+    if (/(^|:)tag:|autogroup:|\*|0\.0\.0\.0\/0|::\/0/i.test(value)) forbidden.push(`${path} contains a broad selector or client tag`);
+  } else if (Array.isArray(value)) value.forEach((item, index) => inspect(item, `${path}[${index}]`));
+  else if (value && typeof value === "object") Object.entries(value).forEach(([key, item]) => {
+    if (/funnel/i.test(key)) forbidden.push(`${path}.${key} configures Funnel`);
+    inspect(item, `${path}.${key}`);
+  });
+};
+inspect(policy);
+if (forbidden.length > 0) fail(forbidden.join("; "));
+const acl = policy.acls[0];
+exactKeys(acl, ["action", "src", "dst"], "authority ACL");
+if (acl.action !== "accept") fail("authority ACL must accept the two approved sources only");
+const sources = stringArray(acl.src, "authority ACL src");
+const destinations = stringArray(acl.dst, "authority ACL dst");
+if (!sameSet([...sources].sort(), expectedSources)) fail("authority ACL sources must be Ruminaider and the unresolved operator-supplied peer only");
+if (!sameSet(destinations, [expectedDestination])) fail("authority ACL destination must be Ruminaider TCP 8791-8794 only");
+const allowed = new Set(sources);
+const matrix = [
+  ["Ruminaider self", "ruminaider", true],
+  ["operator-supplied peer", "operator-supplied-peer", true],
+  ["another same-user device", "another-same-user-device", false],
+  ["other Tailnet member", "other-tailnet-member", false],
+  ["public internet", "public-internet", false]
+];
+for (const [name, source, expected] of matrix) {
+  const actual = allowed.has(source) && destinations.includes(expectedDestination);
+  if (actual !== expected) fail(`policy matrix failed for ${name}`);
+}
+process.stdout.write("authority policy template is lintable: Ruminaider self and the unresolved operator-supplied peer reach only TCP 8791-8794; other same-user devices, members, and public paths are denied; no broader selector, client tag, or Funnel is present\n");
+NODE
+  exit 0
+fi
 
 MANIFEST="${OUTPUT_DIRECTORY:+$OUTPUT_DIRECTORY/authority-artifacts-v1.json}"
 if [ "$ARTIFACTS_ONLY" -eq 1 ]; then

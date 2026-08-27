@@ -231,3 +231,22 @@ scripts/validate-peer.sh --provider anthropic-a \
 ```
 
 An unavailable peer, wrong mode or build, missing stable installation ID, failed Keychain lookup, or any local listener fails closed for that lane. Peer readiness stops after 15 seconds, then allows one second for child-process termination. Build validation uses only temporary fixture commands through `CLAUDE_PERMIT_GATE_TEST_MODE=1`; it never performs OAuth, Keychain, or peer access.
+
+### Private Tailnet policy and Serve artifacts
+
+`deploy/tailscale/permit-authority-grant.hujson.example` is a lintable, additive policy template. It allows confirmed Ruminaider (`100.103.181.53`) and only the explicitly unresolved `operator-supplied-peer` alias to reach Ruminaider TCP ports `8791-8794`. The placeholder is not a peer identity or a client tag. It must be replaced only after the operator confirms a stable peer Tailnet IP and the Tailnet owner approves the complete policy. Until then, deployment stops; no local bypass is allowed.
+
+```bash
+scripts/validate-authority.sh --artifacts-only --policy deploy/tailscale/permit-authority-grant.hujson.example
+```
+
+The artifact validator proves the template matrix: Ruminaider self and the named peer alias can reach only the four authority ports, while another same-user device, another Tailnet member, and public paths cannot. It rejects a missing self rule, an altered peer placeholder, client tags, broad selectors, unexpected authority ACLs, and Funnel configuration. Before policy submission, audit the complete Tailnet policy for any ACL or grant that can also match Ruminaider TCP `8791-8794`; a narrow additive rule does not reduce an existing broader rule.
+
+After the peer is confirmed and the deployment gate is approved, use the app-bundled CLI to add or remove one private listener at a time. These examples operate on lane A only; substitute one other A-D port only when changing that one lane.
+
+```bash
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8791 --bg http://127.0.0.1:8791
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve clear --https=8791
+```
+
+Do not use Funnel, any reset command, `serve set-config`, or another whole-config replacement command. These artifact instructions do not authorize a Tailnet policy submission or a Serve change.
