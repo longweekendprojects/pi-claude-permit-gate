@@ -518,35 +518,74 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
 
   const verifierFence = authorityVerifierFencePath(verifierStore);
   const verifierFenceDirectory = path.dirname(verifierFence);
-  const fenceOwner = (pid) => ({ schemaVersion: 1, ownerToken: crypto.randomBytes(32).toString("hex"), pid, uid: process.getuid(), createdAtEpochMs: Date.now(), processUptimeMs: Math.floor(process.uptime() * 1_000) });
+  const fenceOwner = (pid) => ({ schemaVersion: 2, ownerToken: crypto.randomBytes(32).toString("hex"), pid, uid: process.getuid(), createdAtEpochMs: Date.now(), processUptimeMs: Math.floor(process.uptime() * 1_000), processBirthId: crypto.randomBytes(32).toString("hex"), livenessId: crypto.randomBytes(12).toString("base64url") });
+  const fenceLivenessPath = (owner) => path.join("/tmp", `.cpf-${process.getuid()}`, `${crypto.createHash("sha256").update(path.resolve(verifierFence)).digest("base64url").slice(0, 16)}-${owner.livenessId}`);
+  const fenceBirthProof = (owner) => ({ schemaVersion: 1, ownerToken: owner.ownerToken, pid: owner.pid, processBirthId: owner.processBirthId, processUptimeMs: owner.processUptimeMs });
+  const startFenceLiveness = async (owner, proof = fenceBirthProof(owner)) => {
+    const endpoint = fenceLivenessPath(owner);
+    const server = net.createServer((socket) => { socket.end(`${JSON.stringify(proof)}\n`); });
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
+    await fs.chmod(endpoint, 0o600);
+    return { server, endpoint, async stop() { if (server.listening) await new Promise((resolve) => server.close(resolve)); try { await fs.unlink(endpoint); } catch {} } };
+  };
+  const deadFenceOwner = async () => {
+    const holder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await new Promise((resolve, reject) => { holder.once("error", reject); holder.once("exit", resolve); });
+    return fenceOwner(holder.pid);
+  };
+  const recoveryPath = (owner) => path.join(verifierFenceDirectory, `.${path.basename(verifierFence)}.${owner.ownerToken}.recovery`);
+
   const liveFenceOwner = fenceOwner(process.pid);
+  const liveFenceLiveness = await startFenceLiveness(liveFenceOwner);
   await fs.writeFile(verifierFence, `${JSON.stringify(liveFenceOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
-  assert.equal((await fs.lstat(verifierFence)).mode & 0o777, 0o600); assert.equal((await fs.lstat(verifierFenceDirectory)).mode & 0o077, 0);
+  assert.equal((await fs.lstat(verifierFence)).mode & 0o777, 0o600); assert.equal((await fs.lstat(verifierFenceDirectory)).mode & 0o077, 0); assert.equal((await fs.lstat(liveFenceLiveness.endpoint)).mode & 0o777, 0o600);
   const liveFenceStore = await fs.readFile(verifierStore, "utf8");
   const liveFenceStartedAt = Date.now();
   const liveFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId], undefined, { CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_TIMEOUT_MS: "100" });
   assert.notEqual(liveFenceResult.code, 0); assert(Date.now() - liveFenceStartedAt >= 50); assert.equal(await fs.readFile(verifierStore, "utf8"), liveFenceStore); assert.equal(await fs.readFile(verifierFence, "utf8"), `${JSON.stringify(liveFenceOwner)}\n`);
-  await fs.unlink(verifierFence);
+  await fs.unlink(verifierFence); await liveFenceLiveness.stop();
 
-  const crashedHolder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-  await new Promise((resolve, reject) => { crashedHolder.once("error", reject); crashedHolder.once("exit", resolve); });
-  const crashedFenceOwner = fenceOwner(crashedHolder.pid);
-  await fs.writeFile(verifierFence, `${JSON.stringify(crashedFenceOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
-  const recoveredFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[1].tokenId]);
-  assert.deepEqual({ code: recoveredFenceResult.code, signal: recoveredFenceResult.signal }, { code: 0, signal: null });
+  const afterRecoveryLinkOwner = await deadFenceOwner();
+  const afterRecoveryLinkPath = recoveryPath(afterRecoveryLinkOwner);
+  await fs.writeFile(verifierFence, `${JSON.stringify(afterRecoveryLinkOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600); await fs.link(verifierFence, afterRecoveryLinkPath);
+  const afterRecoveryLinkResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[1].tokenId]);
+  assert.deepEqual({ code: afterRecoveryLinkResult.code, signal: afterRecoveryLinkResult.signal }, { code: 0, signal: null });
   assert.notEqual(JSON.parse(await fs.readFile(verifierStore, "utf8")).verifiers.find((record) => record.tokenId === concurrentVerifiers[1].tokenId).revokedAtEpochMs, null);
+  await assert.rejects(fs.lstat(verifierFence), { code: "ENOENT" }); await assert.rejects(fs.lstat(afterRecoveryLinkPath), { code: "ENOENT" });
+
+  const afterPrimaryUnlinkOwner = await deadFenceOwner();
+  const afterPrimaryUnlinkPath = recoveryPath(afterPrimaryUnlinkOwner);
+  await fs.writeFile(verifierFence, `${JSON.stringify(afterPrimaryUnlinkOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600); await fs.link(verifierFence, afterPrimaryUnlinkPath); await fs.unlink(verifierFence);
+  const afterPrimaryUnlinkResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId]);
+  assert.deepEqual({ code: afterPrimaryUnlinkResult.code, signal: afterPrimaryUnlinkResult.signal }, { code: 0, signal: null });
+  assert.notEqual(JSON.parse(await fs.readFile(verifierStore, "utf8")).verifiers.find((record) => record.tokenId === concurrentVerifiers[0].tokenId).revokedAtEpochMs, null);
+  await assert.rejects(fs.lstat(verifierFence), { code: "ENOENT" }); await assert.rejects(fs.lstat(afterPrimaryUnlinkPath), { code: "ENOENT" });
+
+  const mismatchedBirthOwner = fenceOwner(process.pid);
+  const mismatchedBirthLiveness = await startFenceLiveness(mismatchedBirthOwner, { ...fenceBirthProof(mismatchedBirthOwner), processBirthId: crypto.randomBytes(32).toString("hex") });
+  await fs.writeFile(verifierFence, `${JSON.stringify(mismatchedBirthOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
+  const mismatchedBirthStore = await fs.readFile(verifierStore, "utf8");
+  const mismatchedBirthResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", rotatedVerifiers[0].source.tokenId], undefined, { CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_TIMEOUT_MS: "100" });
+  assert.notEqual(mismatchedBirthResult.code, 0); assert.equal(await fs.readFile(verifierStore, "utf8"), mismatchedBirthStore); assert.equal(await fs.readFile(verifierFence, "utf8"), `${JSON.stringify(mismatchedBirthOwner)}\n`);
+  await fs.unlink(verifierFence); await mismatchedBirthLiveness.stop();
+
+  const reusedPidOwner = fenceOwner(process.pid);
+  await fs.writeFile(verifierFence, `${JSON.stringify(reusedPidOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
+  const reusedPidResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", rotatedVerifiers[0].source.tokenId]);
+  assert.deepEqual({ code: reusedPidResult.code, signal: reusedPidResult.signal }, { code: 0, signal: null });
+  assert.notEqual(JSON.parse(await fs.readFile(verifierStore, "utf8")).verifiers.find((record) => record.tokenId === rotatedVerifiers[0].source.tokenId).revokedAtEpochMs, null);
   await assert.rejects(fs.lstat(verifierFence), { code: "ENOENT" });
 
   const unsafeFenceTarget = path.join(sharedHome, "unsafe-verifier-fence-target");
   await fs.writeFile(unsafeFenceTarget, "unchanged", { mode: 0o600 }); await fs.symlink(unsafeFenceTarget, verifierFence);
   const symlinkFenceStore = await fs.readFile(verifierStore, "utf8");
-  const symlinkFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId]);
+  const symlinkFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", rotatedVerifiers[1].source.tokenId]);
   assert.notEqual(symlinkFenceResult.code, 0); assert.equal((await fs.lstat(verifierFence)).isSymbolicLink(), true); assert.equal(await fs.readFile(unsafeFenceTarget, "utf8"), "unchanged"); assert.equal(await fs.readFile(verifierStore, "utf8"), symlinkFenceStore);
   await fs.unlink(verifierFence);
   const permissiveFenceOwner = fenceOwner(process.pid);
   await fs.writeFile(verifierFence, `${JSON.stringify(permissiveFenceOwner)}\n`, { mode: 0o644 }); await fs.chmod(verifierFence, 0o644);
   const permissiveFenceStore = await fs.readFile(verifierStore, "utf8");
-  const permissiveFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId]);
+  const permissiveFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", rotatedVerifiers[1].source.tokenId]);
   assert.notEqual(permissiveFenceResult.code, 0); assert.equal((await fs.lstat(verifierFence)).mode & 0o777, 0o644); assert.equal(await fs.readFile(verifierStore, "utf8"), permissiveFenceStore);
   await fs.unlink(verifierFence);
 

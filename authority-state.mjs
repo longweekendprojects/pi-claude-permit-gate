@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -29,8 +30,11 @@ const MAX_VERIFIERS_PER_INSTALLATION_SCOPE = 2;
 const TOKEN_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 const VERIFIER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const VERIFIER_FENCE_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+const VERIFIER_FENCE_LIVENESS_ID_PATTERN = /^[A-Za-z0-9_-]{16}$/;
 const VERIFIER_FENCE_TIMEOUT_MS = 3_000;
 const VERIFIER_FENCE_RETRY_MS = 25;
+const VERIFIER_FENCE_LIVENESS_TIMEOUT_MS = 100;
+const VERIFIER_FENCE_LIVENESS_MAX_BYTES = 512;
 const DUMMY_VERIFIER_SHA256 = crypto.createHash("sha256").update("claude-permit-authority-dummy-verifier").digest();
 
 const ERROR_STATUS = Object.freeze({
@@ -226,22 +230,24 @@ function isSafeFenceArtifact(stat) {
 }
 
 function fenceOwner(value) {
-  if (!hasExactKeys(value, ["schemaVersion", "ownerToken", "pid", "uid", "createdAtEpochMs", "processUptimeMs"]) || value.schemaVersion !== 1 || !VERIFIER_FENCE_TOKEN_PATTERN.test(value.ownerToken) || !isSafeInteger(value.pid, 1) || !isSafeInteger(value.uid, 0) || value.uid !== currentUid() || !isEpochMs(value.createdAtEpochMs) || !isSafeInteger(value.processUptimeMs, 0)) return undefined;
+  if (!hasExactKeys(value, ["schemaVersion", "ownerToken", "pid", "uid", "createdAtEpochMs", "processUptimeMs", "processBirthId", "livenessId"]) || value.schemaVersion !== 2 || !VERIFIER_FENCE_TOKEN_PATTERN.test(value.ownerToken) || !isSafeInteger(value.pid, 1) || !isSafeInteger(value.uid, 0) || value.uid !== currentUid() || !isEpochMs(value.createdAtEpochMs) || !isSafeInteger(value.processUptimeMs, 0) || !VERIFIER_FENCE_TOKEN_PATTERN.test(value.processBirthId) || !VERIFIER_FENCE_LIVENESS_ID_PATTERN.test(value.livenessId)) return undefined;
   return value;
 }
 
 function sameFenceOwner(left, right) {
-  return left.ownerToken === right.ownerToken && left.pid === right.pid && left.uid === right.uid && left.createdAtEpochMs === right.createdAtEpochMs && left.processUptimeMs === right.processUptimeMs;
+  return left.ownerToken === right.ownerToken && left.pid === right.pid && left.uid === right.uid && left.createdAtEpochMs === right.createdAtEpochMs && left.processUptimeMs === right.processUptimeMs && left.processBirthId === right.processBirthId && left.livenessId === right.livenessId;
 }
 
 function newFenceOwner() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ownerToken: crypto.randomBytes(32).toString("hex"),
     pid: process.pid,
     uid: currentUid(),
     createdAtEpochMs: Date.now(),
     processUptimeMs: Math.floor(process.uptime() * 1_000),
+    processBirthId: crypto.randomBytes(32).toString("hex"),
+    livenessId: crypto.randomBytes(12).toString("base64url"),
   };
 }
 
@@ -259,6 +265,23 @@ export function authorityVerifierFencePath(file) {
   return `${path.resolve(file)}.lock`;
 }
 
+function verifierFenceLivenessDirectory() {
+  return path.join("/tmp", `.cpf-${currentUid()}`);
+}
+
+function verifierFenceLivenessPath(file, owner) {
+  const storeId = crypto.createHash("sha256").update(path.resolve(file)).digest("base64url").slice(0, 16);
+  return path.join(verifierFenceLivenessDirectory(), `${storeId}-${owner.livenessId}`);
+}
+
+function recoveryPathForFenceOwner(file, owner) {
+  return path.join(path.dirname(file), `.${path.basename(file)}.${owner.ownerToken}.recovery`);
+}
+
+function isSafeFenceDirectory(stat) {
+  return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === currentUid() && (stat.mode & 0o077) === 0;
+}
+
 async function ensureVerifierFenceDirectory(file) {
   const directory = path.dirname(file);
   try {
@@ -267,11 +290,15 @@ async function ensureVerifierFenceDirectory(file) {
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== currentUid()) throw verifierFault();
     if ((stat.mode & 0o077) !== 0) await fsPromises.chmod(directory, 0o700);
     stat = await fsPromises.lstat(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== currentUid() || (stat.mode & 0o077) !== 0) throw verifierFault();
+    if (!isSafeFenceDirectory(stat)) throw verifierFault();
   } catch (error) {
     if (error instanceof AuthorityError) throw error;
     throw verifierFault();
   }
+}
+
+async function ensureVerifierFenceLivenessDirectory() {
+  await ensureVerifierFenceDirectory(path.join(verifierFenceLivenessDirectory(), "socket"));
 }
 
 async function readVerifierFenceArtifact(file) {
@@ -294,6 +321,121 @@ async function readVerifierFenceArtifact(file) {
     if (error?.code === "ENOENT") return { kind: "missing" };
     return { kind: "unsafe" };
   }
+}
+
+function isSafeFenceLivenessArtifact(stat) {
+  return stat.isSocket() && !stat.isSymbolicLink() && stat.uid === currentUid() && (stat.mode & 0o077) === 0;
+}
+
+function fenceBirthProof(owner) {
+  return { schemaVersion: 1, ownerToken: owner.ownerToken, pid: owner.pid, processBirthId: owner.processBirthId, processUptimeMs: owner.processUptimeMs };
+}
+
+function matchesFenceBirthProof(value, owner) {
+  return hasExactKeys(value, ["schemaVersion", "ownerToken", "pid", "processBirthId", "processUptimeMs"]) && value.schemaVersion === 1 && value.ownerToken === owner.ownerToken && value.pid === owner.pid && value.processBirthId === owner.processBirthId && value.processUptimeMs === owner.processUptimeMs;
+}
+
+async function openVerifierFenceLiveness(file, owner) {
+  await ensureVerifierFenceLivenessDirectory();
+  const endpoint = verifierFenceLivenessPath(file, owner);
+  try {
+    await fsPromises.lstat(endpoint);
+    throw verifierFault();
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    if (error?.code !== "ENOENT") throw verifierFault();
+  }
+  const server = net.createServer((socket) => { socket.end(`${JSON.stringify(fenceBirthProof(owner))}\n`); });
+  server.on("error", () => {});
+  let listening = false;
+  let endpointStat;
+  try {
+    await new Promise((resolve, reject) => {
+      const onError = (error) => { server.off("listening", onListening); reject(error); };
+      const onListening = () => { server.off("error", onError); resolve(); };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(endpoint);
+    });
+    listening = true;
+    await fsPromises.chmod(endpoint, 0o600);
+    endpointStat = await fsPromises.lstat(endpoint);
+    if (!isSafeFenceLivenessArtifact(endpointStat)) throw verifierFault();
+    return { server, endpoint, stat: endpointStat };
+  } catch (error) {
+    if (listening) {
+      await new Promise((resolve) => server.close(() => resolve()));
+      try {
+        const stat = await fsPromises.lstat(endpoint);
+        if (endpointStat && isSafeFenceLivenessArtifact(stat) && sameFile(stat, endpointStat)) await fsPromises.unlink(endpoint);
+      } catch {}
+    }
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
+  }
+}
+
+async function closeVerifierFenceLiveness(liveness) {
+  if (liveness.server.listening) await new Promise((resolve) => liveness.server.close(() => resolve()));
+  try {
+    const stat = await fsPromises.lstat(liveness.endpoint);
+    if (isSafeFenceLivenessArtifact(stat) && sameFile(stat, liveness.stat)) await fsPromises.unlink(liveness.endpoint);
+  } catch {}
+}
+
+async function verifierFenceLivenessState(file, owner) {
+  const endpoint = verifierFenceLivenessPath(file, owner);
+  try {
+    const directory = await fsPromises.lstat(path.dirname(endpoint));
+    if (!isSafeFenceDirectory(directory)) return "uncertain";
+  } catch (error) {
+    return error?.code === "ENOENT" ? "dead" : "uncertain";
+  }
+  let stat;
+  try {
+    stat = await fsPromises.lstat(endpoint);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "dead";
+    return "uncertain";
+  }
+  if (!isSafeFenceLivenessArtifact(stat)) return "uncertain";
+  return new Promise((resolve) => {
+    let settled = false;
+    let response = "";
+    const client = net.createConnection({ path: endpoint });
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      client.destroy();
+      resolve(state);
+    };
+    const timeout = setTimeout(() => finish("uncertain"), VERIFIER_FENCE_LIVENESS_TIMEOUT_MS);
+    client.setEncoding("utf8");
+    client.on("data", (chunk) => {
+      response += chunk;
+      if (Buffer.byteLength(response) > VERIFIER_FENCE_LIVENESS_MAX_BYTES) finish("uncertain");
+    });
+    client.on("end", () => {
+      try { finish(matchesFenceBirthProof(JSON.parse(response), owner) ? "live" : "uncertain"); } catch { finish("uncertain"); }
+    });
+    client.on("error", (error) => finish(error?.code === "ENOENT" || error?.code === "ECONNREFUSED" ? "dead" : "uncertain"));
+    client.on("close", () => { if (!settled) finish("uncertain"); });
+  });
+}
+
+function ownerPidState(owner) {
+  try {
+    process.kill(owner.pid, 0);
+    return "present";
+  } catch (error) {
+    return error?.code === "ESRCH" ? "absent" : "uncertain";
+  }
+}
+
+async function ownerIsConclusiveDead(file, owner) {
+  if (ownerPidState(owner) === "uncertain") return false;
+  return await verifierFenceLivenessState(file, owner) === "dead";
 }
 
 async function createVerifierFenceArtifact(file, owner) {
@@ -319,15 +461,6 @@ async function createVerifierFenceArtifact(file, owner) {
   }
 }
 
-function ownerIsConclusiveDead(owner) {
-  try {
-    process.kill(owner.pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === "ESRCH";
-  }
-}
-
 async function removeVerifierFenceArtifact(file, expectedOwner, expectedStat) {
   const observed = await readVerifierFenceArtifact(file);
   if (observed.kind !== "valid" || !sameFenceOwner(observed.owner, expectedOwner) || expectedStat && !sameFile(observed.stat, expectedStat)) throw verifierFault();
@@ -348,30 +481,51 @@ async function removeVerifierFenceArtifact(file, expectedOwner, expectedStat) {
   }
 }
 
-async function reclaimDeadVerifierFence(file, observed) {
-  if (!ownerIsConclusiveDead(observed.owner)) return false;
+async function removeOrphanedVerifierFenceRecoveries(file) {
   const directory = path.dirname(file);
-  const recoveryPath = path.join(directory, `.${path.basename(file)}.${observed.owner.ownerToken}.recovery`);
-  let linked = false;
+  const prefix = `.${path.basename(file)}.`;
+  const suffix = ".recovery";
+  let entries;
+  try {
+    entries = await fsPromises.readdir(directory);
+  } catch {
+    throw verifierFault();
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const recoveryPath = path.join(directory, name);
+    const recovery = await readVerifierFenceArtifact(recoveryPath);
+    if (recovery.kind !== "valid" || recoveryPath !== recoveryPathForFenceOwner(file, recovery.owner) || !await ownerIsConclusiveDead(file, recovery.owner)) throw verifierFault();
+    await removeVerifierFenceArtifact(recoveryPath, recovery.owner);
+  }
+}
+
+async function reclaimDeadVerifierFence(file, observed) {
+  if (!await ownerIsConclusiveDead(file, observed.owner)) return false;
+  const directory = path.dirname(file);
+  const recoveryPath = recoveryPathForFenceOwner(file, observed.owner);
+  let createdRecovery = false;
+  let completed = false;
   try {
     try {
       await fsPromises.link(file, recoveryPath);
-      linked = true;
+      createdRecovery = true;
     } catch (error) {
-      if (error?.code === "EEXIST" || error?.code === "ENOENT") return false;
-      throw error;
+      if (error?.code === "ENOENT") return false;
+      if (error?.code !== "EEXIST") throw error;
     }
     const current = await readVerifierFenceArtifact(file);
     const recovery = await readVerifierFenceArtifact(recoveryPath);
-    if (current.kind !== "valid" || recovery.kind !== "valid" || !sameFenceOwner(current.owner, observed.owner) || !sameFenceOwner(recovery.owner, observed.owner) || !sameFile(current.stat, recovery.stat) || !sameFile(current.stat, observed.stat) || !ownerIsConclusiveDead(current.owner)) return false;
+    if (current.kind !== "valid" || recovery.kind !== "valid" || !sameFenceOwner(current.owner, observed.owner) || !sameFenceOwner(recovery.owner, observed.owner) || !sameFile(current.stat, recovery.stat) || !sameFile(current.stat, observed.stat) || !await ownerIsConclusiveDead(file, current.owner)) return false;
     await fsPromises.unlink(file);
     await fsyncDirectory(directory);
+    completed = true;
     return true;
   } catch (error) {
     if (error instanceof AuthorityError) throw error;
     throw verifierFault();
   } finally {
-    if (linked) {
+    if (createdRecovery || completed) {
       const recovery = await readVerifierFenceArtifact(recoveryPath);
       if (recovery.kind === "valid" && sameFenceOwner(recovery.owner, observed.owner)) {
         try { await fsPromises.unlink(recoveryPath); await fsyncDirectory(directory); } catch {}
@@ -389,22 +543,32 @@ export async function withAuthorityVerifierFence(file, operation) {
   const { timeoutMs, retryMs } = verifierFenceTiming();
   const deadline = Date.now() + timeoutMs;
   let acquired = false;
+  let released = false;
+  let liveness;
   try {
     await ensureVerifierFenceDirectory(fencePath);
+    liveness = await openVerifierFenceLiveness(fencePath, owner);
     while (Date.now() < deadline) {
+      const beforeCreate = await readVerifierFenceArtifact(fencePath);
+      if (beforeCreate.kind === "unsafe") throw verifierFault();
+      if (beforeCreate.kind === "missing") await removeOrphanedVerifierFenceRecoveries(fencePath);
       if (await createVerifierFenceArtifact(fencePath, owner)) {
         acquired = true;
         break;
       }
       const observed = await readVerifierFenceArtifact(fencePath);
       if (observed.kind === "unsafe") throw verifierFault();
-      if (observed.kind === "valid" && ownerIsConclusiveDead(observed.owner)) await reclaimDeadVerifierFence(fencePath, observed);
+      if (observed.kind === "valid" && await ownerIsConclusiveDead(fencePath, observed.owner)) await reclaimDeadVerifierFence(fencePath, observed);
       await waitForVerifierFence(retryMs);
     }
     if (!acquired) throw verifierFault();
     return await operation();
   } finally {
-    if (acquired) await removeVerifierFenceArtifact(fencePath, owner);
+    if (acquired) {
+      await removeVerifierFenceArtifact(fencePath, owner);
+      released = true;
+    }
+    if (liveness && (!acquired || released)) await closeVerifierFenceLiveness(liveness);
   }
 }
 
