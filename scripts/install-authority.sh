@@ -25,7 +25,12 @@ require_value() { [ "$#" -ge 2 ] || fail "missing value for $1"; }
 absolute_path() { case "$1" in /*) ;; *) fail "path must be absolute" ;; esac; }
 valid_uuid() { [[ "$1" =~ $UUID_PATTERN ]]; }
 valid_integer() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -le 9007199254740991 ]; }
-sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+sha256_file() { node --input-type=module - "$1" <<'NODE'
+import crypto from "node:crypto";
+import fs from "node:fs";
+process.stdout.write(`${crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex")}\n`);
+NODE
+}
 label_for() { printf '%s.%s' "$LABEL_PREFIX" "$1"; }
 
 DRY_RUN=0
