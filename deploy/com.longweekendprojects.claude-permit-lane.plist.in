@@ -25,8 +25,6 @@
     <string>__ACCOUNT_BINDING_ID__</string>
     <key>CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR</key>
     <string>__STATE_DIRECTORY__</string>
-    <key>CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP</key>
-    <string>1</string>
     <key>CLAUDE_PERMIT_GATE_BUILD_ID</key>
     <string>__BUILD_ID__</string>
     <key>CLAUDE_PERMIT_GATE_OFFER_TTL_MS</key>

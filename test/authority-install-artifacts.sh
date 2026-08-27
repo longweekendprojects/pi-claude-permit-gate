@@ -25,15 +25,18 @@ special_output="$BASE/output space 'quote' \"double\" & pipe| slash\\"
 test ! -e "$special_home"
 /usr/bin/plutil -lint "$special_output"/LaunchAgents/*.plist >/dev/null
 "$ROOT/scripts/validate-authority.sh" --artifacts-only --output "$special_output"
-node --input-type=module - "$special_output" "$special_home" <<'NODE'
+node --input-type=module - "$special_output" "$special_home" "$ROOT/deploy/com.longweekendprojects.claude-permit-lane.plist.in" <<'NODE'
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-const [out, home] = process.argv.slice(2);
+const [out, home, templatePath] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(path.join(out, 'authority-artifacts-v1.json'), 'utf8'));
+const template = fs.readFileSync(templatePath, 'utf8');
+if (template.includes('CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP') || !template.includes('__ACCOUNT_BINDING_ID__')) throw new Error('template does not declare the expected launch environment');
 for (const lane of manifest.lanes) {
+  const raw = fs.readFileSync(lane.plistPath, 'utf8');
   const decoded = JSON.parse(childProcess.execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', lane.plistPath]));
-  if (decoded.WorkingDirectory !== manifest.releasePath || decoded.EnvironmentVariables.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR !== path.join(home, 'Library', 'Application Support', 'Claude Permit Authority', 'lanes') || decoded.StandardOutPath !== lane.outLogPath || decoded.StandardErrorPath !== lane.errLogPath) throw new Error('special-character path did not decode exactly');
+  if (/__[A-Z0-9_]+__/.test(raw) || decoded.EnvironmentVariables.CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP !== undefined || decoded.WorkingDirectory !== manifest.releasePath || decoded.EnvironmentVariables.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR !== path.join(home, 'Library', 'Application Support', 'Claude Permit Authority', 'lanes') || decoded.StandardOutPath !== lane.outLogPath || decoded.StandardErrorPath !== lane.errLogPath) throw new Error('template output did not preserve safe substitutions');
 }
 NODE
 
@@ -75,6 +78,7 @@ cat > "$FAKE" <<'FAKE'
 set -euo pipefail
 command="$1"; shift
 state="${CLAUDE_PERMIT_GATE_TEST_STATE:?}"
+[ -z "${CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL_LOG:-}" ] || printf '%s\n' "$command" >> "$CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL_LOG"
 case "$command" in
   print) label="${1##*/}"; test -f "$state/$label" ;;
   bootout) label="${1##*/}"; if [ "${CLAUDE_PERMIT_GATE_TEST_FAIL_BOOTOUT:-}" = "$label" ]; then exit 41; fi; if [ "${CLAUDE_PERMIT_GATE_TEST_STILL_LOADED_BOOTOUT:-}" = "$label" ]; then exit 0; fi; rm -f "$state/$label" ;;
@@ -84,6 +88,12 @@ esac
 FAKE
 chmod 755 "$FAKE"
 
+missing_state_live_home="$BASE/missing-state-live-home"; missing_state_log="$BASE/missing-state-launchctl.log"
+mkdir -p "$missing_state_live_home/Library/LaunchAgents"
+expect_fail env CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL="$FAKE" CLAUDE_PERMIT_GATE_TEST_STATE="$BASE/missing-state-launchctl-state" CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL_LOG="$missing_state_log" "$ROOT/scripts/install-authority.sh" --home "$missing_state_live_home" "${common[@]}"
+test ! -s "$missing_state_log"
+test ! -e "$missing_state_live_home/Library/Application Support/Claude Permit Authority/lanes/lane-8791.json"
+
 stage_cleanup_home="$BASE/stage-cleanup-home"
 stage_commit="$(git -C "$ROOT" rev-parse HEAD)"
 mkdir -p "$stage_cleanup_home/Library/Application Support/Claude Permit Authority/releases/$stage_commit"
@@ -92,10 +102,20 @@ expect_fail "$ROOT/scripts/install-authority.sh" --home "$stage_cleanup_home" "$
 stage_parent="$stage_cleanup_home/Library/Application Support/Claude Permit Authority/staging"
 if find "$stage_parent" -mindepth 1 -maxdepth 1 -name '.authority-stage.*' -print -quit | grep -q .; then echo 'preflight stage was not cleaned' >&2; exit 1; fi
 
+bootstrap_live_states() {
+  node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | \
+    CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_KEYCHAIN_WRITER=/bin/cat CLAUDE_PERMIT_GATE_TEST_ADMIN_ASSUME_OFFLINE=1 CLAUDE_PERMIT_GATE_OFFER_TTL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS=15000 CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS=86400000 HOME="$LIVE_HOME" \
+    node "$ROOT/scripts/authority-admin.mjs" enroll --installation-id "${BINDINGS[0]}" --scope permit:mutate --lanes "${PROVIDERS[*]// /,}" --token-id installer-test --keychain-service test.authority --keychain-account installer-test --expires-at-epoch-ms "$(( $(date +%s) * 1000 + 3600000 ))"
+  for index in "${!PROVIDERS[@]}"; do
+    CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_ADMIN_ASSUME_OFFLINE=1 CLAUDE_PERMIT_GATE_OFFER_TTL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS=5000 CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS=15000 CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS=86400000 HOME="$LIVE_HOME" \
+      node "$ROOT/scripts/authority-admin.mjs" bootstrap --provider "${PROVIDERS[$index]}" --authority-id "$AUTHORITY" >/dev/null
+  done
+}
+
 prepare_live() {
   LIVE_HOME="$BASE/live-home"; LIVE_STATE="$BASE/live-state"; rm -rf "$LIVE_HOME" "$LIVE_STATE"; mkdir -p "$LIVE_HOME/Library/LaunchAgents" "$LIVE_STATE" "$LIVE_HOME/Library/Application Support/Claude Permit Authority/lanes" "$LIVE_HOME/Library/Logs/Claude Permit Authority/lanes"
+  bootstrap_live_states
   printf preserved > "$LIVE_HOME/Library/Application Support/Claude Permit Authority/lanes/preserved-state"
-  printf verifier > "$LIVE_HOME/Library/Application Support/Claude Permit Authority/verifiers-v1.json"
   printf log > "$LIVE_HOME/Library/Logs/Claude Permit Authority/lanes/preserved.log"
   printf old-record > "$LIVE_HOME/Library/Application Support/Claude Permit Authority/deployment-v1.json"
   for provider in "${PROVIDERS[@]}"; do cp "$special_output/LaunchAgents/$(label "$provider").plist" "$LIVE_HOME/Library/LaunchAgents/$(label "$provider").plist"; done

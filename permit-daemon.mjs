@@ -77,7 +77,7 @@ function authorityAuthorization(req) {
   return values[0];
 }
 
-async function authorityPrincipal(req, requiredScope, configuration, authority) {
+async function authorityPrincipal(req, requiredScope, configuration, authority, { observeGeneration = true } = {}) {
   let store;
   try {
     store = await readAuthorityVerifierStoreAsync(configuration.verifierStorePath, { minimumGeneration: authority.verifierGeneration });
@@ -86,6 +86,14 @@ async function authorityPrincipal(req, requiredScope, configuration, authority) 
     throw error;
   }
   const verified = authenticateAuthorityBearer(authorityAuthorization(req), store, { requiredScope, provider: configuration.provider });
+  if (observeGeneration) {
+    try {
+      await authority.observeVerifierGeneration(verified.verifierGeneration);
+    } catch (error) {
+      if (error instanceof AuthorityError && error.code === "verifier_unavailable") authority.markVerifierUnavailable();
+      throw error;
+    }
+  }
   return {
     ...verified,
     principal: {
@@ -98,7 +106,7 @@ async function authorityPrincipal(req, requiredScope, configuration, authority) 
 
 function authorityPrecommitVerifier(req, requiredScope, configuration, authority, authenticated) {
   return async () => {
-    const rechecked = await authorityPrincipal(req, requiredScope, configuration, authority);
+    const rechecked = await authorityPrincipal(req, requiredScope, configuration, authority, { observeGeneration: false });
     if (rechecked.tokenId !== authenticated.tokenId || rechecked.installationId !== authenticated.installationId || rechecked.scope !== authenticated.scope) throw new AuthorityError("unauthenticated", { message: "bearer changed before commit" });
     return rechecked.verifierGeneration;
   };
@@ -137,7 +145,7 @@ function startAuthorityDaemon() {
       accountBindingId,
       verifierStorePath: authorityVerifierPath({ home: os.homedir(), verifierStore: testMode ? verifierStoreOverride : undefined }),
       statePath: authorityStatePath({ home: os.homedir(), stateDirectory: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR, port }),
-      bootstrap: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP === "1",
+      bootstrap: false,
       authorityId,
       timing: authorityTimingFromEnvironment(process.env),
       minimumConcurrency,
@@ -188,7 +196,7 @@ function startAuthorityDaemon() {
     try {
       if (!authority) {
         authorityError(res, startupFault
-          ? new AuthorityError("authority_degraded", { message: "authority state is unavailable" })
+          ? new AuthorityError(startupFault === "verifier_unavailable" ? "verifier_unavailable" : "authority_degraded", { message: "authority state is unavailable" })
           : new AuthorityError("authority_starting", { message: "authority is starting", retryable: true, retryAfterMs: 1_000 }));
         return;
       }
@@ -268,8 +276,8 @@ function startAuthorityDaemon() {
         authority = openAuthorityState(configuration);
         reconcileTimer = setInterval(() => { void serializeAuthorityMutation(() => authority.reconcile()).catch(() => {}); }, 1_000);
         reconcileTimer.unref?.();
-      } catch {
-        startupFault = true;
+      } catch (error) {
+        startupFault = error instanceof AuthorityError && error.code === "verifier_unavailable" ? "verifier_unavailable" : "authority_degraded";
       }
     });
   });

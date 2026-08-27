@@ -197,12 +197,34 @@ safe_output_root() {
 generate_plist() {
   node --input-type=module - "$@" <<'NODE'
 import fs from "node:fs";
-const [file, label, nodePath, releasePath, provider, port, authorityId, bindingId, stateDirectory, buildId, offerTtl, renewInterval, renewDeadline, terminalRetention, outLog, errLog] = process.argv.slice(2);
+const [templatePath, file, label, nodePath, releasePath, provider, port, authorityId, bindingId, stateDirectory, buildId, offerTtl, renewInterval, renewDeadline, terminalRetention, outLog, errLog] = process.argv.slice(2);
 const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
-const string = (value) => `    <string>${escape(value)}</string>`;
-const environment = [["CLAUDE_PERMIT_GATE_DAEMON_MODE", "authority"], ["CLAUDE_PERMIT_GATE_PROVIDER", provider], ["CLAUDE_PERMIT_GATE_PORT", port], ["CLAUDE_PERMIT_GATE_AUTHORITY_ID", authorityId], ["CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID", bindingId], ["CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR", stateDirectory], ["CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP", "1"], ["CLAUDE_PERMIT_GATE_BUILD_ID", buildId], ["CLAUDE_PERMIT_GATE_OFFER_TTL_MS", offerTtl], ["CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS", renewInterval], ["CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS", renewDeadline], ["CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS", terminalRetention]];
-const xml = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">", "<plist version=\"1.0\">", "<dict>", "  <key>Label</key>", `  <string>${escape(label)}</string>`, "  <key>ProgramArguments</key>", "  <array>", string(nodePath), string(`${releasePath}/permit-daemon.mjs`), "  </array>", "  <key>WorkingDirectory</key>", `  <string>${escape(releasePath)}</string>`, "  <key>EnvironmentVariables</key>", "  <dict>", ...environment.flatMap(([key, value]) => [`    <key>${key}</key>`, string(value)]), "  </dict>", "  <key>RunAtLoad</key>", "  <true/>", "  <key>KeepAlive</key>", "  <dict>", "    <key>SuccessfulExit</key>", "    <false/>", "  </dict>", "  <key>StandardOutPath</key>", `  <string>${escape(outLog)}</string>`, "  <key>StandardErrorPath</key>", `  <string>${escape(errLog)}</string>`, "</dict>", "</plist>", ""];
-fs.writeFileSync(file, xml.join("\n"), { mode: 0o600, flag: "wx" });
+const values = {
+  __LABEL__: label,
+  __NODE_PATH__: nodePath,
+  __RELEASE_PATH__: releasePath,
+  __PROVIDER__: provider,
+  __PORT__: port,
+  __AUTHORITY_ID__: authorityId,
+  __ACCOUNT_BINDING_ID__: bindingId,
+  __STATE_DIRECTORY__: stateDirectory,
+  __BUILD_ID__: buildId,
+  __OFFER_TTL_MS__: offerTtl,
+  __RENEW_INTERVAL_MS__: renewInterval,
+  __RENEW_DEADLINE_MS__: renewDeadline,
+  __TERMINAL_RETENTION_MS__: terminalRetention,
+  __OUT_LOG_PATH__: outLog,
+  __ERR_LOG_PATH__: errLog,
+};
+const template = fs.readFileSync(templatePath, "utf8");
+const used = new Set();
+const xml = template.replace(/__[A-Z0-9_]+__/g, (placeholder) => {
+  if (!(placeholder in values)) throw new Error(`unknown plist placeholder: ${placeholder}`);
+  used.add(placeholder);
+  return escape(values[placeholder]);
+});
+if (used.size !== Object.keys(values).length || /__[A-Z0-9_]+__/.test(xml)) throw new Error("plist template placeholders are incomplete");
+fs.writeFileSync(file, xml, { mode: 0o600, flag: "wx" });
 NODE
 }
 
@@ -225,10 +247,12 @@ build_artifacts() {
   mkdir -p "$release_tree" "$plist_directory"
   git -C "$SOURCE_ROOT" archive --format=tar "$COMMIT" | tar -xf - -C "$release_tree"
   [ "$(sha256_file "$release_tree/protocol/authority-v1.schema.json")" = "$SCHEMA_SHA256" ] || fail "staged schema hash does not match"
+  template="$release_tree/deploy/com.longweekendprojects.claude-permit-lane.plist.in"
+  [ -f "$template" ] || fail "staged deployment template is unavailable"
   for index in "${!PROVIDERS[@]}"; do
     local provider="${PROVIDERS[$index]}" port="${PORTS[$index]}" label plist
     label="$(label_for "$provider")"; plist="$plist_directory/$label.plist"
-    generate_plist "$plist" "$label" "$NODE_PATH" "$release_path" "$provider" "$port" "$AUTHORITY_ID" "${ACCOUNT_BINDINGS[$index]}" "$STATE_DIRECTORY" "$BUILD_ID" "$OFFER_TTL_MS" "$RENEW_INTERVAL_MS" "$RENEW_DEADLINE_MS" "$TERMINAL_RETENTION_MS" "$LOG_DIRECTORY/$provider.out.log" "$LOG_DIRECTORY/$provider.err.log"
+    generate_plist "$template" "$plist" "$label" "$NODE_PATH" "$release_path" "$provider" "$port" "$AUTHORITY_ID" "${ACCOUNT_BINDINGS[$index]}" "$STATE_DIRECTORY" "$BUILD_ID" "$OFFER_TTL_MS" "$RENEW_INTERVAL_MS" "$RENEW_DEADLINE_MS" "$TERMINAL_RETENTION_MS" "$LOG_DIRECTORY/$provider.out.log" "$LOG_DIRECTORY/$provider.err.log"
     /usr/bin/plutil -lint "$plist" >/dev/null || fail "generated plist is invalid"
   done
   write_manifest "$manifest" "$COMMIT" "$BUILD_ID" "$PACKAGE_VERSION" "$SCHEMA_SHA256" "$H1_RELEASE" "$H1_COMMIT" "$release_path" "$plist_directory" "$STATE_DIRECTORY" "$LOG_DIRECTORY" "${PROVIDERS[@]}"
@@ -259,6 +283,25 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # Live work is preflighted before any job mutation. It is intentionally not exercised by this task.
+require_bootstrapped_states() {
+  node --input-type=module - "$STATE_DIRECTORY" "$AUTHORITY_ID" "${PROVIDERS[@]}" "${PORTS[@]}" <<'NODE'
+import fs from "node:fs";
+import path from "node:path";
+const [stateDirectory, authorityId, ...values] = process.argv.slice(2);
+const providers = values.slice(0, 4);
+const ports = values.slice(4).map(Number);
+for (const [index, provider] of providers.entries()) {
+  const file = path.join(stateDirectory, `lane-${ports[index]}.json`);
+  let stat;
+  try { stat = fs.lstatSync(file); } catch { throw new Error(`state is missing for ${provider}`); }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`state is invalid for ${provider}`);
+  let state;
+  try { state = JSON.parse(fs.readFileSync(file, "utf8")); } catch { throw new Error(`state is invalid for ${provider}`); }
+  if (state?.stateSchemaVersion !== 2 || state.authorityId !== authorityId || state.provider !== provider || state.port !== ports[index]) throw new Error(`state is invalid for ${provider}`);
+}
+NODE
+}
+require_bootstrapped_states || fail "every lane must be explicitly bootstrapped before installation"
 STAGE_PARENT="$AUTHORITY_DIRECTORY/staging"
 mkdir -p "$STAGE_PARENT"
 STAGE_DIRECTORY="$(mktemp -d "$STAGE_PARENT/.authority-stage.XXXXXX")"

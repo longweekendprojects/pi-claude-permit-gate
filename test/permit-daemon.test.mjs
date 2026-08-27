@@ -166,7 +166,7 @@ async function runAuthorityAdmin(home, args, secret, overrides = {}) {
   });
 }
 
-async function startSharedAuthority(home, stateDirectory, provider, port, accountBindingId, authorization, overrides = {}) {
+async function startSharedAuthority(home, stateDirectory, provider, port, accountBindingId, authorization, overrides = {}, expectedStatus = 200) {
   const child = spawn(process.execPath, [daemonPath], {
     env: {
       ...authorityAdminEnvironment(home),
@@ -183,7 +183,7 @@ async function startSharedAuthority(home, stateDirectory, provider, port, accoun
     },
     stdio: "ignore",
   });
-  await eventually(async () => (await request(port, "GET", "/v1/health", undefined, { authorization })).status === 200, "shared authority daemon did not become ready");
+  await eventually(async () => (await request(port, "GET", "/v1/health", undefined, { authorization })).status === expectedStatus, expectedStatus === 200 ? "shared authority daemon did not become ready" : "shared authority daemon did not fail closed");
   return child;
 }
 
@@ -200,13 +200,14 @@ async function authorityDaemon(t, overrides = {}) {
   const secondPrincipal = authorityPrincipal(701, { accountBindingId: principal.accountBindingId });
   const wrongLanePrincipal = authorityPrincipal(702, { accountBindingId: principal.accountBindingId, providers: ["anthropic-b"] });
   const verifierStore = await seedAuthorityVerifiers(home, [principal, secondPrincipal, wrongLanePrincipal]);
+  const bootstrap = await runAuthorityAdmin(home, ["bootstrap", "--provider", "anthropic-a", "--port", String(port), "--state-dir", stateDirectory, "--minimum-concurrency", "1", "--maximum-concurrency", "1", "--current-concurrency", "1"]);
+  assert.deepEqual({ code: bootstrap.code, signal: bootstrap.signal }, { code: 0, signal: null });
   const child = spawn(process.execPath, [daemonPath], {
     env: {
       ...process.env,
       HOME: home,
       CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority",
       CLAUDE_PERMIT_GATE_TEST_MODE: "1",
-      CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1",
       CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: stateDirectory,
       CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: principal.accountBindingId,
       CLAUDE_PERMIT_GATE_VERIFIER_STORE: verifierStore,
@@ -460,6 +461,19 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(revokedCreateResult.status, 401); assert.equal(revokedCreateResult.body.error.code, "unauthenticated"); assert.equal(await fs.readFile(laneAStatePath, "utf8"), precommitState);
   const storeAfterRevocation = await fs.readFile(verifierStore);
   assert.equal(JSON.parse(storeAfterRevocation).generation, JSON.parse(storeBeforeRevocation).generation + 1);
+  const readOnlyAdvance = await request(sharedPorts[0], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+  assert.equal(readOnlyAdvance.status, 200);
+  assert.equal(JSON.parse(await fs.readFile(laneAStatePath, "utf8")).verifierGeneration, JSON.parse(storeAfterRevocation).generation);
+  await fs.writeFile(verifierStore, storeBeforeRevocation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  const readOnlyRollback = await request(sharedPorts[0], "GET", "/v1/health", undefined, { authorization: bearer("permit-one", tokenOne) });
+  assert.equal(readOnlyRollback.status, 503); assert.equal(readOnlyRollback.body.error.code, "verifier_unavailable");
+  await stopChild(sharedDaemons[0]);
+  sharedDaemons[0] = await startSharedAuthority(sharedHome, sharedStateDirectory, providers[0], sharedPorts[0], laneBindings.get(providers[0]), bearer("permit-two", tokenTwo), {}, 503);
+  const restartRollback = await request(sharedPorts[0], "GET", "/v1/health", undefined, { authorization: bearer("permit-one", tokenOne) });
+  assert.equal(restartRollback.status, 503); assert.equal(restartRollback.body.error.code, "verifier_unavailable");
+  await fs.writeFile(verifierStore, storeAfterRevocation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  await stopChild(sharedDaemons[0]);
+  sharedDaemons[0] = await startSharedAuthority(sharedHome, sharedStateDirectory, providers[0], sharedPorts[0], laneBindings.get(providers[0]), bearer("permit-two", tokenTwo));
   for (const [index, provider] of providers.entries()) {
     const revoked = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-one", tokenOne) });
     const unaffected = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
@@ -661,6 +675,25 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(expiredEnrollment.code, 0); await delay(150);
   const expired = await request(sharedPorts[1], "GET", "/v1/snapshot", undefined, { authorization: bearer("expired-read", expiredToken) });
   assert.equal(expired.status, 401); assert.equal(expired.body.error.code, "unauthenticated");
+
+  const missingStatePort = await unusedPort();
+  const missingStateDirectory = path.join(sharedHome, "missing-daemon-state");
+  const missingStateDaemon = spawn(process.execPath, [daemonPath], {
+    env: {
+      ...authorityAdminEnvironment(sharedHome),
+      CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority",
+      CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1",
+      CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: missingStateDirectory,
+      CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: laneBindings.get("anthropic-a"),
+      CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a",
+      CLAUDE_PERMIT_GATE_PORT: String(missingStatePort),
+    },
+    stdio: "ignore",
+  });
+  t.after(() => stopChild(missingStateDaemon));
+  await eventually(async () => (await request(missingStatePort, "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) })).status === 503, "missing state daemon did not fail closed");
+  await assert.rejects(fs.access(path.join(missingStateDirectory, `lane-${missingStatePort}.json`)), { code: "ENOENT" });
+  await stopChild(missingStateDaemon);
 
   const adminPort = await unusedPort();
   const adminStateDirectory = path.join(sharedHome, "admin-state");
@@ -987,7 +1020,7 @@ test("authority fails closed for migration, fsync faults, socket ownership, and 
   assert.deepEqual(await timeoutExitPromise, { code: 1, signal: null }); await timingOutMutation;
 
   const socketGate = await authorityDaemon(t); const beforeSocketRace = await fs.readFile(socketGate.statePath, "utf8");
-  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: socketGate.home, CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority", CLAUDE_PERMIT_GATE_TEST_MODE: "1", CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1", CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: socketGate.stateDirectory, CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: socketGate.principal.accountBindingId, CLAUDE_PERMIT_GATE_VERIFIER_STORE: socketGate.verifierStore, CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", CLAUDE_PERMIT_GATE_PORT: String(socketGate.port), CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000", CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000" }, stdio: "ignore" });
+  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: socketGate.home, CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority", CLAUDE_PERMIT_GATE_TEST_MODE: "1", CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: socketGate.stateDirectory, CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: socketGate.principal.accountBindingId, CLAUDE_PERMIT_GATE_VERIFIER_STORE: socketGate.verifierStore, CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", CLAUDE_PERMIT_GATE_PORT: String(socketGate.port), CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000", CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000" }, stdio: "ignore" });
   assert.equal((await new Promise((resolve) => contender.once("exit", resolve))), 3);
   assert.equal(await fs.readFile(socketGate.statePath, "utf8"), beforeSocketRace);
 });

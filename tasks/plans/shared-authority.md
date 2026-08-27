@@ -31,191 +31,20 @@ Use qualified mode names throughout:
 
 Both Macs, including Ruminaider, use `clientMode=authority-client` during shared operation. The authority-host Pi client and monitor reach the same MagicDNS HTTPS Serve endpoints as the peer and use distinct per-install credentials.
 
-`pi-claude-lane-monitor` owns sanitized allowance publication. “Display-only” means the UI cannot switch lanes, mutate account configuration, or send Anthropic/provider requests. The app is not described as wholly read-only after it gains the narrow publisher. `pi-dotfiles` and `~/.pi/agent/extensions/usage-windows.ts` remain unchanged.
+`pi-claude-lane-monitor` owns sanitized allowance publication. “Display-only” means the UI cannot switch lanes, mutate account configuration, or send Anthropic/provider requests. The app is not described as wholly read-only after it gains the narrow publisher.
 
-### Critique dispositions
+## Contract ownership
 
-- `offered` is the canonical protocol name for the architecture review’s `reserved` state.
-- Wire `currentConcurrency` is the serialized effective concurrency value.
-- The operability review’s `remote-client` maps to canonical `clientMode=authority-client`. A separate `managed-local` client mode is not adopted because both Macs use the authenticated Serve path; adding a third client path would reintroduce local mutation ambiguity. Launchd ownership is expressed by `daemonMode=authority`, not a Pi client mode.
-- Active leases do not auto-expire in authority mode. On missed renewal they become `uncertain` and keep consuming capacity because Pi cannot fence an already-started Anthropic request. Local H1 TTL behavior remains unchanged.
-- The monitor publisher is adopted because direct evidence shows its installed app already owns the safe file watcher. The contradictory suggestion to edit `usage-windows.ts` is rejected by the hard no-`pi-dotfiles` boundary.
+`docs/authority-protocol-v1.md` owns the normative transport, identity, error, DTO, scheduling, timing, durable-state, verifier, allowance, and deployment-precondition rules. `protocol/authority-v1.schema.json` owns the machine-readable form. This plan links to those sections instead of restating the wire contract:
 
-## Canonical protocol decisions for Task 1
+- [Transport, identity, and errors](../../docs/authority-protocol-v1.md#transport-identity-and-errors)
+- [Authority lifecycle and durable state](../../docs/authority-protocol-v1.md#authority-lifecycle-and-durable-state)
+- [Tickets, leases, fairness, and limits](../../docs/authority-protocol-v1.md#tickets-leases-fairness-and-limits)
+- [Verifier store and authentication](../../docs/authority-protocol-v1.md#verifier-store-and-authentication)
+- [Allowance publication and monitor truth](../../docs/authority-protocol-v1.md#allowance-publication-and-monitor-truth)
+- [Deployment preconditions](../../docs/authority-protocol-v1.md#deployment-preconditions)
 
-The following decisions must be encoded once in `docs/authority-protocol-v1.md` and `protocol/authority-v1.schema.json`. Fixtures in either repository are validated against that schema and carry its SHA-256 digest; they are not independent contract owners.
-
-### Common transport, identity, and errors
-
-All authority requests use HTTPS, UTF-8 JSON, `Content-Type: application/json`, `Cache-Control: no-store`, a 16 KiB request-body ceiling, a 64 KiB response ceiling, rejected unknown keys, integer epoch milliseconds unless named `EpochSeconds`, and JavaScript-safe integers from 0 through `9007199254740991`.
-
-Every authenticated request uses `Authorization: Bearer <tokenId>.<base64url-32-byte-secret>`. Each installation has separate Keychain tokens for `permit:mutate`, `snapshot:read`, and `allowance:publish`. The authority stores only a constant-time-comparable SHA-256 verifier with token ID, immutable installation ID, scope, lane allowlist, generation, issue/expiry, predecessor, and revocation metadata. Machine identity comes from the verified token; a conflicting body `installationId` fails before lookup or mutation.
-
-Every error is:
-
-```json
-{"schemaVersion":1,"error":{"code":"error_code","message":"redacted","retryable":false,"retryAfterMs":null}}
-```
-
-The closed codes and statuses are:
-
-- 400 `invalid_json|invalid_request|unsupported_schema`.
-- 401 `unauthenticated`.
-- 403 `forbidden_scope|forbidden_lane`.
-- 404 `not_found`, including another principal’s opaque ID.
-- 409 `provider_mismatch|authority_mismatch|account_binding_mismatch|stale_revision|invalid_transition|operation_conflict`.
-- 429 `principal_limit|lane_limit`, retryable with `Retry-After` and `retryAfterMs`.
-- 503 `authority_starting|authority_draining|authority_degraded|persistence_unavailable|verifier_unavailable`, retryable only when the server supplies `Retry-After`.
-
-All successful ticket responses include `ETag: "revision-<n>"`; creates also include `Location: /v1/tickets/<ticketId>`. Replayed successful operations return 200 with `Idempotency-Replayed: true` and the original representation. Retryable errors include both integer-seconds `Retry-After` and matching millisecond JSON guidance.
-
-Client retry rules are fixed: network loss, 429, and retryable 503 reuse the same request/operation ID with capped jittered backoff; 400/401/403 and identity/binding mismatches fail closed; stale revision triggers one authenticated GET before deciding the next legal transition. A lost create response retries create with the same request ID. A lost claim, renew, cancel, or complete response first GETs the ticket and then repeats the same operation ID only if the stored state does not already contain its result. No later provider request starts until completion of the prior ticket is acknowledged.
-
-### Configuration
-
-`CLAUDE_PERMIT_GATE_MODE` is `local|authority-client`, default `local`.
-
-- In `clientMode=local`, `CLAUDE_PERMIT_GATE_ORIGIN`, `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG`, and authority-only fields must be absent; their presence is a startup error.
-- In `clientMode=authority-client`, `CLAUDE_PERMIT_GATE_ORIGIN` and `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG` are required. Origin must be `https://<dns-host>` with no credentials, port, path, query, or fragment. Provider ports are appended from the existing map.
-
-The 0600 non-secret authority config contains schema version 1, mode, origin, expected authority UUID, stable random installation UUID, Keychain service/account references, `monitorSource`, `publisherEnabled`, and A-D `{port,accountBindingId}` entries. Environment and file origin/mode/ports must agree. Invalid or incomplete configuration is rejected before Pi hooks register.
-
-### Authority operational states
-
-`AuthorityHealthV1.status` is `starting|ready|draining|degraded`.
-
-- `starting`: The OS listener is bound, but state migration, term commit, verifier validation, or readiness checks are incomplete. Health returns 503 `authority_starting`; all other routes return the same error.
-- `ready`: All authenticated routes operate normally.
-- `draining`: Entered only by the local offline admin command. One transaction changes existing `queued` and `offered` tickets to `cancelled` with reason `authority_draining`; new ticket creates, claims, publishes, and new offers return 503 `authority_draining`. Authenticated GET, cancel retries, renew, and complete remain available so active/uncertain work can finish. The state remains draining after counts reach zero until explicit local `resume` or process replacement. `resume` is allowed only if state, verifier, timing config, and persistence checks pass.
-- `degraded`: Entered on state/verifier/config/persistence/term failure. Safe authenticated health/snapshot reads may continue only when verifier and last committed state remain trustworthy; otherwise all routes return generic 503. No ticket, lease, allowance, drain, or resume mutation occurs. Recovery requires successful revalidation plus explicit local admin resume or restart; it is never an empty-state reset.
-
-### Health and shared snapshot
-
-Authenticated `GET /v1/health` returns schema/protocol version, stable authority ID, lane term, process instance UUID, build ID, state schema version, server time, qualified status, provider, port, capabilities, and only aggregate `active`, `offered`, `uncertain`, `queued`, `currentConcurrency`, `maximumConcurrency`, cooldown, and oldest-wait fields.
-
-Authenticated `GET /v1/snapshot` with `snapshot:read` returns `LaneSnapshotDTOv1`: authority provenance plus lane ID/provider, aggregate permit fields, and allowance truth. A window is null or `{utilization,status,resetEpochSeconds}`. `status` is null or one of `allowed|allowed_warning|rejected|active|warning|rate_limited`; empty local status normalizes to null. Derived freshness, age, severity, and post-reset truth remain Swift concerns.
-
-Both responses are exact allowlists. They exclude `bySession`, installation/session/request/ticket/lease IDs, account fingerprints/binding IDs, token/verifier data, paths, OAuth/profile values, headers, bodies, and raw errors.
-
-### Ticket and lease DTOs
-
-`POST /v1/tickets` with `permit:mutate` accepts exactly:
-
-```json
-{"schemaVersion":1,"provider":"anthropic-a","accountBindingId":"uuid","installationId":"uuid","sessionId":"uuid","requestId":"uuid","createdAtEpochMs":0}
-```
-
-First creation returns 201; duplicate creation returns 200 plus replay header. The idempotency key is `(authenticated installation, provider, requestId)`. A new request timestamp must be within 30 seconds of server time. A known retry remains readable. Terminal records remain at least 24 hours and past the create retry horizon; after compaction, the old timestamp prevents recreation.
-
-Every create, poll, claim, cancel, renew, and complete success returns exact `TicketV1` keys, with nullable keys always present:
-
-```json
-{
-  "schemaVersion":1,
-  "ticketId":"uuid",
-  "requestId":"uuid",
-  "provider":"anthropic-a",
-  "state":"queued",
-  "revision":1,
-  "createdAtEpochMs":0,
-  "enqueuedAtEpochMs":0,
-  "offeredAtEpochMs":null,
-  "offerExpiresAtEpochMs":null,
-  "terminalAtEpochMs":null,
-  "terminalReason":null,
-  "queueAhead":0,
-  "lease":null
-}
-```
-
-`state` is `queued|offered|active|uncertain|cancelled|released|throttled|offerExpired`. `terminalReason` is null or `client_cancelled|authority_draining|offer_expired|released|assistant_rate_limit|assistant_overloaded|operator_reconciled`. `queueAhead` is an owner-visible non-negative estimate, never a session list.
-
-A non-null `LeaseV1` is:
-
-```json
-{
-  "leaseId":"uuid",
-  "generation":1,
-  "claimedAtEpochMs":0,
-  "renewSequence":0,
-  "renewByEpochMs":0,
-  "serverDeadlineEpochMs":0
-}
-```
-
-`serverDeadlineEpochMs` is the transition to `uncertain`, not automatic capacity release.
-
-Endpoints and bodies are:
-
-- `GET /v1/tickets/:ticketId`: `permit:mutate`, same owner/lane, 200 TicketV1 or owner-hidden 404.
-- `POST /v1/tickets/:ticketId/claim`: `{schemaVersion,operationId,expectedRevision,installationId,provider,accountBindingId}`. One compare-and-set changes `offered` to `active`; only then may provider traffic start.
-- `POST .../cancel`: the same common mutation body. It changes only `queued|offered` to `cancelled`; `active|uncertain` returns 409 `invalid_transition` and retains capacity.
-- `POST .../renew`: common body plus `leaseId`, `generation`, and next `renewSequence`. It applies only to the same active/uncertain lease generation, returns TicketV1 with the acknowledged sequence/deadlines, and may restore `uncertain` to `active` without allocating another slot.
-- `POST .../complete`: common body plus `leaseId`, `generation`, `outcome` (`released|throttled`), `reason` (null for release or `assistant_rate_limit|assistant_overloaded`), and optional bounded `cooldownMs`. The first transition frees capacity once; throttle changes adaptive concurrency/cooldown once.
-
-Claim/cancel and all later mutations serialize through revision compare-and-set. Duplicate operation IDs return the original result. A different operation reusing an ID returns 409 `operation_conflict`.
-
-### Fairness, limits, and validation bounds
-
-The scheduler persists FIFO order within session, a session cursor within each authenticated machine, and a machine cursor within the lane. One eligible machine receives one offer before another turn while another machine is eligible. Session IDs are random per loaded Pi process and never appear in shared output.
-
-Fixed v1 bounds are:
-
-- 32 authenticated installation principals per authority; 32 live sessions per principal.
-- 16 nonterminal tickets per session, 64 per principal, and 256 per lane.
-- 4,096 retained ticket/tombstone records per lane and 32 retained operation results per ticket.
-- Effective concurrency configuration from 1 through 64.
-- UUID/string fields at most 64 ASCII characters; error message at most 160 redacted ASCII characters.
-- Allowance utilization finite from 0 through 1000 inclusive; reset seconds from 1 through 253402300799; observed timestamps within JavaScript-safe range and no more than 30 seconds future.
-- Publisher queue: 64 pending snapshots per provider and 256 per installation; newer same-provider observations supersede older unsent entries without deleting an unacknowledged in-flight ID.
-
-Per-principal/session limits return 429 `principal_limit`. A full lane nonterminal queue returns 429 `lane_limit`. A full retained-state ledger that cannot compact without violating 24-hour replay retention returns 503 `persistence_unavailable` and stops creates rather than deleting safety records.
-
-### Lifecycle timing configuration
-
-Authority mode has no production timing defaults. LaunchAgent generation requires measured, explicit integer milliseconds:
-
-- `CLAUDE_PERMIT_GATE_OFFER_TTL_MS`, range 5,000-120,000, greater than measured DERP claim p99 plus margin.
-- `CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS`, range 5,000-300,000.
-- `CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS`, range 15,000-3,600,000, at least three renew intervals and greater than measured provider-duration p99 plus DERP jitter margin.
-- `CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS`, fixed at or above 86,400,000.
-
-Test-only values are passed under temporary HOME/ports and never copied into plist templates. The state stores timing schema and digest. Offer deadlines persist their original value. New renew timing applies only after the next acknowledged renew. Timing changes require drain and restart; startup refuses a timing digest change while any ticket is offered, active, or uncertain.
-
-### Durable state, OS exclusion, and term fencing
-
-The OS-level exclusive lane lock is the listening socket `127.0.0.1:<lane-port>` held for process lifetime with exclusive listen semantics. This avoids a destructively recoverable lock file:
-
-1. Parse non-secret configuration and verifier-store location without writing lane state.
-2. Bind the socket in `starting`; `EADDRINUSE` exits code 3 without state changes.
-3. While holding the socket, load/bootstrap/migrate state and validate verifier/timing schemas.
-4. Atomically increment and fsync `laneTerm`, generate `ownerNonce`, and persist both before becoming `ready`.
-5. Before every commit, reread the current state header and require matching authority ID, provider/port, lane term, and owner nonce. Mismatch fences the process into `degraded` and prevents the write.
-6. Graceful shutdown stops timers, enters draining when requested, flushes the final commit, and retains the bound socket until all writers stop and the process exits. Replacement waits for process exit; it never removes a lock file. A crash releases the socket in the kernel. Stale owner metadata is replaced only after a new term commits.
-
-The offline admin tool refuses state mutation while `lsof` shows a listener or launchd reports the lane running. A missing state file is accepted only by explicit `bootstrap`. Corrupt, unknown, or unreadable state never becomes an empty scheduler.
-
-One complete lane snapshot stores queue/cursors, tickets/revisions, operation results, offered/active/uncertain leases, capacity/cooldown, replay ledger, allowance, timing digest, verifier generation last observed, counters, term, and owner nonce. Each transition writes a 0600 temporary file, fsyncs it, atomically renames it, and fsyncs the directory before acknowledging.
-
-### Canonical verifier store
-
-All four daemons read one authority-wide file:
-
-`~/Library/Application Support/Claude Permit Authority/verifiers-v1.json`
-
-It is owner-only mode 0600 and contains `schemaVersion`, monotonically increasing `generation`, and verifier records only. `authority-admin.mjs` writes a complete temporary file, fsyncs, renames, and fsyncs the directory. Every authenticated request reads and validates the current generation; every mutation rereads it immediately before durable commit. A generation change therefore applies to all lanes from one atomic rename, and an in-flight request authenticated under a revoked generation cannot commit. Unreadable, malformed, rolled-back, or generation-mismatched verifier state makes the lane degraded/fail-closed. Rotation uses a bounded dual-verifier overlap; revocation of one installation does not affect the other.
-
-### Allowance publication and ordering
-
-`POST /v1/allowance` requires `allowance:publish` and accepts exact safe window fields plus schema version, installation ID, provider, account binding ID, publish UUID, publisher sequence, and observed-at milliseconds. Provider/lane derive from token scope and must match the body. Duplicate publish ID returns the original result.
-
-The authority rejects observations over 30 seconds future and observations more than 30 seconds older than stored. Within the 30-second cross-machine uncertainty window, later authority receipt wins; original observation time still drives freshness. Status normalizes to the closed allowlist above. Unknown/raw fields fail validation.
-
-The monitor watches only `~/.pi/agent/usage-windows/<provider>.json`, validates the already-sanitized atomic file, and queues only the safe DTO. It never reads OAuth credentials, headers, or provider bodies. The queue retries while the app runs and removes an item only after authority acknowledgement.
-
-### Menu source and offline truth
-
-`monitorSource=authority` reads four authenticated snapshots and never falls back to local permit health or unaccepted local usage. Authority loss makes permit state unavailable immediately. The app may retain the last authority-accepted safe allowance cache, labels it “last observed” with authority unreachable, preserves its original age, and retains “awaiting post-reset observation.” The title may retain an eligible percentage only with the unavailable marker. Permit polling remains every two seconds only while the menu is open; publisher traffic is file-event-driven and independent of menu visibility.
+Tasks below own implementation order, dependencies, and build-only acceptance outcomes.
 
 ## Tasks
 
@@ -270,8 +99,8 @@ The monitor watches only `~/.pi/agent/usage-windows/<provider>.json`, validates 
 9. **Prepare additive Serve and Tailnet grant artifacts**
    - Files: new `deploy/tailscale/permit-authority-grant.hujson.example`, `scripts/validate-authority.sh`, `README.md`.
    - Reuse decision: add a lintable service policy example because no live policy repository is in scope.
-   - Changes: Define source host aliases for both confirmed Ruminaider (`100.103.181.53`) and the operator-confirmed second Mac to destination Ruminaider TCP 8791-8794. Do not tag the personal Mac. Audit the complete additive policy for broader matches. Document app-bundled CLI commands that add/remove one private listener and prohibit Funnel/reset/config replacement.
-   - Acceptance: Policy tests prove authority-host self access and intended peer access, deny another same-user device/other member/public internet, and show no Funnel; if self access cannot be proven under the real policy, deployment stops rather than adding a local bypass.
+   - Changes: Define aliases for confirmed Ruminaider (`100.103.181.53`) and the explicitly unresolved `operator-supplied-peer` placeholder to destination Ruminaider TCP 8791-8794. Do not tag the personal Mac. Tasks 10-11 may replace the placeholder only after peer confirmation and Tailnet-policy approval. Document app-bundled CLI commands that add or remove one private listener and prohibit Funnel, reset, and whole-config replacement.
+   - Acceptance: Policy tests prove authority-host self access and the placeholder peer rule, deny another same-user device, another member, and public paths, and show no Funnel. Deployment remains blocked until Tasks 10-11 confirm the peer and approve the policy.
 
 10. **Deploy Ruminaider authority under explicit approval**
     - Surfaces: Keychain, Application Support state/verifier files, four LaunchAgents, Tailscale policy, Serve state.
@@ -344,7 +173,7 @@ Post-deploy efficacy is complete only when commands record: central capacity nev
 - Local protocol 1 remains default for unconfigured users. Authority protocol 2 requires all clients to restart; mixed legacy/shared mutation is prohibited.
 - Monitor source rollback is explicit and visibly local. Permit rollback never silently changes to local scheduling.
 - Never restore older state over live/uncertain work. If an older binary cannot read schema 2, keep the current binary fail-closed.
-- Buildable now: Tasks 1-9 only, with no `pi-dotfiles` edits.
+- Buildable now: Tasks 1-9 only.
 - Operator/second-Mac gates: identify/access peer, run redacted validation, inspect profiles, reauthenticate if chosen, create/rotate Keychain items, publish/tag package, install/restart clients, stop daemons, install/kickstart jobs, mutate Serve, and run live waves.
 - Tailnet-owner gate: inspect the entire additive policy, add/test self plus peer grants, and approve changes.
 - Maintenance/destructive gate: replace owners only after two idle samples; reconcile uncertain leases, delete state, roll back to independent local scheduling, or restore service only with fresh explicit approval.
@@ -352,17 +181,17 @@ Post-deploy efficacy is complete only when commands record: central capacity nev
 
 ## One-Writer Execution Packets
 
-| Packet | Sole writer/surface | Depends on | Status |
-|---|---|---|---|
-| A. Canonical contract, authority core, Pi client | `pi-claude-permit-gate` | H1 source tests | Build now |
-| B. Packaging/admin/fingerprint/grant artifacts | `pi-claude-permit-gate`, after A | A | Build now |
-| C. Shared monitor and publisher | `pi-claude-lane-monitor` | A contract/schema | Build now |
-| D. Permit package publication | release operator | A-B tests | Approval blocked |
-| E. Ruminaider credentials/jobs | Ruminaider operator | D and installed H1 | Approval blocked |
-| F. Tailnet policy/Serve | Tailnet owner | E and policy audit | Approval blocked |
-| G. Second-Mac fingerprint/install/drain | second-Mac operator | B-D | Access/approval blocked |
-| H. Coordinated cutover | one deployment operator controlling both Macs | E-G | Access/approval blocked |
-| I. Efficacy/rollback rehearsal | validation operator | H | Deployment blocked |
+| Packet | Tasks | Sole writer/surface | Depends on | Status |
+|---|---|---|---|---|
+| A. Canonical contract, authority core, administration, and Pi client | 1, 2, 3, 4 | `pi-claude-permit-gate` | H1 source tests | Build now |
+| B. Packaging, fingerprint, and grant artifacts | 5, 8, 9 | `pi-claude-permit-gate` | Packet A | Build now |
+| C. Shared monitor and publisher | 6, 7 | `pi-claude-lane-monitor` | Packet A contract/schema | Build now |
+| D. Permit package publication | 10 prerequisite | release operator | Packets A-B tests | Approval blocked |
+| E. Ruminaider credentials/jobs | 10 | Ruminaider operator | D and installed H1 | Approval blocked |
+| F. Tailnet policy/Serve | 10 | Tailnet owner | E and policy audit | Approval blocked |
+| G. Second-Mac fingerprint/install/drain | 11 | second-Mac operator | B-D | Access/approval blocked |
+| H. Coordinated cutover | 11 | one deployment operator controlling both Macs | E-G | Access/approval blocked |
+| I. Efficacy/rollback rehearsal | 12 | validation operator | H | Deployment blocked |
 
 No packets write the same repository or live surface concurrently.
 
@@ -421,60 +250,3 @@ Task 1 precedes all consumers. Tasks 2-3 precede Task 4 and deployment tooling. 
 - **Important:** Strict file-snapshot durability is viable only while bounded state commits remain acceptably fast; measured failure requires a transactional store before rollout, not weaker fsync.
 - **Important:** State schema 2 may prevent binary rollback; stale state must never be restored.
 - **Medium:** DERP polling/reconnect latency and production timing remain unmeasured human deployment gates.
-
-## Review Findings Disposition
-
-- **Resolved blocker:** `tasks/plans/shared-authority.md` is now the canonical plan artifact.
-- **Resolved important:** Local client mode now requires authority origin/config to be absent.
-- **Resolved important:** H1 publication/installation and L1 regression are explicit prerequisites; shared live deployment cannot overtake them.
-- **Resolved important:** One permit-repository protocol document/schema owns wire behavior; READMEs and fixtures validate/link rather than co-own it.
-- **Resolved critical/high:** Exact ticket/lease DTOs, operation replay, endpoint errors/retries, drain/degraded states, socket lock/term fencing, shared verifier store, authority-host grant path, bounds, and timing config are frozen above.
-- **Resolved terminology:** `offered`, `currentConcurrency`, qualified mode names, and narrow display-only meaning are canonical.
-- **Not adopted:** A third `managed-local` Pi client mode conflicts with the direct shared architecture requiring both Macs to use authenticated authority behavior. Launchd ownership remains a daemon concern, and no local mutation bypass is introduced.
-- **Not adopted:** Editing `usage-windows.ts` conflicts with the explicit no-`pi-dotfiles` constraint and is unnecessary because the monitor already watches sanitized atomic files.
-
-```acceptance-report
-{
-  "criteriaSatisfied": [
-    {
-      "id": "criterion-1",
-      "status": "satisfied",
-      "evidence": "The final plan contains path- and severity-specific review dispositions, exact protocol and operational resolutions, explicit prerequisites, approval gates, and residual risks."
-    }
-  ],
-  "changedFiles": [
-    "tasks/plans/shared-authority.md"
-  ],
-  "testsAddedOrUpdated": [],
-  "commandsRun": [
-    {
-      "command": "Read reviews/consistency.md, reviews/readiness.md, planner-output.md, and direct cited source evidence",
-      "result": "passed",
-      "summary": "Resolved every evidence-backed critical or important review gap in one canonical plan write."
-    }
-  ],
-  "validationOutput": [
-    "Canonical plan path now exists.",
-    "Ticket DTOs/errors/retries, authority states, socket exclusion, verifier consistency, self grant, bounds, timing, H1/L1 gates, and protocol ownership are explicit.",
-    "No source repository, pi-dotfiles file, usage-windows.ts, or live configuration was changed."
-  ],
-  "residualRisks": [
-    "An already-started provider request cannot be fenced; uncertain capacity remains quarantined.",
-    "Second-Mac identity/account mapping, Tailnet policy, Keychain behavior, and production timing remain operator-gated and unverified.",
-    "Per-user LaunchAgents remain unavailable before login."
-  ],
-  "noStagedFiles": true,
-  "diffSummary": "Created the requested canonical plan once, incorporating all evidence-backed critical and important review fixes without source or live-config edits.",
-  "reviewFindings": [
-    "resolved blocker: tasks/plans/shared-authority.md - canonical plan is materialized.",
-    "resolved critical: planner-output.md ticket and lease wire representations, endpoint errors, and retry rules are fully specified in the final plan.",
-    "resolved critical: pi-claude-permit-gate/permit-daemon.mjs ownership now uses an exclusive loopback socket plus persisted term/owner fencing.",
-    "resolved critical: authority-wide verifier storage and atomic cross-lane rotation/revocation are specified.",
-    "resolved important: decision-brief.md H1/L1 prerequisites and no-termination behavior are explicit deployment gates.",
-    "resolved important: Ruminaider and the confirmed peer both require policy-tested Serve access; no local mutation bypass exists.",
-    "not adopted: managed-local client mode, because both Macs use the authenticated authority path and launchd ownership belongs to daemonMode=authority.",
-    "not adopted: usage-windows.ts publication, because it violates the hard no-pi-dotfiles boundary."
-  ],
-  "manualNotes": "True user, maintenance, Tailnet-owner, credential, second-Mac, and administrator gates remain unresolved by design rather than guessed."
-}
-```

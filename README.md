@@ -172,22 +172,7 @@ The gate coordinates only local Pi processes. It cannot prevent Anthropic-side o
 
 The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. Legacy compatibility requires a valid, stable `startedAt`; a legacy owner without one remains blocked because a grant cannot be safely tied to its preflight. The gate remains pending while it restores an unavailable daemon, unless the user presses Esc to cancel that waiting request. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
 
-## Development
-
-Requires Node.js 22 or newer.
-
-```bash
-npm ci
-npm test
-```
-
-The tests use isolated ports and temporary home directories. They cover bounded concurrency, session-level round-robin scheduling, throttle ordering and cooldown caps, lease renewal and reclamation, graceful shutdown, provider mapping, payload preservation, and fail-closed acquisition recovery.
-
-## License
-
-MIT
-
-### Authority LaunchAgent artifacts
+## Authority operations
 
 Authority packaging stages the current clean commit as an immutable release and generates four per-user LaunchAgents for lanes A-D. The generated jobs use only loopback ports `8791` through `8794`, run after login, restart after failed exits, and contain no bearer, Keychain, or verifier value. They do not configure Tailscale Serve or launchd while running in dry-run mode.
 
@@ -209,7 +194,7 @@ scripts/validate-authority.sh --artifacts-only --output "$temporary_output"
 
 The dry run writes an immutable commit-addressed release, four plist artifacts, and a hash manifest only below the temporary output directory. It never invokes `launchctl`, reads Keychain, starts a listener, or changes Serve/Tailnet state. Timing is never defaulted: offer TTL must be 5,000-120,000 ms, renew interval 5,000-300,000 ms, renew deadline 15,000-3,600,000 ms and at least three intervals, and terminal retention at least 86,400,000 ms.
 
-Outside dry-run mode, the installer copies validated plists into the current user's `~/Library/LaunchAgents` and loads each label. `scripts/install-authority.sh --rollback-lane anthropic-a` restores only that lane's prior plist, and `scripts/install-authority.sh --uninstall` removes the four job definitions. Both preserve lane state, verifier records, logs, and immutable staged releases. Use either live action only after the deployment gates in the authority protocol are satisfied.
+Outside dry-run mode, the installer requires every lane to have been explicitly created with `authority-admin.mjs bootstrap` before it copies any plist or loads any label. A missing or invalid lane state fails the preflight and cannot be recreated by a job restart. `scripts/install-authority.sh --rollback-lane anthropic-a` restores only that lane's prior plist, and `scripts/install-authority.sh --uninstall` removes the four job definitions. Both preserve lane state, verifier records, logs, and immutable staged releases. Use either live action only after the deployment gates in the authority protocol are satisfied.
 
 ### Account and peer deployment gates
 
@@ -250,3 +235,18 @@ After the peer is confirmed and the deployment gate is approved, use the app-bun
 ```
 
 Do not use Funnel, any reset command, `serve set-config`, or another whole-config replacement command. These artifact instructions do not authorize a Tailnet policy submission or a Serve change.
+
+## Development
+
+Requires Node.js 22 or newer.
+
+```bash
+npm ci
+npm test
+```
+
+The tests use isolated ports and temporary home directories. They cover bounded concurrency, session-level round-robin scheduling, throttle ordering and cooldown caps, lease renewal and reclamation, graceful shutdown, provider mapping, payload preservation, and fail-closed acquisition recovery.
+
+## License
+
+MIT

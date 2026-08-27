@@ -1505,6 +1505,38 @@ export class AuthorityState {
     this.degraded = true;
   }
 
+  observeVerifierGeneration(generation) {
+    if (!isSafeInteger(generation, 1) || generation < this.state.verifierGeneration) {
+      this.markVerifierUnavailable();
+      return Promise.reject(verifierFault());
+    }
+    if (generation === this.state.verifierGeneration) return Promise.resolve();
+    return this._enqueue(async () => {
+      if (!isSafeInteger(generation, 1) || generation < this.state.verifierGeneration) {
+        this.markVerifierUnavailable();
+        throw verifierFault();
+      }
+      if (generation === this.state.verifierGeneration) return;
+      const next = clone(this.state);
+      const commit = async () => {
+        await this._assertStoredHeader();
+        const store = await readAuthorityVerifierStoreAsync(this.configuration.verifierStorePath, { minimumGeneration: generation });
+        next.verifierGeneration = store.generation;
+        validateState(next, this.configuration);
+        await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
+      };
+      try {
+        if (!this.configuration.verifierStorePath) throw verifierFault();
+        await withAuthorityVerifierFence(this.configuration.verifierStorePath, commit);
+      } catch (error) {
+        this.markVerifierUnavailable();
+        if (error instanceof AuthorityError) throw error;
+        throw verifierFault();
+      }
+      this.state = next;
+    });
+  }
+
   _now() {
     const now = this.configuration.clock();
     if (!isSafeInteger(now)) throw new StateFault("authority clock is invalid");
