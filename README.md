@@ -9,7 +9,7 @@ When several Pi sessions use the same Claude account, this extension queues dire
 Install an immutable release tag:
 
 ```bash
-pi install git:github.com/longweekendprojects/pi-claude-permit-gate@v0.1.0
+pi install git:github.com/longweekendprojects/pi-claude-permit-gate@v0.2.0
 ```
 
 Start a new Pi session or run `/reload`, then inspect the local pools:
@@ -186,3 +186,27 @@ The tests use isolated ports and temporary home directories. They cover bounded 
 ## License
 
 MIT
+
+### Authority LaunchAgent artifacts
+
+Authority packaging stages the current clean commit as an immutable release and generates four per-user LaunchAgents for lanes A-D. The generated jobs use only loopback ports `8791` through `8794`, run after login, restart after failed exits, and contain no bearer, Keychain, or verifier value. They do not configure Tailscale Serve or launchd while running in dry-run mode.
+
+Production generation requires measured timing, four account-binding UUIDs, and an operator attestation that the immutable H1 release (`v0.2.0`) is published, installed, and verified. The attestation is checked against the local tag and commit before staging, but it does not replace the required live H1 verification. Use a temporary home and output directory for artifact review:
+
+```bash
+h1_commit="$(git rev-parse 'v0.2.0^{commit}')"
+temporary_home="$(mktemp -d)"
+temporary_output="$(mktemp -d)"
+scripts/install-authority.sh --dry-run --home "$temporary_home" --output "$temporary_output" \
+  --authority-id <authority-uuid> \
+  --account-binding-a <lane-a-binding-uuid> --account-binding-b <lane-b-binding-uuid> \
+  --account-binding-c <lane-c-binding-uuid> --account-binding-d <lane-d-binding-uuid> \
+  --offer-ttl-ms <measured-offer-ttl-ms> --renew-interval-ms <measured-renew-interval-ms> \
+  --renew-deadline-ms <measured-renew-deadline-ms> --terminal-retention-ms <measured-retention-ms> \
+  --h1-release v0.2.0 --h1-installed-build "$h1_commit" --h1-verified
+scripts/validate-authority.sh --artifacts-only --output "$temporary_output"
+```
+
+The dry run writes an immutable commit-addressed release, four plist artifacts, and a hash manifest only below the temporary output directory. It never invokes `launchctl`, reads Keychain, starts a listener, or changes Serve/Tailnet state. Timing is never defaulted: offer TTL must be 5,000-120,000 ms, renew interval 5,000-300,000 ms, renew deadline 15,000-3,600,000 ms and at least three intervals, and terminal retention at least 86,400,000 ms.
+
+Outside dry-run mode, the installer copies validated plists into the current user's `~/Library/LaunchAgents` and loads each label. `scripts/install-authority.sh --rollback-lane anthropic-a` restores only that lane's prior plist, and `scripts/install-authority.sh --uninstall` removes the four job definitions. Both preserve lane state, verifier records, logs, and immutable staged releases. Use either live action only after the deployment gates in the authority protocol are satisfied.

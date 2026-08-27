@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-permit-gate",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "A shared concurrency gate for native Anthropic Claude requests in Pi.",
   "type": "module",
   "license": "MIT",
@@ -28,6 +28,13 @@
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "authorityDeployment": {
+    "schemaVersion": 1,
+    "h1Release": "v0.2.0",
+    "immutableBuildId": "git-commit"
   }
 }

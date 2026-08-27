@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__RELEASE_PATH__/permit-daemon.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__RELEASE_PATH__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLAUDE_PERMIT_GATE_DAEMON_MODE</key>
+    <string>authority</string>
+    <key>CLAUDE_PERMIT_GATE_PROVIDER</key>
+    <string>__PROVIDER__</string>
+    <key>CLAUDE_PERMIT_GATE_PORT</key>
+    <string>__PORT__</string>
+    <key>CLAUDE_PERMIT_GATE_AUTHORITY_ID</key>
+    <string>__AUTHORITY_ID__</string>
+    <key>CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID</key>
+    <string>__ACCOUNT_BINDING_ID__</string>
+    <key>CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR</key>
+    <string>__STATE_DIRECTORY__</string>
+    <key>CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP</key>
+    <string>1</string>
+    <key>CLAUDE_PERMIT_GATE_BUILD_ID</key>
+    <string>__BUILD_ID__</string>
+    <key>CLAUDE_PERMIT_GATE_OFFER_TTL_MS</key>
+    <string>__OFFER_TTL_MS__</string>
+    <key>CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS</key>
+    <string>__RENEW_INTERVAL_MS__</string>
+    <key>CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS</key>
+    <string>__RENEW_DEADLINE_MS__</string>
+    <key>CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS</key>
+    <string>__TERMINAL_RETENTION_MS__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__OUT_LOG_PATH__</string>
+  <key>StandardErrorPath</key>
+  <string>__ERR_LOG_PATH__</string>
+</dict>
+</plist>
