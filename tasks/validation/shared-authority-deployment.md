@@ -252,6 +252,18 @@ Publication created the `v0.3.0` tag but never repinned the installations, so ev
 
 Diagnostic lesson: verify the installed build carries the feature before diagnosing configuration. Environment, config file, credentials, Serve route, and daemon health were all correct and independently proven while the running extension simply could not use them.
 
+### Efficacy reading, Ruminaider, 13:15 EDT
+
+Lane A carried a real permit through the authority. A 0.5s sampler against `/v1/health` during a live provider request recorded `active=1` on five consecutive samples and `active=0` on eight, never exceeding `maximumConcurrency: 2`. The permit is held only for the provider request and released at `message_end`, which is why point reads between requests show `active=0`.
+
+This confirms the full client path on Ruminaider: authority-client mode, Keychain bearer, ticket create, claim, lease, and completion against the shared authority.
+
+### Peer status at 13:16 EDT
+
+The peer is staged but not cut over. It is pinned to `v0.3.0` with checkout `b2e9dcc`, its config and `~/.zshenv` exports are in place, and all four local daemons are idle (`active=0, queued=0`; lifetime grants 6493/2067/4421/4684). Its Pi has not been restarted, so it still runs the old local daemons and continues spending account capacity independently. Stopping those daemons before the restart would only reproduce the local-mode hang, so they stay until the peer's Pi restarts into authority-client mode.
+
+Two-Mac shared capacity is therefore still unproven. After the peer restart, drive traffic on both Macs and sample lane A: `active` should reach 2 from two different installations while never exceeding `maximumConcurrency`.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
