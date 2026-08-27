@@ -31,10 +31,19 @@ function request(port, method, pathname, body, extraHeaders = {}) {
     req.on("error", reject); req.on("timeout", () => req.destroy(new Error("request timed out"))); req.end(payload);
   });
 }
+function rawAuthorityRequest(port, pathname, payload, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const headers = { ...extraHeaders, "content-type": "application/json", "content-length": Buffer.byteLength(payload) };
+    const req = http.request({ host: "127.0.0.1", port, method: "POST", path: pathname, timeout: 5000, headers }, (res) => {
+      let text = ""; res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text || "{}") }); } catch (error) { reject(error); } });
+    });
+    req.on("error", reject); req.on("timeout", () => req.destroy(new Error("raw request timed out"))); req.end(payload);
+  });
+}
 const health = (port) => request(port, "GET", "/health").then((response) => response.body);
 const acquire = (port, session) => request(port, "POST", "/acquire", { session });
 const release = (port, permitId) => request(port, "POST", "/release", { permitId });
-async function eventually(check, message) { const deadline = Date.now() + 3000; while (Date.now() < deadline) { try { const value = await check(); if (value) return value; } catch {} await delay(20); } throw new Error(message); }
+async function eventually(check, message, timeoutMs = 3000) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { try { const value = await check(); if (value) return value; } catch {} await delay(20); } throw new Error(message); }
 async function startDaemon(port, home, overrides = {}) {
   const child = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_PORT: String(port), ...overrides }, stdio: "ignore" });
   await eventually(async () => (await health(port)).ok, "daemon did not start");
@@ -392,6 +401,28 @@ test("authority persists nested machine and session fairness across restart", as
   await sessionGate.authority.mutateTicket(sessionPrincipal, sessionFirst.ticket.ticketId, "complete", ticketMutation(sessionPrincipal, { operation: authorityUuid(429), revision: sessionFirstClaim.ticket.revision, lease: sessionFirstClaim.ticket.lease, outcome: "released" }));
   assert.equal(sessionGate.authority.getTicket(sessionPrincipal, sessionSuccessor.ticket.ticketId).state, "offered");
   assert.equal(sessionGate.authority.getTicket(sessionPrincipal, sessionEarlier.ticket.ticketId).state, "queued");
+
+  const compactionGate = await durableAuthority(t);
+  const compactionA = authorityPrincipal(30); const compactionB = authorityPrincipal(31); const compactionC = authorityPrincipal(32); const compactionD = authorityPrincipal(33);
+  const compactionHolder = await compactionGate.authority.createTicket(compactionA, ticketCreate(compactionA, { session: authorityUuid(240), request: authorityUuid(340), now: compactionGate.time.now }));
+  const compactionHolderClaim = await compactionGate.authority.mutateTicket(compactionA, compactionHolder.ticket.ticketId, "claim", ticketMutation(compactionA, { operation: authorityUuid(440), revision: compactionHolder.ticket.revision }));
+  const compactionFirst = await compactionGate.authority.createTicket(compactionA, ticketCreate(compactionA, { session: authorityUuid(241), request: authorityUuid(341), now: compactionGate.time.now }));
+  const compactedMachine = await compactionGate.authority.createTicket(compactionB, ticketCreate(compactionB, { session: authorityUuid(242), request: authorityUuid(342), now: compactionGate.time.now }));
+  const compactionSuccessor = await compactionGate.authority.createTicket(compactionC, ticketCreate(compactionC, { session: authorityUuid(243), request: authorityUuid(343), now: compactionGate.time.now }));
+  await compactionGate.authority.mutateTicket(compactionA, compactionHolder.ticket.ticketId, "complete", ticketMutation(compactionA, { operation: authorityUuid(441), revision: compactionHolderClaim.ticket.revision, lease: compactionHolderClaim.ticket.lease, outcome: "released" }));
+  const compactionFirstOffered = compactionGate.authority.getTicket(compactionA, compactionFirst.ticket.ticketId);
+  const compactionFirstClaim = await compactionGate.authority.mutateTicket(compactionA, compactionFirst.ticket.ticketId, "claim", ticketMutation(compactionA, { operation: authorityUuid(442), revision: compactionFirstOffered.revision }));
+  const compactionEarlier = await compactionGate.authority.createTicket(compactionA, ticketCreate(compactionA, { session: authorityUuid(244), request: authorityUuid(344), now: compactionGate.time.now }));
+  await compactionGate.authority.mutateTicket(compactionB, compactedMachine.ticket.ticketId, "cancel", ticketMutation(compactionB, { operation: authorityUuid(443), revision: compactedMachine.ticket.revision }));
+  compactionGate.time.now += AUTHORITY_TIMING.terminalRetentionMs + 1;
+  await compactionGate.authority.createTicket(compactionD, ticketCreate(compactionD, { session: authorityUuid(245), request: authorityUuid(345), now: compactionGate.time.now }));
+  const compactedState = JSON.parse(await fs.readFile(compactionGate.statePath, "utf8"));
+  assert.equal(compactedState.fairness.machineOrder.includes(compactionB.installationId), false); assert.equal(compactedState.fairness.machineCursor, compactedState.fairness.machineOrder.indexOf(compactionC.installationId));
+  compactionGate.restart();
+  const uncertainCompactionFirst = compactionGate.authority.getTicket(compactionA, compactionFirst.ticket.ticketId);
+  await compactionGate.authority.mutateTicket(compactionA, compactionFirst.ticket.ticketId, "complete", ticketMutation(compactionA, { operation: authorityUuid(444), revision: uncertainCompactionFirst.revision, lease: compactionFirstClaim.ticket.lease, outcome: "released" }));
+  assert.equal(compactionGate.authority.getTicket(compactionC, compactionSuccessor.ticket.ticketId).state, "offered");
+  assert.equal(compactionGate.authority.getTicket(compactionA, compactionEarlier.ticket.ticketId).state, "queued");
 });
 
 test("authority fails closed for migration, fsync faults, socket ownership, and stale terms", async (t) => {
@@ -412,6 +443,24 @@ test("authority fails closed for migration, fsync faults, socket ownership, and 
   await fs.writeFile(migrationPath, `${JSON.stringify(v1)}\n`); await fs.chmod(migrationPath, 0o600);
   const migrated = openAuthorityState({ ...migrationConfig, bootstrap: false });
   assert.equal(migrated.health({ instanceId: authorityUuid(502), buildId: "test" }).stateSchemaVersion, 2);
+
+  const allowanceMigrationDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authority-allowance-migration-"));
+  const allowanceMigrationPath = path.join(allowanceMigrationDirectory, "lane.json");
+  t.after(() => fs.rm(allowanceMigrationDirectory, { recursive: true, force: true }));
+  const allowanceMigrationConfig = { statePath: allowanceMigrationPath, provider: "anthropic-a", port: 8791, authorityId: authorityUuid(903), timing: AUTHORITY_TIMING, bootstrap: true };
+  const legacyAllowanceAuthority = openAuthorityState(allowanceMigrationConfig);
+  const legacyAllowancePrincipal = authorityPrincipal(27);
+  const legacyAllowanceRequest = { schemaVersion: 1, installationId: legacyAllowancePrincipal.installationId, provider: "anthropic-a", accountBindingId: legacyAllowancePrincipal.accountBindingId, publishId: authorityUuid(635), publisherSequence: 1, observedAtEpochMs: 1_760_000_000_000, fiveHour: { utilization: 47.5, status: "allowed", resetEpochSeconds: 1_760_003_600 }, sevenDay: null };
+  await legacyAllowanceAuthority.publishAllowance(legacyAllowancePrincipal, legacyAllowanceRequest);
+  const legacyAllowanceState = JSON.parse(await fs.readFile(allowanceMigrationPath, "utf8"));
+  legacyAllowanceState.stateSchemaVersion = 1; delete legacyAllowanceState.ownerNonce; delete legacyAllowanceState.createTombstones; delete legacyAllowanceState.allowancePublishes; delete legacyAllowanceState.publisherSequences;
+  await fs.writeFile(allowanceMigrationPath, `${JSON.stringify(legacyAllowanceState)}\n`); await fs.chmod(allowanceMigrationPath, 0o600);
+  const allowanceMigrated = openAuthorityState({ ...allowanceMigrationConfig, bootstrap: false });
+  const migratedAllowanceSnapshot = allowanceMigrated.snapshot({ instanceId: authorityUuid(506), buildId: "test" }).allowance;
+  assert.deepEqual(migratedAllowanceSnapshot, { observedAtEpochMs: legacyAllowanceRequest.observedAtEpochMs, fiveHour: legacyAllowanceRequest.fiveHour, sevenDay: null });
+  const allowanceMigrationPersisted = JSON.parse(await fs.readFile(allowanceMigrationPath, "utf8"));
+  assert.equal(Object.keys(allowanceMigrationPersisted.allowancePublishes).length, 1); assert.deepEqual(Object.values(allowanceMigrationPersisted.allowancePublishes)[0].allowance, migratedAllowanceSnapshot); assert.deepEqual(Object.values(allowanceMigrationPersisted.publisherSequences), [1]);
+  assert.deepEqual(openAuthorityState({ ...allowanceMigrationConfig, bootstrap: false }).snapshot({ instanceId: authorityUuid(506), buildId: "test" }).allowance, migratedAllowanceSnapshot);
 
   const migrationRaceDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authority-migration-race-"));
   const migrationRacePath = path.join(migrationRaceDirectory, "lane.json");
@@ -507,6 +556,41 @@ test("authority fails closed for migration, fsync faults, socket ownership, and 
   const durableReply = await pendingMutation;
   const durableState = JSON.parse(await fs.readFile(slowGate.statePath, "utf8"));
   assert.equal(durableReply.status, 201); assert.equal(durableState.tickets[durableReply.body.ticketId].ticketId, durableReply.body.ticketId);
+  const blockingRequest = ticketCreate(slowGate.principal, { session: authorityUuid(233), request: authorityUuid(335), now: Date.now() });
+  const blockingMutation = request(slowGate.port, "POST", "/v1/tickets", blockingRequest, authorityHeaders(slowGate.principal));
+  await delay(40);
+  const [malformedBody, oversizedBody] = await Promise.all([
+    rawAuthorityRequest(slowGate.port, "/v1/tickets", "{not-json", authorityHeaders(slowGate.principal)),
+    rawAuthorityRequest(slowGate.port, "/v1/tickets", `"${"x".repeat(16_385)}"`, authorityHeaders(slowGate.principal)),
+  ]);
+  assert.equal((await blockingMutation).status, 201); assert.equal(malformedBody.status, 400); assert.equal(malformedBody.body.error.code, "invalid_json"); assert.equal(oversizedBody.status, 400); assert.equal(oversizedBody.body.error.code, "invalid_request");
+  assert.equal((await request(slowGate.port, "GET", "/v1/health", undefined, authorityHeaders(slowGate.principal))).status, 200); assert.equal(slowGate.child.exitCode, null);
+
+  const shutdownMarkerDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authority-shutdown-marker-"));
+  const shutdownMarkerPath = path.join(shutdownMarkerDirectory, "write-count");
+  t.after(() => fs.rm(shutdownMarkerDirectory, { recursive: true, force: true }));
+  const shutdownGate = await authorityDaemon(t, { CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS: "1000", CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER: shutdownMarkerPath });
+  const shutdownTicket = await request(shutdownGate.port, "POST", "/v1/tickets", ticketCreate(shutdownGate.principal, { session: authorityUuid(234), request: authorityUuid(336), now: Date.now() }), authorityHeaders(shutdownGate.principal));
+  assert.equal(shutdownTicket.status, 201); assert.equal(shutdownTicket.body.state, "offered");
+  await eventually(async () => (await fs.readFile(shutdownMarkerPath, "utf8")) === "2", "reconciliation did not enter its delayed durable write", 8_000);
+  const shutdownStartedAt = Date.now();
+  shutdownGate.child.kill("SIGTERM");
+  const shutdownExit = await Promise.race([
+    new Promise((resolve) => shutdownGate.child.once("exit", (code, signal) => resolve({ code, signal }))),
+    delay(5_000).then(() => { throw new Error("authority shutdown did not settle durable reconciliation"); }),
+  ]);
+  const shutdownState = JSON.parse(await fs.readFile(shutdownGate.statePath, "utf8"));
+  assert.deepEqual(shutdownExit, { code: 0, signal: null }); assert(Date.now() - shutdownStartedAt >= 500); assert.equal(shutdownState.tickets[shutdownTicket.body.ticketId].state, "offerExpired");
+
+  const timeoutMarkerDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authority-timeout-marker-"));
+  const timeoutMarkerPath = path.join(timeoutMarkerDirectory, "write-count");
+  t.after(() => fs.rm(timeoutMarkerDirectory, { recursive: true, force: true }));
+  const timeoutGate = await authorityDaemon(t, { CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS: "1000", CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER: timeoutMarkerPath, CLAUDE_PERMIT_GATE_TEST_SHUTDOWN_TIMEOUT_MS: "150" });
+  const timingOutMutation = request(timeoutGate.port, "POST", "/v1/tickets", ticketCreate(timeoutGate.principal, { session: authorityUuid(235), request: authorityUuid(337), now: Date.now() }), authorityHeaders(timeoutGate.principal)).catch(() => undefined);
+  await eventually(async () => (await fs.readFile(timeoutMarkerPath, "utf8")) === "1", "mutation did not enter its delayed durable write");
+  const timeoutExitPromise = new Promise((resolve) => timeoutGate.child.once("exit", (code, signal) => resolve({ code, signal })));
+  timeoutGate.child.kill("SIGTERM");
+  assert.deepEqual(await timeoutExitPromise, { code: 1, signal: null }); await timingOutMutation;
 
   const socketGate = await authorityDaemon(t); const beforeSocketRace = await fs.readFile(socketGate.statePath, "utf8");
   const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: socketGate.home, CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority", CLAUDE_PERMIT_GATE_TEST_MODE: "1", CLAUDE_PERMIT_GATE_TEST_AUTH: "1", CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1", CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: socketGate.stateDirectory, CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", CLAUDE_PERMIT_GATE_PORT: String(socketGate.port), CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000", CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000" }, stdio: "ignore" });

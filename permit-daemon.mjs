@@ -40,7 +40,7 @@ function authorityReply(res, status, body, headers = {}) {
 }
 
 function authorityRequestBody(req) {
-  return new Promise((resolve, reject) => {
+  const body = new Promise((resolve, reject) => {
     let bytes = 0;
     let text = "";
     let settled = false;
@@ -61,6 +61,9 @@ function authorityRequestBody(req) {
       try { resolveOnce(text ? JSON.parse(text) : {}); } catch { rejectOnce(new AuthorityError("invalid_json", { message: "request body is invalid" })); }
     });
   });
+  // A queued mutation can wait behind a slow durable transaction. Observe rejection now and rethrow it from the queued operation later.
+  void body.catch(() => {});
+  return body;
 }
 
 function testAuthorityPrincipal(req, requiredScope) {
@@ -91,7 +94,10 @@ function startAuthorityDaemon() {
     const maximumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MAX", 2);
     const currentConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_START", 2);
     const durableWriteDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS", 0);
-    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode) throw new Error("authority configuration is invalid");
+    const durableWriteMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER : undefined;
+    const shutdownTimeoutMs = testMode ? authorityInteger("CLAUDE_PERMIT_GATE_TEST_SHUTDOWN_TIMEOUT_MS", 10_000) : 10_000;
+    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode || durableWriteMarker !== undefined && !durableWriteMarker || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 30_000) throw new Error("authority configuration is invalid");
+    let durableWriteCount = 0;
     configuration = {
       provider,
       port,
@@ -103,8 +109,12 @@ function startAuthorityDaemon() {
       maximumConcurrency,
       currentConcurrency,
       allowTestPort: testMode,
-      runtimeFaultInjector: durableWriteDelayMs === 0 ? undefined : async ({ phase }) => {
-        if (phase === "before-write") await new Promise((resolve) => setTimeout(resolve, durableWriteDelayMs));
+      shutdownTimeoutMs,
+      runtimeFaultInjector: durableWriteDelayMs === 0 && durableWriteMarker === undefined ? undefined : async ({ phase }) => {
+        if (phase !== "before-write") return;
+        durableWriteCount += 1;
+        if (durableWriteMarker !== undefined) await fs.promises.writeFile(durableWriteMarker, String(durableWriteCount), { mode: 0o600 });
+        if (durableWriteDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, durableWriteDelayMs));
       },
     };
   } catch {
@@ -139,6 +149,7 @@ function startAuthorityDaemon() {
         authorityError(res, new AuthorityError("authority_degraded", { message: "authority is degraded" }));
         return;
       }
+      if (shuttingDown) throw new AuthorityError("authority_draining", { message: "authority is shutting down" });
       const url = new URL(req.url, "http://127.0.0.1");
       if (url.search) throw new AuthorityError("invalid_request", { message: "authority route cannot include a query" });
       const pathname = url.pathname;
@@ -210,15 +221,45 @@ function startAuthorityDaemon() {
       }
     });
   });
-  function shutdown() {
+  function closeAuthorityServer() {
+    return new Promise((resolve, reject) => {
+      try {
+        server.close((error) => {
+          if (error?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+          else if (error) reject(error);
+          else resolve();
+        });
+      } catch (error) {
+        if (error?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else reject(error);
+      }
+    });
+  }
+
+  async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
     if (reconcileTimer) clearInterval(reconcileTimer);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 500).unref?.();
+    const listenerClosed = closeAuthorityServer();
+    let deadline;
+    try {
+      const writesSettled = Promise.all([mutationTail, authority?.awaitIdle() ?? Promise.resolve(), listenerClosed]);
+      await Promise.race([
+        writesSettled,
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("authority shutdown timed out")), configuration.shutdownTimeoutMs); }),
+      ]);
+      if (authority?.status === "degraded") throw new Error("authority shutdown found a degraded state");
+      process.exit(0);
+    } catch {
+      server.closeAllConnections?.();
+      process.stderr.write("authority shutdown did not settle\n");
+      process.exit(1);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
   }
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => { void shutdown(); });
+  process.on("SIGTERM", () => { void shutdown(); });
 }
 
 function startLocalDaemon() {

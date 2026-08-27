@@ -327,6 +327,15 @@ function cursorSuccessorIsValid(order, cursor) {
   return order.length === 0 ? cursor === 0 : isSafeInteger(cursor, 0, order.length - 1);
 }
 
+function validateAllowanceState(allowance) {
+  const keys = ["observedAtEpochMs", "fiveHour", "sevenDay", "receivedAtEpochMs"];
+  if (!hasExactKeys(allowance, keys) || allowance.observedAtEpochMs !== null && !isEpochMs(allowance.observedAtEpochMs) || allowance.receivedAtEpochMs !== null && !isEpochMs(allowance.receivedAtEpochMs) || (allowance.observedAtEpochMs === null) !== (allowance.receivedAtEpochMs === null)) throw new StateFault("authority allowance state is invalid");
+  validateWindow(allowance.fiveHour);
+  validateWindow(allowance.sevenDay);
+  if (allowance.observedAtEpochMs === null && (allowance.fiveHour !== null || allowance.sevenDay !== null)) throw new StateFault("authority allowance state is invalid");
+  return allowance;
+}
+
 function validateState(state, { provider, port, timing, allowTestPort = false } = {}) {
   if (!hasExactKeys(state, stateKeys()) || state.stateSchemaVersion !== STATE_SCHEMA_VERSION) throw new StateFault("authority state schema is unsupported");
   if (!isUuid(state.authorityId) || !(state.provider in PROVIDER_PORTS) || !isSafeInteger(state.port, 1, 65535) || !isSafeInteger(state.laneTerm, 1) || !isUuid(state.ownerNonce)) throw new StateFault("authority state header is invalid");
@@ -385,11 +394,7 @@ function validateState(state, { provider, port, timing, allowTestPort = false } 
   for (const [installationId, sessions] of liveTicketPairs) {
     if (!state.fairness.machineOrder.includes(installationId) || !sessionsIsSubset(sessions, state.fairness.sessionOrder[installationId])) throw new StateFault("authority fairness state is invalid");
   }
-  const allowanceKeys = ["observedAtEpochMs", "fiveHour", "sevenDay", "receivedAtEpochMs"];
-  if (!hasExactKeys(state.allowance, allowanceKeys) || state.allowance.observedAtEpochMs !== null && !isEpochMs(state.allowance.observedAtEpochMs) || state.allowance.receivedAtEpochMs !== null && !isEpochMs(state.allowance.receivedAtEpochMs) || (state.allowance.observedAtEpochMs === null) !== (state.allowance.receivedAtEpochMs === null)) throw new StateFault("authority allowance state is invalid");
-  validateWindow(state.allowance.fiveHour);
-  validateWindow(state.allowance.sevenDay);
-  if (state.allowance.observedAtEpochMs === null && (state.allowance.fiveHour !== null || state.allowance.sevenDay !== null)) throw new StateFault("authority allowance state is invalid");
+  validateAllowanceState(state.allowance);
   const replayEntries = Object.entries(state.allowancePublishes);
   if (replayEntries.length > MAX_ALLOWANCE_REPLAY_RECORDS) throw new StateFault("allowance replay state exceeds the protocol bound");
   const replaySequences = new Map();
@@ -465,6 +470,26 @@ function migrateV1(state, configuration) {
   migrated.createTombstones = {};
   migrated.allowancePublishes = {};
   migrated.publisherSequences = {};
+  validateAllowanceState(migrated.allowance);
+  if (migrated.allowance.observedAtEpochMs !== null) {
+    // Schema 1 did not retain publisher identity, so use the fresh owner nonce to avoid colliding with a client principal.
+    const installationId = migrated.ownerNonce;
+    const publishId = crypto.randomUUID();
+    const request = {
+      schemaVersion: 1,
+      installationId,
+      provider: migrated.provider,
+      accountBindingId: installationId,
+      publishId,
+      publisherSequence: 1,
+      observedAtEpochMs: migrated.allowance.observedAtEpochMs,
+      fiveHour: clone(migrated.allowance.fiveHour),
+      sevenDay: clone(migrated.allowance.sevenDay),
+    };
+    const allowance = privateAllowance(migrated);
+    migrated.allowancePublishes[publisherKey(installationId, migrated.provider, publishId)] = { fingerprint: canonical(request), allowance, receivedAtEpochMs: migrated.allowance.receivedAtEpochMs };
+    migrated.publisherSequences[publisherSequenceKey(installationId, migrated.provider)] = request.publisherSequence;
+  }
   let nextQueueSequence = migrated.counters.nextQueueSequence;
   for (const ticket of Object.values(migrated.tickets)) {
     if (!isObject(ticket)) throw new StateFault("authority state migration is unsafe");
@@ -867,6 +892,7 @@ function compactRetainedState(state, now, timing) {
     if (now - ticket.createdAtEpochMs <= MAX_REQUEST_AGE_MS) state.createTombstones[key] = { createdAtEpochMs: ticket.createdAtEpochMs, compactedAtEpochMs: now };
     delete state.tickets[ticket.ticketId];
   }
+  if (eligible.length > 0) pruneFairness(state);
 }
 
 function retainedRecordCount(state) {
@@ -931,6 +957,10 @@ export class AuthorityState {
 
   get laneTerm() {
     return this.state.laneTerm;
+  }
+
+  async awaitIdle() {
+    await this._tail;
   }
 
   _now() {
