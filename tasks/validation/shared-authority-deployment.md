@@ -264,6 +264,22 @@ The peer is staged but not cut over. It is pinned to `v0.3.0` with checkout `b2e
 
 Two-Mac shared capacity is therefore still unproven. After the peer restart, drive traffic on both Macs and sample lane A: `active` should reach 2 from two different installations while never exceeding `maximumConcurrency`.
 
+### Two-Mac shared capacity proven, 13:32 EDT
+
+Lane A reached `active=2` with one lease from Ruminaider (`4463bb9d`) and one from albert-aviary-mac (`dad5f319`), sampled every 0.4s: 6 samples at `active=2`, 60 at 1, 1 at 0. It never exceeded `maximumConcurrency: 2` and `queued` stayed 0 throughout. The peer's lease ran its full create/claim/complete cycle from the peer's own Keychain bearer over the tailnet (`CREATE 201 offered | CLAIM 200 active | COMPLETE 200 released`).
+
+Point-in-time reads usually show `active=0` because a permit is held only for the provider request and released at `message_end`. Concurrency must be sampled, not polled once.
+
+### Peer cutover completed, 13:33 EDT
+
+The peer's Pi restarted into authority-client mode on v0.3.0 (`b2e9dcc`) and is live on lane A through the shared authority. Its four stale local A-D daemons were confirmed idle twice, two seconds apart, then stopped: ports 8791-8794 have no listeners on the peer. Port 8790 is outside A-D and was deliberately left running.
+
+Both Macs now schedule A-D permits through the single authority on Ruminaider. Neither machine runs a local A-D daemon.
+
+### Regression risk outside this repository
+
+`~/Repositories/pi-dotfiles/settings.json` still pins `v0.2.0`. Syncing dotfiles to either Mac reverts the pin and reproduces the local-mode hang. That repository is out of scope for this work and needs the pin updated to `v0.3.0` by its owner. The `launchctl setenv` values for GUI-launched processes also do not survive a reboot; terminal-launched Pi is covered by `~/.zshenv` on both machines.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
