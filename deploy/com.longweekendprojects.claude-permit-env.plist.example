@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.longweekendprojects.claude-permit-env</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>launchctl setenv CLAUDE_PERMIT_GATE_MODE authority-client; launchctl setenv CLAUDE_PERMIT_GATE_ORIGIN https://ruminaider.tail252378.ts.net; launchctl setenv CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG "$HOME/.pi/agent/claude-permit-gate/authority-client.json"</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>

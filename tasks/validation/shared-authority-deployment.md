@@ -356,6 +356,22 @@ Two Netdata details cost several reload cycles: health templates match on chart 
 
 Pi's footer reads `~/.pi/agent/usage-windows/<provider>.json`, which only that machine's own sessions write when they receive `anthropic-ratelimit-unified-*` headers. An idle machine therefore showed ageing observations even though the authority was current within 90 seconds. `scripts/allowance-syncer.mjs` writes authority-held allowance into those same files every 60 seconds on both Macs, using the atomic temp-and-rename the extension itself uses, so running sessions pick it up through the existing file watcher without a restart. A file is only overwritten when the authority observation is strictly newer, so a live local response always wins.
 
+### Restart survival and client self-healing, 2026-08-27 evening
+
+A Ruminaider reboot proved the authority itself is restart-proof: all four lane LaunchAgents, the Serve routes on 8791-8794, and the prober, syncer, and exporter jobs all returned without help. Two things did not survive, and both are now fixed.
+
+**GUI environment.** `launchctl setenv` does not persist across a reboot, so the menu bar app lost `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG`, fell back to `LocalLaneSnapshotSource`, and polled `http://127.0.0.1:<port>/health`, which the authority replaced with authenticated `/v1/health`. Every lane read as unavailable, showing `!CLane` with all lanes critical. The monitor now runs from `com.longweekendprojects.claude-lane-monitor` carrying the three variables in `EnvironmentVariables`, and `com.longweekendprojects.claude-permit-env` re-applies them at login for anything else launched from the GUI.
+
+**Client retry state.** Four authority reinstalls each bumped the lane term, leaving the peer's ledger naming tickets the authority no longer recognised. The client rebuilt from that dead record on every acquire and failed identically forever (`request rejected`, then `authority create response is invalid`), which presents as an endless wait rather than an error. Clearing the ledger fixed the symptom; `v0.3.1` (`02a90cb`) fixes the cause by discarding a record whose ticket the authority rejects as unknown and retrying exactly once from a clean record, so a genuine authority fault still surfaces. Both installations are pinned to `v0.3.1`.
+
+### Keychain prompt loop
+
+The monitor prompted for the login password repeatedly. Three stacked causes:
+
+1. The app was adhoc-signed, so every rebuild changed its code identity and voided each "Always Allow" grant. `scripts/build-app.sh` now signs with a stable local identity (`Claude Lane Monitor Local Signing`, a self-signed code-signing certificate in the login keychain) and falls back to adhoc only when that identity is absent.
+2. A re-grant script passed the app path to `security -i` unquoted. `security -i` splits on whitespace, so `/Users/albertgwo/Applications/Claude` was treated as the path and the three credentials were deleted before the re-add failed. Recovery required a fresh installation UUID (`b4cc4ae9-f57b-45fa-b7f1-bbc4457ba77c`) because `enroll` refuses a reused installation and scope. Always quote paths passed to `security -i`.
+3. macOS partition lists gate access independently of the ACL, and only the operator's password can change them: `security set-generic-password-partition-list -S apple:,apple-tool: -s <service> -a ruminaider`. Omit `-k`; supplying it through a command substitution captures the prompt text as the password.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.

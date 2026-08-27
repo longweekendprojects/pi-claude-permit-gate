@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.longweekendprojects.claude-lane-monitor</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/albertgwo/Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLAUDE_PERMIT_GATE_MODE</key><string>authority-client</string>
+    <key>CLAUDE_PERMIT_GATE_ORIGIN</key><string>https://ruminaider.tail252378.ts.net</string>
+    <key>CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG</key><string>/Users/albertgwo/.pi/agent/claude-permit-gate/authority-client.json</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/albertgwo/Library/Logs/Claude Permit Authority/monitor.log</string>
+  <key>StandardErrorPath</key><string>/Users/albertgwo/Library/Logs/Claude Permit Authority/monitor.err.log</string>
+</dict>
+</plist>
