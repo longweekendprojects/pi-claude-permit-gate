@@ -152,6 +152,27 @@ The four staged plists contain no credential material. Each carries only lane en
 
 `deploy/tailscale/permit-authority-grant.hujson.example` no longer carries the unresolved peer placeholder. It now names `albert-aviary-mac` at 100.100.166.117 alongside `ruminaider` at 100.103.181.53, granting only those two sources access to `ruminaider:8791-8794`. Applying it still requires auditing the existing Tailnet policy for broader rules that would already match these ports.
 
+### Credential provisioning, Ruminaider side, 11:55-12:05 EDT
+
+Installation ID for Ruminaider is `4463bb9d-9bb5-4dc7-b4de-23e8f2af6f6e`. Three scoped credentials are live, each valid until 1795621871141 (90 days) and allowlisted for all four lanes:
+
+| Scope | Token ID | Keychain item | Verifier digest |
+| --- | --- | --- | --- |
+| `permit:mutate` | `ruminaider-permit-mutate-2026-08-27b` | `claude-permit-authority-permit-mutate/ruminaider` | `46b47af2…` |
+| `snapshot:read` | `ruminaider-snapshot-read-2026-08-27b` | `claude-permit-authority-snapshot-read/ruminaider` | `88864cde…` |
+| `allowance:publish` | `ruminaider-allowance-publish-2026-08-27b` | `claude-permit-authority-allowance-publish/ruminaider` | `570e324c…` |
+
+Verified for all three: the Keychain value matches the client bearer pattern `<tokenId>.<43-char base64url>`, its token ID matches the enrolled record, and the SHA-256 of its decoded 32-byte secret equals the stored verifier. Secrets passed only through standard input and never touched argv, an environment variable, a file, or output.
+
+Two implementation facts cost a first attempt and are worth carrying forward:
+
+1. `scripts/authority-admin.mjs enroll` writes the raw 32-byte secret to Keychain, but `index.ts` requires the composed `<tokenId>.<secret>` bearer. Provisioning must write the composed value itself after enrolling.
+2. `security add-generic-password -w` with piped standard input stores an empty value rather than reading the pipe. Use `security -i`, which reads the whole command from standard input, so the secret still avoids argv.
+
+The first attempt therefore enrolled three verifiers whose secrets were never recoverable. Those tokens (`…-2026-08-27`, without the `b` suffix) are revoked and remain in the store as revoked records. Because `enroll` rejects a second record for the same installation and scope even when the earlier record is revoked, and `rotate` refuses a revoked predecessor, recovery required a fresh installation UUID. The original Ruminaider installation ID `0a78d101-2203-4203-a49c-090ec6ef7e9e` is burned and must not be reused. The verifier store is at generation 9 with 6 records, 3 revoked and 3 active.
+
+The peer's three credentials are not provisioned. The authority computes a verifier only from the secret itself, so the secret must exist on Ruminaider at enrollment and then reach the peer's Keychain without being written to a file, printed, or passed through chat.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
