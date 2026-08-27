@@ -71,6 +71,12 @@ done
 # 3. Bootstrap lane state offline. Routine startup fails closed without this.
 for index in "${!PROVIDERS[@]}"; do
   provider="${PROVIDERS[$index]}"
+  port="${PORTS[$index]}"
+  state="$HOME/Library/Application Support/Claude Permit Authority/lanes/lane-$port.json"
+  if [ -f "$state" ]; then
+    say "lane state already exists for $provider; skipping bootstrap"
+    continue
+  fi
   if "$NODE" "$REPO/scripts/authority-admin.mjs" bootstrap --provider "$provider" --authority-id "$AUTHORITY_ID"; then
     say "bootstrapped $provider"
   else
