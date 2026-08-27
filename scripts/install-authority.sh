@@ -331,6 +331,7 @@ restore_attempt() {
   for index in "${!PROVIDERS[@]}"; do
     provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; current="$AGENT_DIRECTORY/$label.plist"; rollback="$current.rollback"
     launchctl_call bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+    await_unloaded "$label" || true
     if [ "${prior_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.plist" "$current" || recovery_failures="$recovery_failures plist:$provider"; else rm -f "$current" || recovery_failures="$recovery_failures remove:$provider"; fi
     if [ "${prior_rollback_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.rollback" "$rollback" || recovery_failures="$recovery_failures rollback:$provider"; else rm -f "$rollback" || recovery_failures="$recovery_failures remove-rollback:$provider"; fi
     if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootstrap "gui/$(id -u)" "$current" >/dev/null 2>&1 || recovery_failures="$recovery_failures load:$provider"; fi
