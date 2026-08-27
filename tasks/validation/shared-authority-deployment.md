@@ -207,6 +207,43 @@ Verification must compare SHA-256 digests, never Keychain values. Digests are sa
 
 Because `enroll` rejects a second record for the same installation and scope even after revocation, each recovery consumed a fresh installation UUID. The verifier store is at generation 26 with 6 active records and several revoked ones.
 
+### Live authority cutover, Ruminaider, 12:32-12:35 EDT
+
+The four A-D authority daemons are installed and live. Cutover ran detached (`scripts/cutover-ruminaider.sh`) because lane A carries the driving Pi session, which the swap terminates. Sequence: proved every lane idle twice two seconds apart, stopped the local daemons, bootstrapped four lane states offline, installed four immutable LaunchAgents, and added private Serve listeners on 8791-8794 one at a time. Existing Funnel routes on 8443 and 10000 were preserved byte-for-byte.
+
+Authenticated health from both machines confirms one shared authority:
+
+| Reader | Result |
+| --- | --- |
+| Ruminaider, all four lanes | HTTP 200, `status: ready`, authority `ce298942…`, protocol 2, state schema 2 |
+| albert-aviary-mac, all four lanes over `https://ruminaider.tail252378.ts.net:<port>` | HTTP 200, `status: ready`, `active:0`, capacity 2 |
+
+The peer reaching the authority over the tailnet with a 200 proves the Serve route, the stock allow-all grant, and the peer bearer together. An unauthenticated `/v1/health` correctly returns 401; the earlier all-null `/health` reading was that error body, not a broken daemon.
+
+Three cutover-script defects were fixed live and committed: `setsid` is absent on macOS (use `nohup bash`), `bootstrap` requires the four timing variables exported (only the plists carried them), and re-runs must skip lanes that already have state. The installed release commit is `9067aed`.
+
+### Client mode staging
+
+Both machines are staged for authority-client mode but not yet cut over, because that needs a Pi restart:
+
+- `~/.zshenv` on both machines exports `CLAUDE_PERMIT_GATE_MODE=authority-client`, the origin, and the config path. Backups saved as `~/.zshenv.bak-2026-08-27`.
+- `~/.pi/agent/claude-permit-gate/authority-client.json` exists on both machines, mode 600, with the correct installation IDs (Ruminaider `4463bb9d…`, peer `dad5f319…`).
+
+### Definition-of-done efficacy signal
+
+The shared-capacity proof is a permit acquired on one Mac counting against the same account's capacity as seen by the other. Read it from either machine with an authenticated snapshot:
+
+```sh
+t=$(security find-generic-password -s claude-permit-authority-snapshot-read -a <ruminaider|aviary> -w)
+curl -sS -H "authorization: Bearer $t" https://ruminaider.tail252378.ts.net:8791/v1/health | jq '{active,queued,currentConcurrency}'
+```
+
+With both Macs restarted into authority-client mode, driving traffic on both should show a single lane's `active` rising past what one Mac alone could reach, and never exceeding `maximumConcurrency`. This requires the client restart below and is not yet measured.
+
+### Remaining: client restart (external dependency)
+
+Restart every Pi process on both Macs so it loads authority-client mode. Interactive sessions must be restarted by their operator. After restart, `local` mode and the old per-Mac daemons are gone, and any temporary `CLAUDE_PERMIT_GATE_DISABLE` can be removed. Peer local daemons on 8790-8794 stop being respawned once peer Pi runs in authority-client mode; stop any leftovers after the peer restart.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
