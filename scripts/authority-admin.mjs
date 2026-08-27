@@ -7,7 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { AuthorityError, authorityStatePath, authorityTimingFromEnvironment, authorityVerifierPath, openAuthorityState, readAuthorityVerifierStore, readAuthorityVerifierStoreAsync, writeAuthorityVerifierStore } from "../authority-state.mjs";
+import { AuthorityError, authorityStatePath, authorityTimingFromEnvironment, authorityVerifierPath, openAuthorityState, readAuthorityVerifierStore, readAuthorityVerifierStoreAsync, updateAuthorityVerifierStore } from "../authority-state.mjs";
 
 const PROVIDER_PORTS = Object.freeze({ "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 });
 const SCOPES = new Set(["permit:mutate", "snapshot:read", "allowance:publish"]);
@@ -126,6 +126,7 @@ function laneConfiguration(values, store) {
     maximumConcurrency,
     currentConcurrency,
     verifierGeneration: store.generation,
+    verifierStorePath: storePath,
     allowTestPort: isTestMode(),
     verifyGenerationSync: () => readAuthorityVerifierStore(storePath).generation,
     verifyGeneration: async () => (await readAuthorityVerifierStoreAsync(storePath)).generation,
@@ -206,11 +207,6 @@ function nextStore(previous, records) {
   return { schemaVersion: 1, generation, verifiers: records };
 }
 
-async function writeUpdatedStore(file, previous, records) {
-  const store = nextStore(previous, records);
-  return writeAuthorityVerifierStore(file, store, { allowCreate: previous === undefined, expectedGeneration: previous?.generation });
-}
-
 async function enroll(values) {
   const installationId = assertUuid(required(values, "--installation-id"));
   const scope = required(values, "--scope");
@@ -224,13 +220,16 @@ async function enroll(values) {
   const expiresAtEpochMs = optionalInteger(values, "--expires-at-epoch-ms", undefined, 1);
   if (expiresAtEpochMs === undefined || expiresAtEpochMs <= issuedAtEpochMs) reject();
   const storePath = verifierStorePath(values);
-  const previous = await verifierStoreExists(storePath) ? readAuthorityVerifierStore(storePath) : undefined;
-  if (previous?.verifiers.some((record) => record.tokenId === tokenId) || previous?.verifiers.some((record) => record.installationId === installationId && record.scope === scope)) reject();
+  const existing = await verifierStoreExists(storePath) ? readAuthorityVerifierStore(storePath) : undefined;
+  if (existing?.verifiers.some((record) => record.tokenId === tokenId) || existing?.verifiers.some((record) => record.installationId === installationId && record.scope === scope)) reject();
   const secret = await readSecret();
   try {
     await writeKeychainSecret(service, account, secret);
-    const generation = (previous?.generation ?? 0) + 1;
-    await writeUpdatedStore(storePath, previous, [...(previous?.verifiers ?? []), verifierRecord({ tokenId, secret, installationId, scope, laneAllowlist, generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId: null })]);
+    await updateAuthorityVerifierStore(storePath, (previous) => {
+      if (previous?.verifiers.some((record) => record.tokenId === tokenId) || previous?.verifiers.some((record) => record.installationId === installationId && record.scope === scope)) reject();
+      const generation = (previous?.generation ?? 0) + 1;
+      return nextStore(previous, [...(previous?.verifiers ?? []), verifierRecord({ tokenId, secret, installationId, scope, laneAllowlist, generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId: null })]);
+    }, { allowCreate: true });
   } finally {
     secret.fill(0);
   }
@@ -246,14 +245,19 @@ async function rotate(values) {
   const expiresAtEpochMs = optionalInteger(values, "--expires-at-epoch-ms", undefined, 1);
   if (expiresAtEpochMs === undefined || expiresAtEpochMs <= issuedAtEpochMs) reject();
   const storePath = verifierStorePath(values);
-  const previous = readAuthorityVerifierStore(storePath);
-  const oldRecord = previous.verifiers.find((record) => record.tokenId === oldTokenId);
-  if (!oldRecord || oldRecord.revokedAtEpochMs !== null || oldRecord.expiresAtEpochMs <= now || previous.verifiers.some((record) => record.tokenId === tokenId) || previous.verifiers.filter((record) => record.installationId === oldRecord.installationId && record.scope === oldRecord.scope).length >= 2) reject();
+  const existing = readAuthorityVerifierStore(storePath);
+  const existingRecord = existing.verifiers.find((record) => record.tokenId === oldTokenId);
+  if (!existingRecord || existingRecord.revokedAtEpochMs !== null || existingRecord.expiresAtEpochMs <= now || existing.verifiers.some((record) => record.tokenId === tokenId) || existing.verifiers.filter((record) => record.installationId === existingRecord.installationId && record.scope === existingRecord.scope).length >= 2) reject();
   const secret = await readSecret();
   try {
     await writeKeychainSecret(service, account, secret);
-    const generation = previous.generation + 1;
-    await writeUpdatedStore(storePath, previous, [...previous.verifiers, verifierRecord({ tokenId, secret, installationId: oldRecord.installationId, scope: oldRecord.scope, laneAllowlist: [...oldRecord.laneAllowlist], generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId: oldRecord.tokenId })]);
+    await updateAuthorityVerifierStore(storePath, (previous) => {
+      if (!previous) reject();
+      const oldRecord = previous.verifiers.find((record) => record.tokenId === oldTokenId);
+      if (!oldRecord || oldRecord.revokedAtEpochMs !== null || oldRecord.expiresAtEpochMs <= now || previous.verifiers.some((record) => record.tokenId === tokenId) || previous.verifiers.filter((record) => record.installationId === oldRecord.installationId && record.scope === oldRecord.scope).length >= 2) reject();
+      const generation = previous.generation + 1;
+      return nextStore(previous, [...previous.verifiers, verifierRecord({ tokenId, secret, installationId: oldRecord.installationId, scope: oldRecord.scope, laneAllowlist: [...oldRecord.laneAllowlist], generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId: oldRecord.tokenId })]);
+    }, { allowCreate: true });
   } finally {
     secret.fill(0);
   }
@@ -266,17 +270,19 @@ async function revoke(values) {
   const tokenId = hasToken ? assertTokenId(values.get("--token-id")) : undefined;
   const installationId = hasInstallation ? assertUuid(values.get("--installation-id")) : undefined;
   const storePath = verifierStorePath(values);
-  const previous = readAuthorityVerifierStore(storePath);
-  const now = Date.now();
-  let changed = false;
-  const records = previous.verifiers.map((record) => {
-    const matches = tokenId ? record.tokenId === tokenId : record.installationId === installationId;
-    if (!matches || record.revokedAtEpochMs !== null) return record;
-    changed = true;
-    return { ...record, revokedAtEpochMs: now };
-  });
-  if (!changed) reject();
-  await writeUpdatedStore(storePath, previous, records);
+  await updateAuthorityVerifierStore(storePath, (previous) => {
+    if (!previous) reject();
+    const now = Date.now();
+    let changed = false;
+    const records = previous.verifiers.map((record) => {
+      const matches = tokenId ? record.tokenId === tokenId : record.installationId === installationId;
+      if (!matches || record.revokedAtEpochMs !== null) return record;
+      changed = true;
+      return { ...record, revokedAtEpochMs: now };
+    });
+    if (!changed) reject();
+    return nextStore(previous, records);
+  }, { allowCreate: true });
 }
 
 function runOfflineCheck(command, args) {

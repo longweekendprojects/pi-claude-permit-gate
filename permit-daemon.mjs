@@ -120,12 +120,16 @@ function startAuthorityDaemon() {
     const minimumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MIN", 1);
     const maximumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MAX", 2);
     const currentConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_START", 2);
+    const testControls = ["CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS", "CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER", "CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_DELAY_MS", "CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_MARKER", "CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_DELAY_MS", "CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_MARKER", "CLAUDE_PERMIT_GATE_TEST_SHUTDOWN_TIMEOUT_MS"];
+    if (!testMode && testControls.some((name) => process.env[name] !== undefined)) throw new Error("authority configuration is invalid");
     const durableWriteDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS", 0);
     const verifierRecheckDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_DELAY_MS", 0);
+    const verifierFenceDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_DELAY_MS", 0);
     const durableWriteMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER : undefined;
     const verifierRecheckMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_MARKER : undefined;
+    const verifierFenceMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_MARKER : undefined;
     const shutdownTimeoutMs = testMode ? authorityInteger("CLAUDE_PERMIT_GATE_TEST_SHUTDOWN_TIMEOUT_MS", 10_000) : 10_000;
-    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || verifierRecheckDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode || verifierRecheckDelayMs > 0 && !testMode || durableWriteMarker !== undefined && !durableWriteMarker || verifierRecheckMarker !== undefined && !verifierRecheckMarker || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 30_000) throw new Error("authority configuration is invalid");
+    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || verifierRecheckDelayMs > 5_000 || verifierFenceDelayMs > 5_000 || durableWriteMarker !== undefined && !durableWriteMarker || verifierRecheckMarker !== undefined && !verifierRecheckMarker || verifierFenceMarker !== undefined && !verifierFenceMarker || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 30_000) throw new Error("authority configuration is invalid");
     let durableWriteCount = 0;
     configuration = {
       provider,
@@ -143,7 +147,12 @@ function startAuthorityDaemon() {
       shutdownTimeoutMs,
       verifyGenerationSync: () => readAuthorityVerifierStore(configuration.verifierStorePath).generation,
       verifyGeneration: async () => (await readAuthorityVerifierStoreAsync(configuration.verifierStorePath)).generation,
-      runtimeFaultInjector: durableWriteDelayMs === 0 && durableWriteMarker === undefined && verifierRecheckDelayMs === 0 && verifierRecheckMarker === undefined ? undefined : async ({ phase }) => {
+      runtimeFaultInjector: durableWriteDelayMs === 0 && durableWriteMarker === undefined && verifierRecheckDelayMs === 0 && verifierRecheckMarker === undefined && verifierFenceDelayMs === 0 && verifierFenceMarker === undefined ? undefined : async ({ phase }) => {
+        if (phase === "before-verifier-fence") {
+          if (verifierFenceMarker !== undefined) await fs.promises.writeFile(verifierFenceMarker, "ready", { mode: 0o600 });
+          if (verifierFenceDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, verifierFenceDelayMs));
+          return;
+        }
         if (phase === "before-verifier-recheck") {
           if (verifierRecheckMarker !== undefined) await fs.promises.writeFile(verifierRecheckMarker, "ready", { mode: 0o600 });
           if (verifierRecheckDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, verifierRecheckDelayMs));

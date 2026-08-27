@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthorityError, authorityVerifierPath, openAuthorityState, writeAuthorityVerifierStore } from "../authority-state.mjs";
+import { AuthorityError, authenticateAuthorityBearer, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, writeAuthorityVerifierStore } from "../authority-state.mjs";
 import { ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -149,10 +149,10 @@ function authorityAdminEnvironment(home) {
   };
 }
 
-async function runAuthorityAdmin(home, args, secret) {
+async function runAuthorityAdmin(home, args, secret, overrides = {}) {
   const input = secret ? Buffer.from(`${secret.toString("base64url")}\n`) : undefined;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [authorityAdminPath, ...args], { env: authorityAdminEnvironment(home), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [authorityAdminPath, ...args], { env: { ...authorityAdminEnvironment(home), ...overrides }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -422,11 +422,10 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
     const result = await runAuthorityAdmin(sharedHome, ["bootstrap", "--provider", provider, "--port", String(sharedPorts[index]), "--state-dir", sharedStateDirectory]);
     assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null });
   }
-  const verifierRecheckMarker = path.join(sharedHome, "verifier-recheck");
   const sharedDaemons = [];
   t.after(async () => { await Promise.all(sharedDaemons.map(stopChild)); await fs.rm(sharedHome, { recursive: true, force: true }); });
   for (const [index, provider] of providers.entries()) {
-    sharedDaemons.push(await startSharedAuthority(sharedHome, sharedStateDirectory, provider, sharedPorts[index], laneBindings.get(provider), bearer("permit-one", tokenOne), provider === "anthropic-a" ? { CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_MARKER: verifierRecheckMarker, CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_DELAY_MS: "1000" } : {}));
+    sharedDaemons.push(await startSharedAuthority(sharedHome, sharedStateDirectory, provider, sharedPorts[index], laneBindings.get(provider), bearer("permit-one", tokenOne)));
   }
   const sharedCreate = (installationId, provider, accountBindingId, requestId) => ({ schemaVersion: 1, provider, accountBindingId, installationId, sessionId: crypto.randomUUID(), requestId, createdAtEpochMs: Date.now() });
   const laneAStatePath = path.join(sharedStateDirectory, `lane-${sharedPorts[0]}.json`);
@@ -446,12 +445,10 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(await fs.readFile(laneAStatePath, "utf8"), laneABeforeDenials); assert.equal(await fs.readFile(laneBStatePath, "utf8"), laneBBeforeDenials);
 
   const precommitState = await fs.readFile(laneAStatePath, "utf8");
-  const revokedCreate = request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", laneBindings.get("anthropic-a"), crypto.randomUUID()), { authorization: bearer("permit-one", tokenOne) });
-  await eventually(async () => (await fs.readFile(verifierRecheckMarker, "utf8")) === "ready", "mutation did not reach the verifier recheck");
   const storeBeforeRevocation = await fs.readFile(verifierStore);
   const revokeResult = await runAuthorityAdmin(sharedHome, ["revoke", "--installation-id", installationOne]);
   assert.deepEqual({ code: revokeResult.code, signal: revokeResult.signal }, { code: 0, signal: null });
-  const revokedCreateResult = await revokedCreate;
+  const revokedCreateResult = await request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", laneBindings.get("anthropic-a"), crypto.randomUUID()), { authorization: bearer("permit-one", tokenOne) });
   assert.equal(revokedCreateResult.status, 401); assert.equal(revokedCreateResult.body.error.code, "unauthenticated"); assert.equal(await fs.readFile(laneAStatePath, "utf8"), precommitState);
   const storeAfterRevocation = await fs.readFile(verifierStore);
   assert.equal(JSON.parse(storeAfterRevocation).generation, JSON.parse(storeBeforeRevocation).generation + 1);
@@ -485,6 +482,133 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   const malformed = await request(sharedPorts[0], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
   assert.equal(malformed.status, 503); assert.equal(malformed.body.error.code, "verifier_unavailable");
   await fs.writeFile(verifierStore, storeAfterRotation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+
+  const concurrentVerifiers = [
+    { tokenId: "fence-enroll-one", secret: crypto.randomBytes(32), installationId: authorityUuid(820) },
+    { tokenId: "fence-enroll-two", secret: crypto.randomBytes(32), installationId: authorityUuid(821) },
+    { tokenId: "fence-rotate-one", secret: crypto.randomBytes(32), installationId: authorityUuid(822) },
+    { tokenId: "fence-rotate-two", secret: crypto.randomBytes(32), installationId: authorityUuid(823) },
+    { tokenId: "fence-revoke-one", secret: crypto.randomBytes(32), installationId: authorityUuid(824) },
+    { tokenId: "fence-revoke-two", secret: crypto.randomBytes(32), installationId: authorityUuid(825) },
+  ];
+  const beforeConcurrentEnrollment = JSON.parse(await fs.readFile(verifierStore, "utf8"));
+  const enrollmentResults = await Promise.all(concurrentVerifiers.map(async ({ tokenId, secret, installationId }) => ({ secret, result: await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", installationId, "--scope", "permit:mutate", "--lanes", providers.join(","), "--token-id", tokenId, "--keychain-service", "test.authority", "--keychain-account", `${tokenId}.account`, "--expires-at-epoch-ms", String(Date.now() + 3_600_000)], secret) })));
+  for (const { secret, result } of enrollmentResults) {
+    assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null });
+    assert.equal(result.stdout.includes(secret.toString("base64url")), false); assert.equal(result.stderr.includes(secret.toString("base64url")), false);
+  }
+  const afterConcurrentEnrollment = JSON.parse(await fs.readFile(verifierStore, "utf8"));
+  assert.equal(afterConcurrentEnrollment.generation, beforeConcurrentEnrollment.generation + concurrentVerifiers.length);
+  for (const { tokenId } of concurrentVerifiers) assert(afterConcurrentEnrollment.verifiers.some((record) => record.tokenId === tokenId));
+
+  const rotatedVerifiers = [
+    { source: concurrentVerifiers[2], tokenId: "fence-rotate-one-next", secret: crypto.randomBytes(32) },
+    { source: concurrentVerifiers[3], tokenId: "fence-rotate-two-next", secret: crypto.randomBytes(32) },
+  ];
+  const beforeConcurrentUpdates = afterConcurrentEnrollment.generation;
+  const concurrentUpdateResults = await Promise.all([
+    ...rotatedVerifiers.map(async ({ source, tokenId, secret }) => ({ secret, result: await runAuthorityAdmin(sharedHome, ["rotate", "--old-token-id", source.tokenId, "--new-token-id", tokenId, "--keychain-service", "test.authority", "--keychain-account", `${tokenId}.account`, "--expires-at-epoch-ms", String(Date.now() + 3_600_000)], secret) })),
+    ...concurrentVerifiers.slice(4).map(async ({ tokenId }) => ({ result: await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", tokenId]) })),
+  ]);
+  for (const { result } of concurrentUpdateResults) assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null });
+  const afterConcurrentUpdates = JSON.parse(await fs.readFile(verifierStore, "utf8"));
+  assert.equal(afterConcurrentUpdates.generation, beforeConcurrentUpdates + concurrentUpdateResults.length);
+  for (const { tokenId } of rotatedVerifiers) assert(afterConcurrentUpdates.verifiers.some((record) => record.tokenId === tokenId));
+  for (const { tokenId } of concurrentVerifiers.slice(4)) assert.notEqual(afterConcurrentUpdates.verifiers.find((record) => record.tokenId === tokenId).revokedAtEpochMs, null);
+
+  const verifierFence = authorityVerifierFencePath(verifierStore);
+  const verifierFenceDirectory = path.dirname(verifierFence);
+  const fenceOwner = (pid) => ({ schemaVersion: 1, ownerToken: crypto.randomBytes(32).toString("hex"), pid, uid: process.getuid(), createdAtEpochMs: Date.now(), processUptimeMs: Math.floor(process.uptime() * 1_000) });
+  const liveFenceOwner = fenceOwner(process.pid);
+  await fs.writeFile(verifierFence, `${JSON.stringify(liveFenceOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
+  assert.equal((await fs.lstat(verifierFence)).mode & 0o777, 0o600); assert.equal((await fs.lstat(verifierFenceDirectory)).mode & 0o077, 0);
+  const liveFenceStore = await fs.readFile(verifierStore, "utf8");
+  const liveFenceStartedAt = Date.now();
+  const liveFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId], undefined, { CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_TIMEOUT_MS: "100" });
+  assert.notEqual(liveFenceResult.code, 0); assert(Date.now() - liveFenceStartedAt >= 50); assert.equal(await fs.readFile(verifierStore, "utf8"), liveFenceStore); assert.equal(await fs.readFile(verifierFence, "utf8"), `${JSON.stringify(liveFenceOwner)}\n`);
+  await fs.unlink(verifierFence);
+
+  const crashedHolder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await new Promise((resolve, reject) => { crashedHolder.once("error", reject); crashedHolder.once("exit", resolve); });
+  const crashedFenceOwner = fenceOwner(crashedHolder.pid);
+  await fs.writeFile(verifierFence, `${JSON.stringify(crashedFenceOwner)}\n`, { mode: 0o600 }); await fs.chmod(verifierFence, 0o600);
+  const recoveredFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[1].tokenId]);
+  assert.deepEqual({ code: recoveredFenceResult.code, signal: recoveredFenceResult.signal }, { code: 0, signal: null });
+  assert.notEqual(JSON.parse(await fs.readFile(verifierStore, "utf8")).verifiers.find((record) => record.tokenId === concurrentVerifiers[1].tokenId).revokedAtEpochMs, null);
+  await assert.rejects(fs.lstat(verifierFence), { code: "ENOENT" });
+
+  const unsafeFenceTarget = path.join(sharedHome, "unsafe-verifier-fence-target");
+  await fs.writeFile(unsafeFenceTarget, "unchanged", { mode: 0o600 }); await fs.symlink(unsafeFenceTarget, verifierFence);
+  const symlinkFenceStore = await fs.readFile(verifierStore, "utf8");
+  const symlinkFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId]);
+  assert.notEqual(symlinkFenceResult.code, 0); assert.equal((await fs.lstat(verifierFence)).isSymbolicLink(), true); assert.equal(await fs.readFile(unsafeFenceTarget, "utf8"), "unchanged"); assert.equal(await fs.readFile(verifierStore, "utf8"), symlinkFenceStore);
+  await fs.unlink(verifierFence);
+  const permissiveFenceOwner = fenceOwner(process.pid);
+  await fs.writeFile(verifierFence, `${JSON.stringify(permissiveFenceOwner)}\n`, { mode: 0o644 }); await fs.chmod(verifierFence, 0o644);
+  const permissiveFenceStore = await fs.readFile(verifierStore, "utf8");
+  const permissiveFenceResult = await runAuthorityAdmin(sharedHome, ["revoke", "--token-id", concurrentVerifiers[0].tokenId]);
+  assert.notEqual(permissiveFenceResult.code, 0); assert.equal((await fs.lstat(verifierFence)).mode & 0o777, 0o644); assert.equal(await fs.readFile(verifierStore, "utf8"), permissiveFenceStore);
+  await fs.unlink(verifierFence);
+
+  const timingPrincipals = [authorityPrincipal(890), authorityPrincipal(891), authorityPrincipal(892)];
+  const timingCredentials = timingPrincipals.map((principal) => authorityToken(principal));
+  const timingStore = { schemaVersion: 1, generation: 1, verifiers: timingPrincipals.map((principal) => authorityVerifierRecord(principal, "permit:mutate")) };
+  const measureBearerWork = (tokenId, secret) => {
+    let candidateChecks = 0;
+    const comparisons = [];
+    const measuredStore = {
+      ...timingStore,
+      verifiers: new Proxy([...timingStore.verifiers], {
+        get(target, property, receiver) {
+          if (property === Symbol.iterator) return function* iterateVerifiers() { for (const candidate of target) { candidateChecks++; yield candidate; } };
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    };
+    const timingSafeEqual = crypto.timingSafeEqual;
+    crypto.timingSafeEqual = (left, right) => { comparisons.push([left.length, right.length]); return timingSafeEqual(left, right); };
+    try {
+      const value = authenticateAuthorityBearer(`Bearer ${tokenId}.${secret.toString("base64url")}`, measuredStore);
+      return { candidateChecks, comparisons, value };
+    } catch (error) {
+      return { candidateChecks, comparisons, error };
+    } finally {
+      crypto.timingSafeEqual = timingSafeEqual;
+    }
+  };
+  const timingUnknownSecret = crypto.randomBytes(32);
+  const unknownBearerWork = measureBearerWork("unknown-timing-id", timingUnknownSecret);
+  const firstBearerWork = measureBearerWork(timingCredentials[0].tokenId, timingCredentials[0].secret);
+  const lastBearerWork = measureBearerWork(timingCredentials.at(-1).tokenId, timingCredentials.at(-1).secret);
+  assert.equal(unknownBearerWork.error.code, "unauthenticated"); assert.equal(firstBearerWork.value.tokenId, timingCredentials[0].tokenId); assert.equal(lastBearerWork.value.tokenId, timingCredentials.at(-1).tokenId);
+  assert.deepEqual([unknownBearerWork.candidateChecks, firstBearerWork.candidateChecks, lastBearerWork.candidateChecks], Array(3).fill(timingStore.verifiers.length * 3));
+  for (const work of [unknownBearerWork, firstBearerWork, lastBearerWork]) assert.deepEqual(work.comparisons, [[32, 32]]);
+
+  const revocationFirstMarker = path.join(sharedHome, "revocation-first-fence");
+  const revocationFirstGate = await authorityDaemon(t, { CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_MARKER: revocationFirstMarker, CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_DELAY_MS: "500" });
+  const revocationFirstState = await fs.readFile(revocationFirstGate.statePath, "utf8");
+  const revocationFirstMutation = request(revocationFirstGate.port, "POST", "/v1/tickets", ticketCreate(revocationFirstGate.principal, { session: authorityUuid(893), request: authorityUuid(894), now: Date.now() }), authorityHeaders(revocationFirstGate.principal));
+  await eventually(async () => (await fs.readFile(revocationFirstMarker, "utf8")) === "ready", "mutation did not pause before the verifier fence");
+  const revocationFirstResult = await runAuthorityAdmin(revocationFirstGate.home, ["revoke", "--token-id", authorityToken(revocationFirstGate.principal).tokenId]);
+  const revocationFirstResponse = await revocationFirstMutation;
+  assert.deepEqual({ code: revocationFirstResult.code, signal: revocationFirstResult.signal }, { code: 0, signal: null });
+  assert.equal(revocationFirstResponse.status, 401); assert.equal(revocationFirstResponse.body.error.code, "unauthenticated"); assert.equal(await fs.readFile(revocationFirstGate.statePath, "utf8"), revocationFirstState);
+
+  const mutationFirstMarker = path.join(sharedHome, "mutation-first-write");
+  const mutationFirstGate = await authorityDaemon(t, { CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS: "500", CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER: mutationFirstMarker });
+  const mutationFirstMutation = request(mutationFirstGate.port, "POST", "/v1/tickets", ticketCreate(mutationFirstGate.principal, { session: authorityUuid(895), request: authorityUuid(896), now: Date.now() }), authorityHeaders(mutationFirstGate.principal));
+  await eventually(async () => (await fs.readFile(mutationFirstMarker, "utf8")) === "1", "mutation did not reach the durable lane write");
+  let mutationFirstRevocationSettled = false;
+  const mutationFirstRevocation = runAuthorityAdmin(mutationFirstGate.home, ["revoke", "--token-id", authorityToken(mutationFirstGate.principal).tokenId]).then((result) => { mutationFirstRevocationSettled = true; return result; });
+  await delay(100);
+  assert.equal(mutationFirstRevocationSettled, false);
+  const mutationFirstResponse = await mutationFirstMutation;
+  const mutationFirstState = JSON.parse(await fs.readFile(mutationFirstGate.statePath, "utf8"));
+  const mutationFirstResult = await mutationFirstRevocation;
+  assert.equal(mutationFirstResponse.status, 201); assert(mutationFirstState.tickets[mutationFirstResponse.body.ticketId]); assert.deepEqual({ code: mutationFirstResult.code, signal: mutationFirstResult.signal }, { code: 0, signal: null });
+  const mutationFirstStore = JSON.parse(await fs.readFile(mutationFirstGate.verifierStore, "utf8"));
+  assert(mutationFirstState.verifierGeneration < mutationFirstStore.generation);
+
   const expiredToken = crypto.randomBytes(32);
   const expiredEnrollment = await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", authorityUuid(813), "--scope", "snapshot:read", "--lanes", providers.join(","), "--token-id", "expired-read", "--keychain-service", "test.authority", "--keychain-account", "expired-read.account", "--expires-at-epoch-ms", String(Date.now() + 100)], expiredToken);
   assert.equal(expiredEnrollment.code, 0); await delay(150);
@@ -526,8 +650,9 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   const reconciledState = JSON.parse(await fs.readFile(adminStatePath, "utf8"));
   assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].state, "released"); assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].terminalReason, "operator_reconciled"); assert.equal((await fs.stat(backupPath)).mode & 0o777, 0o600);
   const persistedText = `${await fs.readFile(verifierStore, "utf8")}\n${await fs.readFile(adminStatePath, "utf8")}\n${await fs.readFile(backupPath, "utf8")}`;
-  for (const secret of [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken]) assert.equal(persistedText.includes(secret.toString("base64url")), false);
-  for (const secret of [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken]) secret.fill(0);
+  const persistedSecrets = [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken, ...concurrentVerifiers.map(({ secret }) => secret), ...rotatedVerifiers.map(({ secret }) => secret)];
+  for (const secret of persistedSecrets) assert.equal(persistedText.includes(secret.toString("base64url")), false);
+  for (const secret of [...persistedSecrets, timingUnknownSecret, ...timingCredentials.map(({ secret }) => secret)]) secret.fill(0);
 });
 
 test("authority quarantines missed renewals and restores only an acknowledged matching lease", async (t) => {

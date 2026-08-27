@@ -28,6 +28,10 @@ const MAX_VERIFIER_RECORDS = 192;
 const MAX_VERIFIERS_PER_INSTALLATION_SCOPE = 2;
 const TOKEN_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 const VERIFIER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const VERIFIER_FENCE_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+const VERIFIER_FENCE_TIMEOUT_MS = 3_000;
+const VERIFIER_FENCE_RETRY_MS = 25;
+const DUMMY_VERIFIER_SHA256 = crypto.createHash("sha256").update("claude-permit-authority-dummy-verifier").digest();
 
 const ERROR_STATUS = Object.freeze({
   invalid_json: 400,
@@ -206,17 +210,228 @@ function validateVerifierEvolution(previous, next) {
   }
 }
 
-export async function writeAuthorityVerifierStore(file, store, { allowCreate = false, expectedGeneration } = {}) {
-  const next = validateVerifierStore(store);
-  const current = await readVerifierSnapshot(file, { allowMissing: allowCreate });
-  if (current === undefined) {
-    if (!allowCreate || expectedGeneration !== undefined) throw verifierFault();
-  } else {
-    if (expectedGeneration !== current.store.generation) throw verifierFault();
-    validateVerifierEvolution(current.store, next);
+function sameFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function currentUid() {
+  if (typeof process.getuid !== "function") throw verifierFault();
+  const uid = process.getuid();
+  if (!isSafeInteger(uid, 0)) throw verifierFault();
+  return uid;
+}
+
+function isSafeFenceArtifact(stat) {
+  return stat.isFile() && !stat.isSymbolicLink() && stat.uid === currentUid() && (stat.mode & 0o077) === 0;
+}
+
+function fenceOwner(value) {
+  if (!hasExactKeys(value, ["schemaVersion", "ownerToken", "pid", "uid", "createdAtEpochMs", "processUptimeMs"]) || value.schemaVersion !== 1 || !VERIFIER_FENCE_TOKEN_PATTERN.test(value.ownerToken) || !isSafeInteger(value.pid, 1) || !isSafeInteger(value.uid, 0) || value.uid !== currentUid() || !isEpochMs(value.createdAtEpochMs) || !isSafeInteger(value.processUptimeMs, 0)) return undefined;
+  return value;
+}
+
+function sameFenceOwner(left, right) {
+  return left.ownerToken === right.ownerToken && left.pid === right.pid && left.uid === right.uid && left.createdAtEpochMs === right.createdAtEpochMs && left.processUptimeMs === right.processUptimeMs;
+}
+
+function newFenceOwner() {
+  return {
+    schemaVersion: 1,
+    ownerToken: crypto.randomBytes(32).toString("hex"),
+    pid: process.pid,
+    uid: currentUid(),
+    createdAtEpochMs: Date.now(),
+    processUptimeMs: Math.floor(process.uptime() * 1_000),
+  };
+}
+
+function verifierFenceTiming() {
+  const override = process.env.CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_TIMEOUT_MS;
+  if (override === undefined) return { timeoutMs: VERIFIER_FENCE_TIMEOUT_MS, retryMs: VERIFIER_FENCE_RETRY_MS };
+  if (process.env.CLAUDE_PERMIT_GATE_TEST_MODE !== "1" || !/^\d+$/.test(override)) throw verifierFault();
+  const timeoutMs = Number(override);
+  if (!isSafeInteger(timeoutMs, 50, 5_000)) throw verifierFault();
+  return { timeoutMs, retryMs: Math.min(VERIFIER_FENCE_RETRY_MS, timeoutMs) };
+}
+
+export function authorityVerifierFencePath(file) {
+  if (typeof file !== "string" || !file) throw verifierFault();
+  return `${path.resolve(file)}.lock`;
+}
+
+async function ensureVerifierFenceDirectory(file) {
+  const directory = path.dirname(file);
+  try {
+    await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
+    let stat = await fsPromises.lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== currentUid()) throw verifierFault();
+    if ((stat.mode & 0o077) !== 0) await fsPromises.chmod(directory, 0o700);
+    stat = await fsPromises.lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== currentUid() || (stat.mode & 0o077) !== 0) throw verifierFault();
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
   }
-  await writeDurableJson(file, next);
-  return next;
+}
+
+async function readVerifierFenceArtifact(file) {
+  let stat;
+  try {
+    stat = await fsPromises.lstat(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { kind: "missing" };
+    throw verifierFault();
+  }
+  if (!isSafeFenceArtifact(stat)) return { kind: "unsafe" };
+  let raw;
+  try {
+    raw = await fsPromises.readFile(file, "utf8");
+    const after = await fsPromises.lstat(file);
+    if (!sameFile(stat, after) || !isSafeFenceArtifact(after)) return { kind: "unsafe" };
+    const owner = fenceOwner(JSON.parse(raw));
+    return owner ? { kind: "valid", owner, stat: after } : { kind: "unsafe" };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { kind: "missing" };
+    return { kind: "unsafe" };
+  }
+}
+
+async function createVerifierFenceArtifact(file, owner) {
+  const directory = path.dirname(file);
+  const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.fence`);
+  let descriptor;
+  try {
+    descriptor = await fsPromises.open(temporary, "wx", 0o600);
+    await descriptor.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+    await descriptor.chmod(0o600);
+    await descriptor.sync();
+    await descriptor.close();
+    descriptor = undefined;
+    await fsPromises.link(temporary, file);
+    await fsyncDirectory(directory);
+    return true;
+  } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw verifierFault();
+  } finally {
+    if (descriptor) try { await descriptor.close(); } catch {}
+    try { await fsPromises.unlink(temporary); } catch {}
+  }
+}
+
+function ownerIsConclusiveDead(owner) {
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+}
+
+async function removeVerifierFenceArtifact(file, expectedOwner, expectedStat) {
+  const observed = await readVerifierFenceArtifact(file);
+  if (observed.kind !== "valid" || !sameFenceOwner(observed.owner, expectedOwner) || expectedStat && !sameFile(observed.stat, expectedStat)) throw verifierFault();
+  let witness;
+  const witnessPath = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.release`);
+  try {
+    await fsPromises.link(file, witnessPath);
+    witness = await readVerifierFenceArtifact(witnessPath);
+    const current = await readVerifierFenceArtifact(file);
+    if (witness.kind !== "valid" || current.kind !== "valid" || !sameFenceOwner(witness.owner, expectedOwner) || !sameFenceOwner(current.owner, expectedOwner) || !sameFile(witness.stat, current.stat) || expectedStat && !sameFile(current.stat, expectedStat)) throw verifierFault();
+    await fsPromises.unlink(file);
+    await fsyncDirectory(path.dirname(file));
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
+  } finally {
+    try { await fsPromises.unlink(witnessPath); } catch {}
+  }
+}
+
+async function reclaimDeadVerifierFence(file, observed) {
+  if (!ownerIsConclusiveDead(observed.owner)) return false;
+  const directory = path.dirname(file);
+  const recoveryPath = path.join(directory, `.${path.basename(file)}.${observed.owner.ownerToken}.recovery`);
+  let linked = false;
+  try {
+    try {
+      await fsPromises.link(file, recoveryPath);
+      linked = true;
+    } catch (error) {
+      if (error?.code === "EEXIST" || error?.code === "ENOENT") return false;
+      throw error;
+    }
+    const current = await readVerifierFenceArtifact(file);
+    const recovery = await readVerifierFenceArtifact(recoveryPath);
+    if (current.kind !== "valid" || recovery.kind !== "valid" || !sameFenceOwner(current.owner, observed.owner) || !sameFenceOwner(recovery.owner, observed.owner) || !sameFile(current.stat, recovery.stat) || !sameFile(current.stat, observed.stat) || !ownerIsConclusiveDead(current.owner)) return false;
+    await fsPromises.unlink(file);
+    await fsyncDirectory(directory);
+    return true;
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
+  } finally {
+    if (linked) {
+      const recovery = await readVerifierFenceArtifact(recoveryPath);
+      if (recovery.kind === "valid" && sameFenceOwner(recovery.owner, observed.owner)) {
+        try { await fsPromises.unlink(recoveryPath); await fsyncDirectory(directory); } catch {}
+      }
+    }
+  }
+}
+
+const waitForVerifierFence = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function withAuthorityVerifierFence(file, operation) {
+  if (typeof operation !== "function") throw verifierFault();
+  const fencePath = authorityVerifierFencePath(file);
+  const owner = newFenceOwner();
+  const { timeoutMs, retryMs } = verifierFenceTiming();
+  const deadline = Date.now() + timeoutMs;
+  let acquired = false;
+  try {
+    await ensureVerifierFenceDirectory(fencePath);
+    while (Date.now() < deadline) {
+      if (await createVerifierFenceArtifact(fencePath, owner)) {
+        acquired = true;
+        break;
+      }
+      const observed = await readVerifierFenceArtifact(fencePath);
+      if (observed.kind === "unsafe") throw verifierFault();
+      if (observed.kind === "valid" && ownerIsConclusiveDead(observed.owner)) await reclaimDeadVerifierFence(fencePath, observed);
+      await waitForVerifierFence(retryMs);
+    }
+    if (!acquired) throw verifierFault();
+    return await operation();
+  } finally {
+    if (acquired) await removeVerifierFenceArtifact(fencePath, owner);
+  }
+}
+
+export async function updateAuthorityVerifierStore(file, update, { allowCreate = false } = {}) {
+  if (typeof update !== "function") throw verifierFault();
+  return withAuthorityVerifierFence(file, async () => {
+    const current = await readVerifierSnapshot(file, { allowMissing: allowCreate });
+    const next = validateVerifierStore(await update(current?.store));
+    if (current === undefined) {
+      if (!allowCreate) throw verifierFault();
+    } else {
+      validateVerifierEvolution(current.store, next);
+    }
+    await writeDurableJson(file, next);
+    return next;
+  });
+}
+
+export async function writeAuthorityVerifierStore(file, store, { allowCreate = false, expectedGeneration } = {}) {
+  return updateAuthorityVerifierStore(file, (current) => {
+    if (current === undefined) {
+      if (!allowCreate || expectedGeneration !== undefined) throw verifierFault();
+    } else if (expectedGeneration !== current.generation) {
+      throw verifierFault();
+    }
+    return store;
+  }, { allowCreate });
 }
 
 export function authenticateAuthorityBearer(authorization, store, { requiredScope, provider, now = Date.now() } = {}) {
@@ -227,8 +442,11 @@ export function authenticateAuthorityBearer(authorization, store, { requiredScop
   const secret = Buffer.from(match[2], "base64url");
   if (secret.length !== 32) throw verifierUnauthorized();
   const digest = crypto.createHash("sha256").update(secret).digest();
-  const record = store.verifiers.find((candidate) => candidate.tokenId === match[1]);
-  if (!record || !crypto.timingSafeEqual(Buffer.from(record.verifierSha256, "hex"), digest) || record.revokedAtEpochMs !== null || now < record.issuedAtEpochMs || now >= record.expiresAtEpochMs) throw verifierUnauthorized();
+  let record;
+  for (const candidate of store.verifiers) if (candidate.tokenId === match[1]) record = candidate;
+  const verifier = record ? Buffer.from(record.verifierSha256, "hex") : DUMMY_VERIFIER_SHA256;
+  const digestMatches = crypto.timingSafeEqual(verifier, digest);
+  if (!record || !digestMatches || record.revokedAtEpochMs !== null || now < record.issuedAtEpochMs || now >= record.expiresAtEpochMs) throw verifierUnauthorized();
   if (requiredScope !== undefined && record.scope !== requiredScope) throw new AuthorityError("forbidden_scope", { message: "scope is not allowed" });
   if (provider !== undefined && !record.laneAllowlist.includes(provider)) throw new AuthorityError("forbidden_lane", { message: "lane is not allowed" });
   return { installationId: record.installationId, providers: [...record.laneAllowlist], scope: record.scope, tokenId: record.tokenId, verifierGeneration: store.generation };
@@ -1067,6 +1285,7 @@ function normalizeConfiguration(options) {
   if (options.authorityId !== undefined && !isUuid(options.authorityId)) throw new StateFault("authority identifier is invalid");
   const verifierGeneration = options.verifierGeneration ?? 1;
   if (!isSafeInteger(verifierGeneration, 1)) throw new StateFault("verifier generation is invalid");
+  if (options.verifierStorePath !== undefined && (typeof options.verifierStorePath !== "string" || !options.verifierStorePath)) throw new StateFault("verifier store path is invalid");
   if (options.verifyGeneration !== undefined && typeof options.verifyGeneration !== "function" || options.verifyGenerationSync !== undefined && typeof options.verifyGenerationSync !== "function") throw new StateFault("verifier generation checker is invalid");
   return {
     statePath: options.statePath,
@@ -1078,6 +1297,7 @@ function normalizeConfiguration(options) {
     currentConcurrency,
     authorityId: options.authorityId,
     verifierGeneration,
+    verifierStorePath: options.verifierStorePath,
     verifyGeneration: options.verifyGeneration,
     verifyGenerationSync: options.verifyGenerationSync,
     allowTestPort: options.allowTestPort === true,
@@ -1156,20 +1376,21 @@ export class AuthorityState {
 
   async _commit(next, verifyGeneration) {
     await this._assertStoredHeader();
-    let generation = this.configuration.verifierGeneration;
-    try {
+    const commit = async () => {
+      let generation = this.configuration.verifierGeneration;
       await invokeFaultAsync(this.configuration.runtimeFaultInjector, "before-verifier-recheck", this.configuration.statePath);
       if (verifyGeneration ?? this.configuration.verifyGeneration) generation = await (verifyGeneration ?? this.configuration.verifyGeneration)();
       if (!isSafeInteger(generation, 1) || generation < this.state.verifierGeneration) throw verifierFault();
-    } catch (error) {
-      if (error instanceof AuthorityError && ["unauthenticated", "forbidden_scope", "forbidden_lane"].includes(error.code)) throw error;
-      this._degrade(error);
-    }
-    try {
       next.verifierGeneration = generation;
       validateState(next, this.configuration);
       await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
+    };
+    try {
+      await invokeFaultAsync(this.configuration.runtimeFaultInjector, "before-verifier-fence", this.configuration.statePath);
+      if (this.configuration.verifierStorePath) await withAuthorityVerifierFence(this.configuration.verifierStorePath, commit);
+      else await commit();
     } catch (error) {
+      if (error instanceof AuthorityError && ["unauthenticated", "forbidden_scope", "forbidden_lane"].includes(error.code)) throw error;
       this._degrade(error);
     }
     this.state = next;
