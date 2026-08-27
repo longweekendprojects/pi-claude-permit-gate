@@ -280,6 +280,21 @@ Both Macs now schedule A-D permits through the single authority on Ruminaider. N
 
 `~/Repositories/pi-dotfiles/settings.json` still pins `v0.2.0`. Syncing dotfiles to either Mac reverts the pin and reproduces the local-mode hang. That repository is out of scope for this work and needs the pin updated to `v0.3.0` by its owner. The `launchctl setenv` values for GUI-launched processes also do not survive a reboot; terminal-launched Pi is covered by `~/.zshenv` on both machines.
 
+### Monitor convergence, 13:36 EDT
+
+Both menus now run the shared-authority build and read authority-accepted allowance. Ruminaider's old local-only build (`a8aec3f2`) was quit and replaced with `2950c852`, matching the peer. Both processes are running (`4025` on Ruminaider, `24490` on the peer).
+
+Authority-held allowance at 13:36, read through `/v1/snapshot`:
+
+| Lane | observedAt | fiveHour | sevenDay |
+| --- | --- | --- | --- |
+| A (8791) | 13:31 today | rejected, utilization 1.00 | allowed, 0.24 |
+| B (8792) | 2026-08-26 | allowed, 0.27 | allowed_warning, 0.99 |
+| C (8793) | null | null | null |
+| D (8794) | null | null | null |
+
+Both Macs read these same authority-held values, so the menus no longer show divergent local-only observations. Null lanes are correct rather than broken: an allowance observation only exists after a real provider response on that lane, and C and D have had no traffic since cutover. They populate on first use. Lane A's `rejected` five-hour window is a genuine last-observed signal from that account, not a synthesized value.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
