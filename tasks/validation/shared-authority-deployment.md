@@ -321,6 +321,41 @@ Result at 13:40, all four lanes fresh within one second of each other:
 
 A lane whose OAuth token has expired is skipped and retried on the next run; token refresh belongs to Pi and the prober never performs it.
 
+### Lane A wedged by uncertain tickets, 14:05 EDT
+
+Lane A stopped granting permits entirely: `active=0` but `uncertain=2` on a `maximumConcurrency: 2` lane, with 3 tickets queued behind them. All five belonged to the peer installation `dad5f319` and were 24 minutes old. Lanes B, C, and D were clean, so the "all lanes stuck" symptom was one wedged lane plus clients waiting on it.
+
+An uncertain ticket is a client that began provider work and never acknowledged completion, which happens when a session is killed mid-request. It consumes capacity and never self-releases, by design: the authority cannot fence an Anthropic request that already started. Two of them on a max-2 lane is total capacity loss with no self-recovery.
+
+Recovery required the lane offline, since `reconcile` runs through `withOfflineLane`:
+
+```sh
+launchctl bootout gui/$(id -u)/com.longweekendprojects.claude-permit-lane.anthropic-a
+node scripts/authority-admin.mjs reconcile --provider anthropic-a --ticket-id <id> \
+  --backup-path /tmp/lane-a-backup/<id>.json --approve-uncertain-reconciliation
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.longweekendprojects.claude-permit-lane.anthropic-a.plist
+```
+
+Both tickets reconciled, the lane returned `uncertain: 0`, and the queue drained. State backups are in `/tmp/lane-a-backup/`.
+
+### Telemetry, 14:10 EDT
+
+Nothing was watching, so a 24-minute total outage on one lane went unnoticed. `scripts/authority-exporter.mjs` serves Prometheus text on `127.0.0.1:9713/metrics` under `com.longweekendprojects.claude-authority-exporter` (`KeepAlive`), exposing 12 metric families across all four lanes: active, offered, uncertain, and queued tickets; current and maximum concurrency; cooldown remaining; oldest queue wait; lane up; and allowance utilisation, reset, and observation age.
+
+Netdata scrapes it every 10 seconds through `go.d/prometheus.conf` as job `claude_permit_authority`. Three alarms are live:
+
+| Alarm | Warn | Critical | Catches |
+| --- | --- | --- | --- |
+| `claude_lane_uncertain_tickets` | > 0 | >= 2 | The failure above, at the first orphaned slot rather than at total capacity loss |
+| `claude_lane_allowance_stale` | > 600s | > 1800s | Allowance prober stopped, menus silently drifting stale |
+| `claude_lane_queue_stalled` | > 300s | > 900s | A queue that never drains, meaning capacity is gone rather than busy |
+
+Two Netdata details cost several reload cycles: health templates match on chart *context* (`prometheus.claude_permit_authority.<metric>`), not the chart id, which carries per-label suffixes; and `lookup` needs an explicit `of <dimension>` because the prometheus collector names each dimension after its metric. Alarms only registered after a full service restart, not a `USR2` reload. Configuration templates are checked into `deploy/netdata/`.
+
+### Allowance syncer, 14:00 EDT
+
+Pi's footer reads `~/.pi/agent/usage-windows/<provider>.json`, which only that machine's own sessions write when they receive `anthropic-ratelimit-unified-*` headers. An idle machine therefore showed ageing observations even though the authority was current within 90 seconds. `scripts/allowance-syncer.mjs` writes authority-held allowance into those same files every 60 seconds on both Macs, using the atomic temp-and-rename the extension itself uses, so running sessions pick it up through the existing file watcher without a restart. A file is only overwritten when the authority observation is strictly newer, so a live local response always wins.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
