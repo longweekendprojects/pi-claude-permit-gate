@@ -95,6 +95,19 @@ All four digests are distinct, so the four lanes are four different accounts on 
 
 The peer runs the same check from a scratch clone of the `v0.3.0` tag, because its installed package is pinned to `v0.2.0` at `7f3ce00`, which predates the script. Account-binding UUIDs may be created only after all four pairs match.
 
+### Account fingerprint comparison, 11:41 EDT
+
+| Lane | Ruminaider | albert-aviary-mac | Verdict |
+| --- | --- | --- | --- |
+| anthropic-a | `697832ea…6ea9e1` | `697832ea…6ea9e1` | Match, cleared for account binding |
+| anthropic-b | `3aa46977…eb7ea5` | `3aa46977…eb7ea5` | Match, cleared for account binding |
+| anthropic-c | `6a3fa6ae…95edba` | not measured, token expired | Blocked, reauthenticate on peer |
+| anthropic-d | `cfb10e66…695345` | not measured, token expired | Blocked, reauthenticate on peer |
+
+Lanes A and B are cryptographically the same account on both machines, using both the account and organization UUIDs rather than provider aliases. Lanes C and D reported `valid=NO` on the peer and their fingerprint runs failed at the profile request, which is an expired-token failure and not evidence of a different account. Treat them as unknown until the peer tokens are refreshed and the digests are taken again.
+
+The peer's shallow clone emitted `warning: refs/tags/v0.3.0 1d3dd00460e65a3baa692f3dd6f55261e563882c is not a commit!`. This is cosmetic. `v0.3.0` is an annotated tag object at `1d3dd004` that peels to commit `b2e9dcc0`, `git ls-remote --tags origin v0.3.0` returns the same object on the remote, and the peer checked out `b2e9dcc0`. Git prints this warning when a shallow clone fetches an annotated tag whose object is not itself a commit.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.
