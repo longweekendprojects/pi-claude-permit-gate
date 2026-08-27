@@ -210,3 +210,24 @@ scripts/validate-authority.sh --artifacts-only --output "$temporary_output"
 The dry run writes an immutable commit-addressed release, four plist artifacts, and a hash manifest only below the temporary output directory. It never invokes `launchctl`, reads Keychain, starts a listener, or changes Serve/Tailnet state. Timing is never defaulted: offer TTL must be 5,000-120,000 ms, renew interval 5,000-300,000 ms, renew deadline 15,000-3,600,000 ms and at least three intervals, and terminal retention at least 86,400,000 ms.
 
 Outside dry-run mode, the installer copies validated plists into the current user's `~/Library/LaunchAgents` and loads each label. `scripts/install-authority.sh --rollback-lane anthropic-a` restores only that lane's prior plist, and `scripts/install-authority.sh --uninstall` removes the four job definitions. Both preserve lane state, verifier records, logs, and immutable staged releases. Use either live action only after the deployment gates in the authority protocol are satisfied.
+
+### Account and peer deployment gates
+
+Before an A-D authority cutover, compare the same lane's redacted account fingerprint on both Macs. The profile helper accepts an already-valid OAuth access token only from standard input, reads only `GET https://api.anthropic.com/api/oauth/profile`, does not refresh or store the token, and writes only the provider and canonical SHA-256 value. Expired or malformed tokens fail closed for that lane. Do not redirect its input or output to a persistent file.
+
+```bash
+natural-token-producer | scripts/account-fingerprint.mjs --provider anthropic-a
+# anthropic-a <sha256(profile-v1 NUL lowercase-account-uuid NUL lowercase-organization-uuid)>
+```
+
+Run this once per A-D lane on both Macs after a natural refresh or approved reauthentication. Compare matching lane output out of band. A swapped lane or organization change produces a different fingerprint and blocks only that lane. Create random account-binding IDs only after all four pairs match; do not derive them from a fingerprint.
+
+`validate-peer.sh` consumes one redacted readiness record from an operator-supplied, read-only peer command. The command receives no arguments and must emit exactly `mode`, `buildId`, `installationId`, `keychainLookup`, and `localListeners` as the JSON shape shown by `--help`. The helper prints only the mode, build, stable installation-ID presence, Keychain lookup result, and absence of local listeners. It never prints identifiers, Keychain references, listener details, command output, or command errors.
+
+```bash
+scripts/validate-peer.sh --provider anthropic-a \
+  --peer-command /absolute/path/to/read-only-peer-readiness-command \
+  --expected-build <installed-build-id>
+```
+
+An unavailable peer, wrong mode or build, missing stable installation ID, failed Keychain lookup, or any local listener fails closed for that lane. Build validation uses only temporary fixture commands through `CLAUDE_PERMIT_GATE_TEST_MODE=1`; it never performs OAuth, Keychain, or peer access.
