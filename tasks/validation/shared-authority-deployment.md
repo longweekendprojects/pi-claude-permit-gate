@@ -295,6 +295,30 @@ Authority-held allowance at 13:36, read through `/v1/snapshot`:
 
 Both Macs read these same authority-held values, so the menus no longer show divergent local-only observations. Null lanes are correct rather than broken: an allowance observation only exists after a real provider response on that lane, and C and D have had no traffic since cutover. They populate on first use. Lane A's `rejected` five-hour window is a genuine last-observed signal from that account, not a synthesized value.
 
+### Allowance freshness without inference spend, 13:40 EDT
+
+Allowance previously depended on real traffic: `anthropic-ratelimit-unified-5h/7d` headers arrive only on completions, so an idle lane showed nothing and lanes C and D sat null after cutover.
+
+`GET https://api.anthropic.com/api/oauth/usage` returns the same five-hour and seven-day windows with no inference and no token spend. It is the endpoint Claude Code itself uses. Zero-spend alternatives were tested and rejected: `GET /v1/models`, `POST /v1/messages/count_tokens`, and an intentionally invalid `POST /v1/messages` all returned 200/429 without any `anthropic-ratelimit-unified-*` header. The endpoint rate limits aggressively unless a `claude-code/*` User-Agent is sent, so the prober always sends one.
+
+`scripts/allowance-prober.mjs` polls all four lanes and publishes sanitized observations to the authority through `POST /v1/allowance`. It runs from `com.longweekendprojects.claude-allowance-prober` every 300 seconds (template in `deploy/`). Only Ruminaider needs it: both Macs read allowance from the authority, so one publisher keeps both menus fresh.
+
+Two design points that cost a first attempt:
+
+1. Publisher sequences are tracked per `(installationId, provider)`, not globally. A single counter across four lanes produced `409 stale_revision` on three of them.
+2. The menu bar app publishes on the same lanes using a plain incrementing counter. Sharing an installation identity would make the two publishers invalidate each other, so the prober enrolled its own installation `e478e53b-3ed3-48a0-9932-cda84c889e8f` with an `allowance:publish` credential under Keychain account `prober`, and keeps per-lane sequence state.
+
+Result at 13:40, all four lanes fresh within one second of each other:
+
+| Lane | fiveHour | sevenDay |
+| --- | --- | --- |
+| A | 100% | 24% |
+| B | not reported | 100% |
+| C | not reported | 100% |
+| D | 7% | 100% |
+
+A lane whose OAuth token has expired is skipped and retried on the next run; token refresh belongs to Pi and the prober never performs it.
+
 ## Still unmeasured
 
 Provider-duration p99, claim p99 against live daemons, fsync cost under production-sized state, and two-Mac fairness. No timing or capacity conclusion should be inherited from the build phase.

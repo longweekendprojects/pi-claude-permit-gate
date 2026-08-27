@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+// Keeps every lane's allowance observation fresh without spending any inference.
+//
+// `anthropic-ratelimit-unified-5h/7d` headers only arrive on real completions, so a lane that
+// nobody is actively using goes stale and its menu shows nothing. Anthropic exposes the same
+// numbers through GET /api/oauth/usage, the endpoint Claude Code itself calls. That request runs
+// no inference and costs no tokens, so polling it keeps all four lanes current whether or not
+// anyone is working on them.
+//
+// The endpoint rate limits aggressively without a claude-code User-Agent, so one is always sent.
+//
+// Each lane's OAuth access token is read from Pi's auth store and never refreshed here: refresh
+// belongs to Pi. A lane with an expired token is skipped and retried on the next run.
+//
+// The prober publishes under its own installation identity. The authority orders publications by
+// (installation, lane), and the menu bar app publishes on the same lanes with a plain incrementing
+// counter, so sharing an identity would make the two publishers invalidate each other's sequence.
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+
+const PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const USER_AGENT = "claude-code/2.1.80";
+const AUTH_FILE = path.join(os.homedir(), ".pi/agent/auth.json");
+const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client.json");
+const SEQUENCE_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-publisher-sequence.json");
+const PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
+const PROBER_KEYCHAIN_ACCOUNT = "prober";
+
+const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+const auth = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
+const bearer = execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8" }).trim();
+
+// Sequences are tracked per lane because the authority orders publications by (installation, lane).
+const readSequences = () => { try { return JSON.parse(fs.readFileSync(SEQUENCE_FILE, "utf8")); } catch { return {}; } };
+const sequences = readSequences();
+const writeSequences = () => fs.writeFileSync(SEQUENCE_FILE, JSON.stringify(sequences) + "\n", { mode: 0o600 });
+
+// Anthropic reports utilization as a percentage; the wire format keeps that scale.
+function windowFrom(raw) {
+  if (!raw || typeof raw.utilization !== "number") return null;
+  const utilization = raw.utilization;
+  const status = utilization >= 100 ? "rejected" : utilization >= 80 ? "allowed_warning" : "allowed";
+  const resetEpochSeconds = raw.resets_at ? Math.floor(new Date(raw.resets_at).getTime() / 1000) : null;
+  if (resetEpochSeconds === null || !Number.isSafeInteger(resetEpochSeconds)) return null;
+  return { utilization, status, resetEpochSeconds };
+}
+
+const results = [];
+
+for (const provider of PROVIDERS) {
+  const token = auth[provider]?.access;
+  const expires = auth[provider]?.expires;
+  if (!token || (typeof expires === "number" && expires <= Date.now())) { results.push(`${provider}: skipped, token expired`); continue; }
+  try {
+    const response = await fetch(USAGE_URL, { headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "user-agent": USER_AGENT } });
+    if (!response.ok) { results.push(`${provider}: usage HTTP ${response.status}`); continue; }
+    const usage = await response.json();
+    const fiveHour = windowFrom(usage.five_hour);
+    const sevenDay = windowFrom(usage.seven_day);
+    if (!fiveHour && !sevenDay) { results.push(`${provider}: no windows reported`); continue; }
+
+    const sequence = (sequences[provider] ?? 0) + 1;
+    sequences[provider] = sequence;
+    writeSequences();
+    const lane = config.lanes[provider];
+    const publish = await fetch(`${config.origin}:${lane.port}/v1/allowance`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+      body: JSON.stringify({ schemaVersion: 1, installationId: PROBER_INSTALLATION_ID, provider, accountBindingId: lane.accountBindingId, publishId: crypto.randomUUID(), publisherSequence: sequence, observedAtEpochMs: Date.now(), fiveHour, sevenDay }),
+    });
+    const body = await publish.json().catch(() => ({}));
+    results.push(`${provider}: usage 5h=${fiveHour?.utilization ?? "-"}% 7d=${sevenDay?.utilization ?? "-"}% -> publish HTTP ${publish.status}${body?.error?.code ? ` (${body.error.code})` : ""}`);
+  } catch (error) {
+    results.push(`${provider}: ${error.message}`);
+  }
+}
+
+process.stdout.write(`[${new Date().toISOString()}] ${results.join(" | ")}\n`);
