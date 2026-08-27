@@ -46,13 +46,52 @@ fi
 
 valid_provider "$PROVIDER" || fail "an A-D provider is required"
 [[ "$PEER_COMMAND" = /* ]] || fail "an absolute peer command is required"
-[ -x "$PEER_COMMAND" ] || fail "peer command is unavailable"
 [ -z "$EXPECTED_BUILD" ] || valid_build "$EXPECTED_BUILD" || fail "expected build is invalid"
 
-readiness=""
-if ! readiness="$("$PEER_COMMAND")"; then fail "peer readiness is unavailable for $PROVIDER"; fi
+peer_timeout=15000
+if [ -n "${CLAUDE_PERMIT_GATE_TEST_PEER_TIMEOUT_MS:-}" ]; then
+  [ "${CLAUDE_PERMIT_GATE_TEST_MODE:-}" = "1" ] && [[ "$CLAUDE_PERMIT_GATE_TEST_PEER_TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] && [ "$CLAUDE_PERMIT_GATE_TEST_PEER_TIMEOUT_MS" -le 15000 ] || fail "peer readiness is unavailable for $PROVIDER"
+  peer_timeout="$CLAUDE_PERMIT_GATE_TEST_PEER_TIMEOUT_MS"
+fi
 
-result="$(node --input-type=module - "$EXPECTED_BUILD" 3<<<"$readiness" <<'NODE'
+readiness=""
+if ! readiness="$(node --input-type=module - "$PEER_COMMAND" "$peer_timeout" 2>/dev/null <<'NODE'
+import { spawn } from "node:child_process";
+const [command, timeout] = process.argv.slice(2);
+const limit = 64 * 1024;
+let child;
+try { child = spawn(command, [], { detached: true, stdio: ["ignore", "pipe", "ignore"] }); } catch { process.exit(1); }
+const chunks = [];
+let length = 0;
+let failed = false;
+const terminate = () => {
+  if (child.pid === undefined) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
+};
+const stop = () => {
+  if (failed) return;
+  failed = true;
+  child.stdout.removeAllListeners("data");
+  child.stdout.resume();
+  terminate();
+};
+const deadline = setTimeout(stop, Number(timeout));
+child.on("error", stop);
+child.stdout.on("data", (chunk) => {
+  if (failed) return;
+  length += chunk.length;
+  if (length > limit) stop();
+  else chunks.push(chunk);
+});
+child.on("close", (code, signal) => {
+  clearTimeout(deadline);
+  if (failed || code !== 0 || signal !== null) process.exit(1);
+  process.stdout.write(Buffer.concat(chunks));
+});
+NODE
+)"; then fail "peer readiness is unavailable for $PROVIDER"; fi
+
+result="$(node --input-type=module - "$EXPECTED_BUILD" 3<<<"$readiness" 2>/dev/null <<'NODE'
 import fs from "node:fs";
 const [expectedBuild] = process.argv.slice(2);
 const fail = () => process.exit(1);
