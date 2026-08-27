@@ -752,6 +752,17 @@ test("authority quarantines missed renewals and restores only an acknowledged ma
   gate.time.now += AUTHORITY_TIMING.renewDeadlineMs + 1;
   await gate.authority.reconcile();
   assert.equal(gate.authority.getTicket(firstPrincipal, first.ticket.ticketId).state, "uncertain"); assert.equal(gate.authority.getTicket(secondPrincipal, waiting.ticket.ticketId).state, "queued");
+
+  // A client that keeps renewing stays alive indefinitely, so only a lease that has been silent far
+  // past its deadline is reclaimed. Reclaiming must return the slot to the waiting ticket rather
+  // than stranding capacity until an operator intervenes.
+  gate.time.now += 900_000;
+  await gate.authority.reconcile();
+  const reclaimed = gate.authority.getTicket(firstPrincipal, first.ticket.ticketId);
+  assert.equal(reclaimed.state, "released"); assert.equal(reclaimed.terminalReason, "operator_reconciled"); assert.equal(reclaimed.lease, null);
+  const afterReclaim = gate.authority.health({ instanceId: authorityUuid(502), buildId: "test" });
+  assert.equal(afterReclaim.uncertain, 0);
+  assert.equal(gate.authority.getTicket(secondPrincipal, waiting.ticket.ticketId).state, "offered");
 });
 
 test("authority applies throttle completion exactly once before releasing capacity", async (t) => {
@@ -846,8 +857,12 @@ test("authority persists nested machine and session fairness across restart", as
   const compactedState = JSON.parse(await fs.readFile(compactionGate.statePath, "utf8"));
   assert.equal(compactedState.fairness.machineOrder.includes(compactionB.installationId), false); assert.equal(compactedState.fairness.machineCursor, compactedState.fairness.machineOrder.indexOf(compactionC.installationId));
   compactionGate.restart();
+  // A lease silent for a full retention window is reclaimed automatically, so its capacity is
+  // already back and a late completion from the vanished client is refused rather than honoured.
+  await compactionGate.authority.reconcile();
   const uncertainCompactionFirst = compactionGate.authority.getTicket(compactionA, compactionFirst.ticket.ticketId);
-  await compactionGate.authority.mutateTicket(compactionA, compactionFirst.ticket.ticketId, "complete", ticketMutation(compactionA, { operation: authorityUuid(444), revision: uncertainCompactionFirst.revision, lease: compactionFirstClaim.ticket.lease, outcome: "released" }));
+  assert.equal(uncertainCompactionFirst.state, "released"); assert.equal(uncertainCompactionFirst.terminalReason, "operator_reconciled");
+  await assert.rejects(() => compactionGate.authority.mutateTicket(compactionA, compactionFirst.ticket.ticketId, "complete", ticketMutation(compactionA, { operation: authorityUuid(444), revision: uncertainCompactionFirst.revision, lease: compactionFirstClaim.ticket.lease, outcome: "released" })), (error) => error instanceof AuthorityError && error.code === "invalid_transition");
   assert.equal(compactionGate.authority.getTicket(compactionC, compactionSuccessor.ticket.ticketId).state, "offered");
   assert.equal(compactionGate.authority.getTicket(compactionA, compactionEarlier.ticket.ticketId).state, "queued");
 });
