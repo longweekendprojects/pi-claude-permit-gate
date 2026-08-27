@@ -51,11 +51,13 @@ const readBackoff = () => { try { return JSON.parse(fs.readFileSync(BACKOFF_FILE
 const backoff = readBackoff();
 const writeBackoff = () => fs.writeFileSync(BACKOFF_FILE, JSON.stringify(backoff) + "\n", { mode: 0o600 });
 
-// Anthropic reports utilization as a percentage; the wire format keeps that scale.
+// Anthropic reports utilization as a percentage (24 means 24%). The wire format and the menu use
+// a 0-1 fraction, matching what the `anthropic-ratelimit-unified-*` headers produce, so publishing
+// the raw percentage renders as 2400%.
 function windowFrom(raw) {
   if (!raw || typeof raw.utilization !== "number") return null;
-  const utilization = raw.utilization;
-  const status = utilization >= 100 ? "rejected" : utilization >= 80 ? "allowed_warning" : "allowed";
+  const utilization = raw.utilization / 100;
+  const status = utilization >= 1 ? "rejected" : utilization >= 0.8 ? "allowed_warning" : "allowed";
   const resetEpochSeconds = raw.resets_at ? Math.floor(new Date(raw.resets_at).getTime() / 1000) : null;
   if (resetEpochSeconds === null || !Number.isSafeInteger(resetEpochSeconds)) return null;
   return { utilization, status, resetEpochSeconds };
@@ -94,7 +96,8 @@ for (const provider of PROVIDERS) {
       body: JSON.stringify({ schemaVersion: 1, installationId: PROBER_INSTALLATION_ID, provider, accountBindingId: lane.accountBindingId, publishId: crypto.randomUUID(), publisherSequence: sequence, observedAtEpochMs: Date.now(), fiveHour, sevenDay }),
     });
     const body = await publish.json().catch(() => ({}));
-    results.push(`${provider}: usage 5h=${fiveHour?.utilization ?? "-"}% 7d=${sevenDay?.utilization ?? "-"}% -> publish HTTP ${publish.status}${body?.error?.code ? ` (${body.error.code})` : ""}`);
+    const asPercent = (window) => window ? `${(window.utilization * 100).toFixed(1)}%` : "-";
+    results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)} -> publish HTTP ${publish.status}${body?.error?.code ? ` (${body.error.code})` : ""}`);
   } catch (error) {
     results.push(`${provider}: ${error.message}`);
   }
