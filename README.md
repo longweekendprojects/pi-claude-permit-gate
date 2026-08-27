@@ -213,7 +213,7 @@ Outside dry-run mode, the installer copies validated plists into the current use
 
 ### Account and peer deployment gates
 
-Before an A-D authority cutover, compare the same lane's redacted account fingerprint on both Macs. The profile helper accepts an already-valid OAuth access token only from standard input, reads only `GET https://api.anthropic.com/api/oauth/profile`, does not refresh or store the token, and writes only the provider and canonical SHA-256 value. Expired or malformed tokens fail closed for that lane. Do not redirect its input or output to a persistent file.
+Before an A-D authority cutover, compare the same lane's redacted account fingerprint on both Macs. The profile helper accepts an already-valid OAuth access token only from standard input, reads only `GET https://api.anthropic.com/api/oauth/profile`, does not refresh or store the token, and writes only the provider and canonical SHA-256 value. Expired or malformed tokens fail closed for that lane. Profile reads stop after 20 seconds, then allow one second for child-process termination. Do not redirect its input or output to a persistent file.
 
 ```bash
 natural-token-producer | scripts/account-fingerprint.mjs --provider anthropic-a
@@ -230,4 +230,4 @@ scripts/validate-peer.sh --provider anthropic-a \
   --expected-build <installed-build-id>
 ```
 
-An unavailable peer, wrong mode or build, missing stable installation ID, failed Keychain lookup, or any local listener fails closed for that lane. Build validation uses only temporary fixture commands through `CLAUDE_PERMIT_GATE_TEST_MODE=1`; it never performs OAuth, Keychain, or peer access.
+An unavailable peer, wrong mode or build, missing stable installation ID, failed Keychain lookup, or any local listener fails closed for that lane. Peer readiness stops after 15 seconds, then allows one second for child-process termination. Build validation uses only temporary fixture commands through `CLAUDE_PERMIT_GATE_TEST_MODE=1`; it never performs OAuth, Keychain, or peer access.

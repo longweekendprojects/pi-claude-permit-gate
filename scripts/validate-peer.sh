@@ -59,21 +59,27 @@ if ! readiness="$(node --input-type=module - "$PEER_COMMAND" "$peer_timeout" 2>/
 import { spawn } from "node:child_process";
 const [command, timeout] = process.argv.slice(2);
 const limit = 64 * 1024;
+const terminationGrace = 1_000;
 let child;
 try { child = spawn(command, [], { detached: true, stdio: ["ignore", "pipe", "ignore"] }); } catch { process.exit(1); }
 const chunks = [];
 let length = 0;
 let failed = false;
-const terminate = () => {
+let closed = false;
+let killDeadline;
+const signalProcessGroup = (signal) => {
   if (child.pid === undefined) return;
-  try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
+  try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
 };
 const stop = () => {
   if (failed) return;
   failed = true;
   child.stdout.removeAllListeners("data");
   child.stdout.resume();
-  terminate();
+  signalProcessGroup("SIGTERM");
+  killDeadline = setTimeout(() => {
+    if (!closed) signalProcessGroup("SIGKILL");
+  }, terminationGrace);
 };
 const deadline = setTimeout(stop, Number(timeout));
 child.on("error", stop);
@@ -84,7 +90,9 @@ child.stdout.on("data", (chunk) => {
   else chunks.push(chunk);
 });
 child.on("close", (code, signal) => {
+  closed = true;
   clearTimeout(deadline);
+  clearTimeout(killDeadline);
   if (failed || code !== 0 || signal !== null) process.exit(1);
   process.stdout.write(Buffer.concat(chunks));
 });

@@ -6,6 +6,7 @@ const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const MAX_PROFILE_BYTES = 64 * 1024;
 const MAX_TOKEN_BYTES = 16 * 1024;
 const PROFILE_CHILD_TIMEOUT_MS = 20_000;
+const TERMINATION_GRACE_MS = 1_000;
 const PROVIDERS = new Set(["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PROFILE_KEYS = ["account", "application", "enabled_plugins", "organization"];
@@ -101,9 +102,9 @@ function commandForProfile() {
   return { command: "/usr/bin/curl", args: ["--disable", "--fail", "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "15", "--request", "GET", "--header", "@-", "--url", profileUrl()] };
 }
 
-function terminate(child) {
+function signalProcessGroup(child, signal) {
   if (child.pid === undefined) return;
-  try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
+  try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
 }
 
 function readProfile(token) {
@@ -123,19 +124,24 @@ function readProfile(token) {
     let length = 0;
     let failure = null;
     let closed = false;
+    let killDeadline;
     const stop = (message) => {
       if (failure !== null) return;
       failure = message;
       child.stdout.removeAllListeners("data");
       child.stdout.resume();
       child.stdin.destroy();
-      terminate(child);
+      signalProcessGroup(child, "SIGTERM");
+      killDeadline = setTimeout(() => {
+        if (!closed) signalProcessGroup(child, "SIGKILL");
+      }, TERMINATION_GRACE_MS);
     };
     const deadline = setTimeout(() => stop("profile request failed"), timeout);
     const finish = () => {
       if (closed) return;
       closed = true;
       clearTimeout(deadline);
+      clearTimeout(killDeadline);
       clear([header, token, ...chunks]);
       if (failure !== null) reject(new Error(failure));
       else reject(new Error("profile request failed"));
