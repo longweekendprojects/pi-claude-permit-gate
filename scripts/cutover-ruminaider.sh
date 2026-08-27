@@ -18,6 +18,13 @@ readonly NODE=/Users/albertgwo/.nvm/versions/node/v22.19.0/bin/node
 readonly TAILSCALE=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 readonly LOG="$HOME/Library/Logs/Claude Permit Authority/cutover-$(date +%Y%m%dT%H%M%S).log"
 
+# `authority-admin` reads lane timing from the environment. Only the generated plists carry
+# these values, so an offline bootstrap has to export the same four numbers itself.
+export CLAUDE_PERMIT_GATE_OFFER_TTL_MS=15000
+export CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS=30000
+export CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS=120000
+export CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS=86400000
+
 mkdir -p "$(dirname "$LOG")"
 exec >>"$LOG" 2>&1
 say() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
@@ -27,6 +34,10 @@ say "cutover starting"
 # 1. Prove every lane is idle twice, at least two seconds apart, before stopping anything.
 for index in "${!PORTS[@]}"; do
   port="${PORTS[$index]}"
+  if ! lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    say "lane $port has no listener already; nothing to drain"
+    continue
+  fi
   for sample in 1 2; do
     reading="$(curl -sS --max-time 2 "http://127.0.0.1:$port/health" | /opt/homebrew/bin/jq -c '{active,queued}' 2>/dev/null)"
     say "lane $port sample $sample: ${reading:-unreachable}"
