@@ -12,13 +12,6 @@ const TICKET_STATES = new Set(["queued", "offered", "active", "uncertain", "canc
 const TERMINAL_STATES = new Set(["cancelled", "released", "throttled", "offerExpired"]);
 const ACTIVE_STATES = new Set(["offered", "active", "uncertain"]);
 const WINDOW_STATUSES = new Set(["allowed", "allowed_warning", "rejected", "active", "warning", "rate_limited"]);
-// A lease that stopped renewing is evidence the client is gone: renewal stays legal from the
-// uncertain state, so any client still doing provider work keeps its lease alive and never reaches
-// this deadline. Only a client that has been silent this long past its server deadline is reclaimed,
-// which is far beyond any single provider response. Without this, a killed session permanently
-// burned a lane slot until a human reconciled it, and two of them wedged a lane completely.
-const UNCERTAIN_RECLAIM_MS = 900_000;
-
 const MAX_INSTALLATIONS = 32;
 const MAX_SESSIONS_PER_INSTALLATION = 32;
 const MAX_NONTERMINAL_PER_SESSION = 16;
@@ -1297,7 +1290,12 @@ function expireAndQuarantine(state, now, timing) {
       ticket.state = "uncertain";
       ticket.revision += 1;
       changed = true;
-    } else if (ticket.state === "uncertain" && ticket.lease && now - ticket.lease.serverDeadlineEpochMs >= UNCERTAIN_RECLAIM_MS) {
+    // A lease that stopped renewing is evidence the client is gone: renewal stays legal from the
+    // uncertain state, so a client still doing provider work heartbeats its way back to active and
+    // never reaches this point. The deadline already absorbs four missed renewals, and one further
+    // deadline of grace covers a transient partition where the client is alive but unreachable.
+    // Total time from client death to the slot returning is two renew deadlines.
+    } else if (ticket.state === "uncertain" && ticket.lease && now - ticket.lease.serverDeadlineEpochMs >= timing.renewDeadlineMs) {
       ticket.state = "released";
       ticket.revision += 1;
       ticket.terminalAtEpochMs = now;

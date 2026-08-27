@@ -753,10 +753,10 @@ test("authority quarantines missed renewals and restores only an acknowledged ma
   await gate.authority.reconcile();
   assert.equal(gate.authority.getTicket(firstPrincipal, first.ticket.ticketId).state, "uncertain"); assert.equal(gate.authority.getTicket(secondPrincipal, waiting.ticket.ticketId).state, "queued");
 
-  // A client that keeps renewing stays alive indefinitely, so only a lease that has been silent far
-  // past its deadline is reclaimed. Reclaiming must return the slot to the waiting ticket rather
-  // than stranding capacity until an operator intervenes.
-  gate.time.now += 900_000;
+  // A client that keeps renewing stays alive indefinitely, so only a lease silent for a further
+  // renew deadline past its own deadline is reclaimed. Reclaiming must return the slot to the
+  // waiting ticket rather than stranding capacity until an operator intervenes.
+  gate.time.now += AUTHORITY_TIMING.renewDeadlineMs;
   await gate.authority.reconcile();
   const reclaimed = gate.authority.getTicket(firstPrincipal, first.ticket.ticketId);
   assert.equal(reclaimed.state, "released"); assert.equal(reclaimed.terminalReason, "operator_reconciled"); assert.equal(reclaimed.lease, null);
