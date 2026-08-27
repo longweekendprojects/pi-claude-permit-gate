@@ -111,11 +111,36 @@ launchctl_bin() {
 launchctl_call() { "$(launchctl_bin)" "$@"; }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  for provider in "${PROVIDERS[@]}"; do
-    label="$(label_for "$provider")"
-    launchctl_call bootout "gui/$(id -u)/$label" 2>/dev/null || true
-    rm -f "$AGENT_DIRECTORY/$label.plist"
+  uninstall_loaded=(); uninstall_plists=(); uninstall_failed=""; uninstall_restoration=""
+  for index in "${!PROVIDERS[@]}"; do
+    provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; plist="$AGENT_DIRECTORY/$label.plist"
+    uninstall_plists[$index]="$plist"
+    if launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+      [ -f "$plist" ] && [ ! -L "$plist" ] && /usr/bin/plutil -lint "$plist" >/dev/null || fail "loaded authority job has no valid managed plist"
+      uninstall_loaded[$index]=1
+    else
+      uninstall_loaded[$index]=0
+    fi
   done
+  for index in "${!PROVIDERS[@]}"; do
+    [ "${uninstall_loaded[$index]}" = 1 ] || continue
+    provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"
+    if ! launchctl_call bootout "gui/$(id -u)/$label" >/dev/null 2>&1; then uninstall_failed="$uninstall_failed bootout:$provider"; fi
+    if launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1; then uninstall_failed="$uninstall_failed loaded:$provider"; fi
+  done
+  for index in "${!PROVIDERS[@]}"; do
+    provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"
+    if launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1; then uninstall_failed="$uninstall_failed loaded:$provider"; fi
+  done
+  if [ -n "$uninstall_failed" ]; then
+    for index in "${!PROVIDERS[@]}"; do
+      [ "${uninstall_loaded[$index]}" = 1 ] || continue
+      provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; plist="${uninstall_plists[$index]}"
+      if ! launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1; then launchctl_call bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || uninstall_restoration="$uninstall_restoration load:$provider"; fi
+    done
+    fail "uninstall did not stop every authority job:$uninstall_failed; restoration failures:${uninstall_restoration:- none}"
+  fi
+  for plist in "${uninstall_plists[@]}"; do rm -f "$plist"; done
   rm -f "$DEPLOYMENT_RECORD"
   printf '%s\n' 'authority jobs removed; state, verifiers, logs, releases, and rollback artifacts were preserved'
   exit 0
@@ -237,6 +262,8 @@ fi
 STAGE_PARENT="$AUTHORITY_DIRECTORY/staging"
 mkdir -p "$STAGE_PARENT"
 STAGE_DIRECTORY="$(mktemp -d "$STAGE_PARENT/.authority-stage.XXXXXX")"
+cleanup_preflight_stage() { status=$?; trap - EXIT; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
+trap cleanup_preflight_stage EXIT
 FINAL_RELEASE="$RELEASE_ROOT/$COMMIT"
 RELEASE_WAS_PRESENT=0
 if [ -e "$FINAL_RELEASE" ]; then
@@ -272,6 +299,7 @@ restore_attempt() {
 
 attempt_active=1
 on_live_exit() { status=$?; trap - EXIT; if [ "$attempt_active" = 1 ]; then restore_attempt; printf 'install-authority: rollout failed (exit %s); restoration failures:%s\n' "$status" "${recovery_failures:- none}" >&2; fi; rm -rf "$STAGE_DIRECTORY"; exit "$status"; }
+trap - EXIT
 trap on_live_exit EXIT
 mkdir -p "$AGENT_DIRECTORY" "$RELEASE_ROOT" "$STATE_DIRECTORY" "$LOG_DIRECTORY"
 if [ "$RELEASE_WAS_PRESENT" = 0 ]; then mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; chmod -R a-w "$FINAL_RELEASE"; fi

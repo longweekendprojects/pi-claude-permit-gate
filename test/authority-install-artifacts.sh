@@ -77,12 +77,20 @@ command="$1"; shift
 state="${CLAUDE_PERMIT_GATE_TEST_STATE:?}"
 case "$command" in
   print) label="${1##*/}"; test -f "$state/$label" ;;
-  bootout) label="${1##*/}"; if [ "${CLAUDE_PERMIT_GATE_TEST_FAIL_BOOTOUT:-}" = "$label" ]; then exit 41; fi; rm -f "$state/$label" ;;
+  bootout) label="${1##*/}"; if [ "${CLAUDE_PERMIT_GATE_TEST_FAIL_BOOTOUT:-}" = "$label" ]; then exit 41; fi; if [ "${CLAUDE_PERMIT_GATE_TEST_STILL_LOADED_BOOTOUT:-}" = "$label" ]; then exit 0; fi; rm -f "$state/$label" ;;
   bootstrap) file="$2"; label="$(basename "$file" .plist)"; if [ "${CLAUDE_PERMIT_GATE_TEST_FAIL_BOOTSTRAP:-}" = "$label" ]; then exit 42; fi; : > "$state/$label" ;;
   *) exit 43 ;;
 esac
 FAKE
 chmod 755 "$FAKE"
+
+stage_cleanup_home="$BASE/stage-cleanup-home"
+stage_commit="$(git -C "$ROOT" rev-parse HEAD)"
+mkdir -p "$stage_cleanup_home/Library/Application Support/Claude Permit Authority/releases/$stage_commit"
+printf tampered > "$stage_cleanup_home/Library/Application Support/Claude Permit Authority/releases/$stage_commit/unexpected"
+expect_fail "$ROOT/scripts/install-authority.sh" --home "$stage_cleanup_home" "${common[@]}"
+stage_parent="$stage_cleanup_home/Library/Application Support/Claude Permit Authority/staging"
+if find "$stage_parent" -mindepth 1 -maxdepth 1 -name '.authority-stage.*' -print -quit | grep -q .; then echo 'preflight stage was not cleaned' >&2; exit 1; fi
 
 prepare_live() {
   LIVE_HOME="$BASE/live-home"; LIVE_STATE="$BASE/live-state"; rm -rf "$LIVE_HOME" "$LIVE_STATE"; mkdir -p "$LIVE_HOME/Library/LaunchAgents" "$LIVE_STATE" "$LIVE_HOME/Library/Application Support/Claude Permit Authority/lanes" "$LIVE_HOME/Library/Logs/Claude Permit Authority/lanes"
@@ -107,6 +115,16 @@ live_install
 live_install
 for provider in "${PROVIDERS[@]}"; do test -f "$LIVE_STATE/$(label "$provider")"; done
 test -f "$LIVE_HOME/Library/Application Support/Claude Permit Authority/lanes/preserved-state"
+for uninstall_failure in fail still-loaded; do
+  failure_label="$(label anthropic-b)"
+  if [ "$uninstall_failure" = fail ]; then
+    if CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL="$FAKE" CLAUDE_PERMIT_GATE_TEST_STATE="$LIVE_STATE" CLAUDE_PERMIT_GATE_TEST_FAIL_BOOTOUT="$failure_label" "$ROOT/scripts/install-authority.sh" --home "$LIVE_HOME" --uninstall >/dev/null 2>&1; then echo 'expected uninstall bootout failure' >&2; exit 1; fi
+  else
+    if CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL="$FAKE" CLAUDE_PERMIT_GATE_TEST_STATE="$LIVE_STATE" CLAUDE_PERMIT_GATE_TEST_STILL_LOADED_BOOTOUT="$failure_label" "$ROOT/scripts/install-authority.sh" --home "$LIVE_HOME" --uninstall >/dev/null 2>&1; then echo 'expected uninstall loaded-state failure' >&2; exit 1; fi
+  fi
+  for provider in "${PROVIDERS[@]}"; do test -f "$LIVE_STATE/$(label "$provider")"; test -f "$LIVE_HOME/Library/LaunchAgents/$(label "$provider").plist"; done
+  test -f "$LIVE_HOME/Library/Application Support/Claude Permit Authority/deployment-v1.json"
+done
 CLAUDE_PERMIT_GATE_TEST_MODE=1 CLAUDE_PERMIT_GATE_TEST_LAUNCHCTL="$FAKE" CLAUDE_PERMIT_GATE_TEST_STATE="$LIVE_STATE" "$ROOT/scripts/install-authority.sh" --home "$LIVE_HOME" --uninstall
 for provider in "${PROVIDERS[@]}"; do test ! -e "$LIVE_HOME/Library/LaunchAgents/$(label "$provider").plist"; done
 test -f "$LIVE_HOME/Library/Application Support/Claude Permit Authority/lanes/preserved-state"
