@@ -189,3 +189,38 @@ test("authority-client discards retry state naming a ticket the authority no lon
   assert.equal(creates, 1);
   assert.equal(Object.keys(ledger.tickets).includes(`${sessionId}:${staleRequestId}`), false);
 });
+
+test("authority-client discards a persisted record whose reused request id yields an unusable create response", async () => {
+  const sessionId = "aaaa1111-9999-4999-8999-999999999999";
+  const config = {
+    mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
+    keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+    lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+  };
+  // The record carries no ticket and no pending operation, so only its persistence marks it stale.
+  const staleRequestId = "cccc2222-8888-4888-8888-888888888888";
+  let ledger = { schemaVersion: 1, tickets: { [`${sessionId}:${staleRequestId}`]: { provider: "anthropic-a", requestId: staleRequestId, sessionId, createdAtEpochMs: 1_000 } } };
+  const freshTicketId = "dddd3333-6666-4666-8666-666666666666";
+  let creates = 0; let rejectedOnce = false;
+  const client = createAuthorityClient(config, {
+    sessionId,
+    token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") {
+        creates++;
+        // The reused request id replays a ticket whose identity no longer matches the record.
+        if (request.body.requestId === staleRequestId) { rejectedOnce = true; return { status: 201, body: { schemaVersion: 1, ticketId: "eeee4444-5555-4555-8555-555555555555", requestId: "ffff5555-4444-4444-8444-444444444444", provider: "anthropic-a", state: "queued", revision: 1, createdAtEpochMs: 1_000, enqueuedAtEpochMs: 1_001, offeredAtEpochMs: null, offerExpiresAtEpochMs: null, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: null } }; }
+        return { status: 201, body: { schemaVersion: 1, ticketId: freshTicketId, requestId: request.body.requestId, provider: "anthropic-a", state: "active", revision: 2, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: 2_050, offerExpiresAtEpochMs: 2_100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
+      }
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    },
+  });
+  const record = await client.acquire("anthropic-a");
+  assert.equal(rejectedOnce, true);
+  assert.equal(record.ticket.ticketId, freshTicketId);
+  assert.equal(record.ticket.state, "active");
+  assert.equal(creates, 2);
+  assert.equal(Object.keys(ledger.tickets).includes(`${sessionId}:${staleRequestId}`), false);
+});
