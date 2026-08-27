@@ -266,7 +266,7 @@ restore_attempt() {
     if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootstrap "gui/$(id -u)" "$current" >/dev/null 2>&1 || recovery_failures="$recovery_failures load:$provider"; fi
   done
   if [ "$deployment_present" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/deployment.json" "$DEPLOYMENT_RECORD" || recovery_failures="$recovery_failures deployment"; else rm -f "$DEPLOYMENT_RECORD" || recovery_failures="$recovery_failures remove-deployment"; fi
-  if [ "$RELEASE_WAS_PRESENT" = 0 ]; then rm -rf "$FINAL_RELEASE" || recovery_failures="$recovery_failures release"; fi
+  if [ "$RELEASE_WAS_PRESENT" = 0 ]; then chmod -R u+w "$FINAL_RELEASE" 2>/dev/null || true; rm -rf "$FINAL_RELEASE" || recovery_failures="$recovery_failures release"; fi
   set -e
 }
 
