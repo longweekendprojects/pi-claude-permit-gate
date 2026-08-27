@@ -110,6 +110,18 @@ launchctl_bin() {
 }
 launchctl_call() { "$(launchctl_bin)" "$@"; }
 
+# launchd unloads asynchronously: bootstrapping a label that is still tearing down fails with
+# "Bootstrap failed: 5: Input/output error" and aborts the whole rollout. Wait for the label to
+# disappear before reusing it.
+await_unloaded() {
+  local label="$1"
+  for _ in $(seq 1 100); do
+    launchctl_call print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 if [ "$UNINSTALL" -eq 1 ]; then
   uninstall_loaded=(); uninstall_plists=(); uninstall_failed=""; uninstall_restoration=""
   for index in "${!PROVIDERS[@]}"; do
@@ -349,7 +361,7 @@ mkdir -p "$AGENT_DIRECTORY" "$RELEASE_ROOT" "$STATE_DIRECTORY" "$LOG_DIRECTORY"
 if [ "$RELEASE_WAS_PRESENT" = 0 ]; then mv "$STAGE_DIRECTORY/release" "$FINAL_RELEASE"; chmod -R a-w "$FINAL_RELEASE"; fi
 for index in "${!PROVIDERS[@]}"; do
   provider="${PROVIDERS[$index]}"; label="$(label_for "$provider")"; source_plist="$STAGE_DIRECTORY/LaunchAgents/$label.plist"; destination_plist="$AGENT_DIRECTORY/$label.plist"
-  if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootout "gui/$(id -u)/$label"; fi
+  if [ "${prior_loaded[$index]}" = 1 ]; then launchctl_call bootout "gui/$(id -u)/$label"; await_unloaded "$label" || fail "lane $provider did not unload"; fi
   cp -p "$source_plist" "$destination_plist"
   launchctl_call bootstrap "gui/$(id -u)" "$destination_plist"
   if [ "${prior_present[$index]}" = 1 ]; then cp -p "$STAGE_DIRECTORY/prior/$index.plist" "$destination_plist.rollback"; fi
