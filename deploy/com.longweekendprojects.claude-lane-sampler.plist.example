@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.longweekendprojects.claude-lane-sampler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/albertgwo/.nvm/versions/node/v22.19.0/bin/node</string>
+    <string>/Users/albertgwo/Repositories/pi-claude-permit-gate/scripts/lane-sampler.mjs</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/Users/albertgwo/Library/Logs/Claude Permit Authority/lane-sampler.err.log</string>
+</dict>
+</plist>

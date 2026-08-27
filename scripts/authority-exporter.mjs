@@ -24,6 +24,35 @@ const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/author
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
 const bearer = execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.snapshotRead.service, "-a", config.keychain.snapshotRead.account, "-w"], { encoding: "utf8" }).trim();
 
+// Lane identity changes reveal restarts that health counters alone hide: an operator stop/start, a
+// launchd respawn, or a reinstall each mint a new instanceId and bump laneTerm. Without this a
+// restart storm looks identical to a quiet lane.
+const RESTART_STATE = path.join(os.homedir(), "Library/Application Support/Claude Permit Authority/exporter-instances.json");
+const readInstances = () => { try { return JSON.parse(fs.readFileSync(RESTART_STATE, "utf8")); } catch { return {}; } };
+const instances = readInstances();
+const writeInstances = () => { try { fs.mkdirSync(path.dirname(RESTART_STATE), { recursive: true }); fs.writeFileSync(RESTART_STATE, JSON.stringify(instances), { mode: 0o600 }); } catch {} };
+
+// The client ledger is the only place a stuck session is visible. A record that never resolves, or
+// a lock directory orphaned by a killed session, is exactly what makes an agent wait forever while
+// every lane metric reads healthy.
+const CLIENT_LEDGER = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client-tickets-v1.json");
+function clientLedgerMetrics() {
+  const lines = [];
+  let records = 0; let oldest = 0;
+  try {
+    const ledger = JSON.parse(fs.readFileSync(CLIENT_LEDGER, "utf8"));
+    const entries = Object.values(ledger.tickets ?? {});
+    records = entries.length;
+    for (const entry of entries) { const age = (Date.now() - (entry.createdAtEpochMs ?? Date.now())) / 1000; if (age > oldest) oldest = age; }
+  } catch {}
+  let lockAge = 0;
+  try { lockAge = (Date.now() - fs.statSync(`${CLIENT_LEDGER}.lock`).mtimeMs) / 1000; } catch {}
+  lines.push("# HELP claude_client_ledger_records Unresolved permit records held by this machine's Pi sessions.", "# TYPE claude_client_ledger_records gauge", `claude_client_ledger_records ${records}`);
+  lines.push("# HELP claude_client_ledger_oldest_age_seconds Age of the oldest unresolved client record. A session stuck waiting shows here while lane metrics look healthy.", "# TYPE claude_client_ledger_oldest_age_seconds gauge", `claude_client_ledger_oldest_age_seconds ${Math.round(oldest)}`);
+  lines.push("# HELP claude_client_ledger_lock_age_seconds Age of an orphaned ledger lock. Above zero for long means every acquire on this machine is failing.", "# TYPE claude_client_ledger_lock_age_seconds gauge", `claude_client_ledger_lock_age_seconds ${Math.round(lockAge)}`);
+  return lines;
+}
+
 const METRICS = [
   ["claude_lane_active_permits", "gauge", "Permits currently held on this lane.", (h) => h.active],
   ["claude_lane_offered_tickets", "gauge", "Tickets offered but not yet claimed.", (h) => h.offered],
@@ -34,6 +63,8 @@ const METRICS = [
   ["claude_lane_cooldown_seconds_remaining", "gauge", "Seconds until a throttle cooldown expires.", (h) => h.cooldownUntilEpochMs ? Math.max(0, (h.cooldownUntilEpochMs - Date.now()) / 1000) : 0],
   ["claude_lane_oldest_wait_seconds", "gauge", "Age of the longest-waiting queued ticket.", (h) => h.oldestWaitEpochMs ? Math.max(0, (Date.now() - h.oldestWaitEpochMs) / 1000) : 0],
   ["claude_lane_up", "gauge", "1 when the lane answered its health check and reports ready.", (h) => h.status === "ready" ? 1 : 0],
+  ["claude_lane_term", "gauge", "Lane term, incremented every time the lane's state is reopened. A rising term means restarts.", (h) => h.laneTerm],
+  ["claude_lane_concurrency_degraded", "gauge", "Slots lost to throttling (maximum minus current). While above zero a single orphaned lease can consume the whole lane.", (h) => Math.max(0, h.maximumConcurrency - h.currentConcurrency)],
 ];
 
 const ALLOWANCE = [
@@ -84,6 +115,16 @@ function render(lanes) {
     }));
   }
 
+  const restarts = lanes.flatMap(({ provider, port, snapshot }) => {
+    if (!snapshot?.instanceId) return [];
+    const previous = instances[provider];
+    if (previous && previous.instanceId !== snapshot.instanceId) instances[provider] = { instanceId: snapshot.instanceId, restarts: (previous.restarts ?? 0) + 1 };
+    else if (!previous) instances[provider] = { instanceId: snapshot.instanceId, restarts: 0 };
+    return [`claude_lane_restarts_total{provider="${provider}",port="${port}"} ${instances[provider].restarts}`];
+  });
+  if (restarts.length) { writeInstances(); lines.push("# HELP claude_lane_restarts_total Lane daemon restarts observed by the exporter, counted when the reported instance id changes.", "# TYPE claude_lane_restarts_total counter", ...restarts); }
+
+  lines.push(...clientLedgerMetrics());
   return lines.join("\n") + "\n";
 }
 
