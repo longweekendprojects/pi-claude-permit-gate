@@ -23,6 +23,11 @@ const MAX_ALLOWANCE_REPLAY_RECORDS = MAX_INSTALLATIONS * MAX_ALLOWANCE_REPLAYS_P
 const MAX_FINGERPRINT_LENGTH = 16_384;
 const MAX_REQUEST_AGE_MS = 30_000;
 const STATE_SCHEMA_VERSION = 2;
+const VERIFIER_SCOPES = new Set(["permit:mutate", "snapshot:read", "allowance:publish"]);
+const MAX_VERIFIER_RECORDS = 192;
+const MAX_VERIFIERS_PER_INSTALLATION_SCOPE = 2;
+const TOKEN_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
+const VERIFIER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 const ERROR_STATUS = Object.freeze({
   invalid_json: 400,
@@ -85,6 +90,148 @@ function isSafeInteger(value, minimum = 0, maximum = MAX_SAFE_INTEGER) {
 
 function isUuid(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function verifierFault() {
+  return new AuthorityError("verifier_unavailable", { message: "verifier is unavailable" });
+}
+
+function verifierUnauthorized() {
+  return new AuthorityError("unauthenticated", { message: "bearer is unavailable" });
+}
+
+function validateVerifierStore(value) {
+  if (!hasExactKeys(value, ["schemaVersion", "generation", "verifiers"]) || value.schemaVersion !== 1 || !isSafeInteger(value.generation, 1) || !Array.isArray(value.verifiers) || value.verifiers.length === 0 || value.verifiers.length > MAX_VERIFIER_RECORDS) throw verifierFault();
+  const tokenIds = new Set();
+  const verifierDigests = new Set();
+  const installationScopes = new Map();
+  const recordsByInstallationScope = new Map();
+  const records = new Map();
+  for (const record of value.verifiers) {
+    const keys = ["tokenId", "verifierSha256", "installationId", "scope", "laneAllowlist", "generation", "issuedAtEpochMs", "expiresAtEpochMs", "predecessorTokenId", "revokedAtEpochMs"];
+    if (!hasExactKeys(record, keys) || !TOKEN_ID_PATTERN.test(record.tokenId) || !VERIFIER_SHA256_PATTERN.test(record.verifierSha256) || !isUuid(record.installationId) || !VERIFIER_SCOPES.has(record.scope) || !Array.isArray(record.laneAllowlist) || record.laneAllowlist.length === 0 || record.laneAllowlist.length > Object.keys(PROVIDER_PORTS).length || new Set(record.laneAllowlist).size !== record.laneAllowlist.length || !record.laneAllowlist.every((provider) => provider in PROVIDER_PORTS) || !isSafeInteger(record.generation, 1, value.generation) || !isEpochMs(record.issuedAtEpochMs) || !isEpochMs(record.expiresAtEpochMs) || record.expiresAtEpochMs <= record.issuedAtEpochMs || record.predecessorTokenId !== null && !TOKEN_ID_PATTERN.test(record.predecessorTokenId) || record.revokedAtEpochMs !== null && (!isEpochMs(record.revokedAtEpochMs) || record.revokedAtEpochMs < record.issuedAtEpochMs)) throw verifierFault();
+    if (tokenIds.has(record.tokenId) || verifierDigests.has(record.verifierSha256)) throw verifierFault();
+    tokenIds.add(record.tokenId);
+    verifierDigests.add(record.verifierSha256);
+    records.set(record.tokenId, record);
+    const scopeKey = `${record.installationId}\u0000${record.scope}`;
+    const count = (installationScopes.get(scopeKey) ?? 0) + 1;
+    if (count > MAX_VERIFIERS_PER_INSTALLATION_SCOPE) throw verifierFault();
+    installationScopes.set(scopeKey, count);
+    const scopedRecords = recordsByInstallationScope.get(scopeKey) ?? [];
+    scopedRecords.push(record);
+    recordsByInstallationScope.set(scopeKey, scopedRecords);
+  }
+  for (const record of value.verifiers) {
+    if (record.predecessorTokenId === null) continue;
+    const predecessor = records.get(record.predecessorTokenId);
+    if (!predecessor || predecessor.tokenId === record.tokenId || predecessor.installationId !== record.installationId || predecessor.scope !== record.scope || canonical(predecessor.laneAllowlist) !== canonical(record.laneAllowlist) || predecessor.generation >= record.generation) throw verifierFault();
+  }
+  for (const scopedRecords of recordsByInstallationScope.values()) {
+    if (scopedRecords.length < 2) continue;
+    const [first, second] = scopedRecords;
+    if (first.predecessorTokenId === null && second.predecessorTokenId === first.tokenId || second.predecessorTokenId === null && first.predecessorTokenId === second.tokenId) continue;
+    throw verifierFault();
+  }
+  return value;
+}
+
+function readVerifierSnapshotSync(file, { allowMissing = false } = {}) {
+  let raw;
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw verifierFault();
+    raw = fs.readFileSync(file);
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    if (allowMissing && error?.code === "ENOENT") return undefined;
+    throw verifierFault();
+  }
+  try {
+    return { raw, store: validateVerifierStore(JSON.parse(raw.toString("utf8"))) };
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
+  }
+}
+
+async function readVerifierSnapshot(file, { allowMissing = false } = {}) {
+  let raw;
+  try {
+    const stat = await fsPromises.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw verifierFault();
+    raw = await fsPromises.readFile(file);
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    if (allowMissing && error?.code === "ENOENT") return undefined;
+    throw verifierFault();
+  }
+  try {
+    return { raw, store: validateVerifierStore(JSON.parse(raw.toString("utf8"))) };
+  } catch (error) {
+    if (error instanceof AuthorityError) throw error;
+    throw verifierFault();
+  }
+}
+
+export function authorityVerifierPath({ home, verifierStore } = {}) {
+  if (typeof verifierStore === "string" && verifierStore) return path.resolve(verifierStore);
+  if (typeof home !== "string" || !home) throw verifierFault();
+  return path.join(home, "Library", "Application Support", "Claude Permit Authority", "verifiers-v1.json");
+}
+
+export function readAuthorityVerifierStore(file, { minimumGeneration = 1 } = {}) {
+  const snapshot = readVerifierSnapshotSync(file);
+  if (!isSafeInteger(minimumGeneration, 1) || snapshot.store.generation < minimumGeneration) throw verifierFault();
+  return snapshot.store;
+}
+
+export async function readAuthorityVerifierStoreAsync(file, { minimumGeneration = 1 } = {}) {
+  const snapshot = await readVerifierSnapshot(file);
+  if (!isSafeInteger(minimumGeneration, 1) || snapshot.store.generation < minimumGeneration) throw verifierFault();
+  return snapshot.store;
+}
+
+function sameVerifierRecord(left, right) {
+  const immutableKeys = ["tokenId", "verifierSha256", "installationId", "scope", "laneAllowlist", "generation", "issuedAtEpochMs", "expiresAtEpochMs", "predecessorTokenId"];
+  return immutableKeys.every((key) => canonical(left[key]) === canonical(right[key]));
+}
+
+function validateVerifierEvolution(previous, next) {
+  if (next.generation !== previous.generation + 1) throw verifierFault();
+  const nextByTokenId = new Map(next.verifiers.map((record) => [record.tokenId, record]));
+  for (const record of previous.verifiers) {
+    const successor = nextByTokenId.get(record.tokenId);
+    if (!successor || !sameVerifierRecord(record, successor) || record.revokedAtEpochMs !== null && successor.revokedAtEpochMs !== record.revokedAtEpochMs || record.revokedAtEpochMs === null && successor.revokedAtEpochMs !== null && successor.revokedAtEpochMs < record.issuedAtEpochMs) throw verifierFault();
+  }
+}
+
+export async function writeAuthorityVerifierStore(file, store, { allowCreate = false, expectedGeneration } = {}) {
+  const next = validateVerifierStore(store);
+  const current = await readVerifierSnapshot(file, { allowMissing: allowCreate });
+  if (current === undefined) {
+    if (!allowCreate || expectedGeneration !== undefined) throw verifierFault();
+  } else {
+    if (expectedGeneration !== current.store.generation) throw verifierFault();
+    validateVerifierEvolution(current.store, next);
+  }
+  await writeDurableJson(file, next);
+  return next;
+}
+
+export function authenticateAuthorityBearer(authorization, store, { requiredScope, provider, now = Date.now() } = {}) {
+  validateVerifierStore(store);
+  if (typeof authorization !== "string") throw verifierUnauthorized();
+  const match = /^Bearer ([A-Za-z0-9._:-]{1,64})\.([A-Za-z0-9_-]{43})$/.exec(authorization);
+  if (!match || !isSafeInteger(now)) throw verifierUnauthorized();
+  const secret = Buffer.from(match[2], "base64url");
+  if (secret.length !== 32) throw verifierUnauthorized();
+  const digest = crypto.createHash("sha256").update(secret).digest();
+  const record = store.verifiers.find((candidate) => candidate.tokenId === match[1]);
+  if (!record || !crypto.timingSafeEqual(Buffer.from(record.verifierSha256, "hex"), digest) || record.revokedAtEpochMs !== null || now < record.issuedAtEpochMs || now >= record.expiresAtEpochMs) throw verifierUnauthorized();
+  if (requiredScope !== undefined && record.scope !== requiredScope) throw new AuthorityError("forbidden_scope", { message: "scope is not allowed" });
+  if (provider !== undefined && !record.laneAllowlist.includes(provider)) throw new AuthorityError("forbidden_lane", { message: "lane is not allowed" });
+  return { installationId: record.installationId, providers: [...record.laneAllowlist], scope: record.scope, tokenId: record.tokenId, verifierGeneration: store.generation };
 }
 
 function assertExactObject(value, required, optional = []) {
@@ -920,6 +1067,7 @@ function normalizeConfiguration(options) {
   if (options.authorityId !== undefined && !isUuid(options.authorityId)) throw new StateFault("authority identifier is invalid");
   const verifierGeneration = options.verifierGeneration ?? 1;
   if (!isSafeInteger(verifierGeneration, 1)) throw new StateFault("verifier generation is invalid");
+  if (options.verifyGeneration !== undefined && typeof options.verifyGeneration !== "function" || options.verifyGenerationSync !== undefined && typeof options.verifyGenerationSync !== "function") throw new StateFault("verifier generation checker is invalid");
   return {
     statePath: options.statePath,
     provider,
@@ -930,6 +1078,8 @@ function normalizeConfiguration(options) {
     currentConcurrency,
     authorityId: options.authorityId,
     verifierGeneration,
+    verifyGeneration: options.verifyGeneration,
+    verifyGenerationSync: options.verifyGenerationSync,
     allowTestPort: options.allowTestPort === true,
     allowMigration: options.allowMigration !== false,
     bootstrap: options.bootstrap === true,
@@ -959,8 +1109,16 @@ export class AuthorityState {
     return this.state.laneTerm;
   }
 
+  get verifierGeneration() {
+    return this.state.verifierGeneration;
+  }
+
   async awaitIdle() {
     await this._tail;
+  }
+
+  markVerifierUnavailable() {
+    this.degraded = true;
   }
 
   _now() {
@@ -996,9 +1154,19 @@ export class AuthorityState {
     if (!stored || !sameHeader(stored, this.state) || canonical(stored) !== canonical(this.state)) this._degrade(new StateFault("authority ownership fence changed"));
   }
 
-  async _commit(next) {
+  async _commit(next, verifyGeneration) {
     await this._assertStoredHeader();
+    let generation = this.configuration.verifierGeneration;
     try {
+      await invokeFaultAsync(this.configuration.runtimeFaultInjector, "before-verifier-recheck", this.configuration.statePath);
+      if (verifyGeneration ?? this.configuration.verifyGeneration) generation = await (verifyGeneration ?? this.configuration.verifyGeneration)();
+      if (!isSafeInteger(generation, 1) || generation < this.state.verifierGeneration) throw verifierFault();
+    } catch (error) {
+      if (error instanceof AuthorityError && ["unauthenticated", "forbidden_scope", "forbidden_lane"].includes(error.code)) throw error;
+      this._degrade(error);
+    }
+    try {
+      next.verifierGeneration = generation;
       validateState(next, this.configuration);
       await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
     } catch (error) {
@@ -1007,7 +1175,7 @@ export class AuthorityState {
     this.state = next;
   }
 
-  _transition(mutate, { allowDraining = false } = {}) {
+  _transition(mutate, { allowDraining = false, verifyGeneration } = {}) {
     return this._enqueue(async () => {
       if (this.degraded || this.state.lifecycleState === "degraded") fail("authority_degraded", "authority is degraded");
       if (!allowDraining && this.state.lifecycleState === "draining") fail("authority_draining", "authority is draining");
@@ -1015,7 +1183,7 @@ export class AuthorityState {
       const next = clone(this.state);
       const now = this._now();
       const result = mutate(next, now);
-      await this._commit(next);
+      await this._commit(next, verifyGeneration);
       return result;
     });
   }
@@ -1034,7 +1202,7 @@ export class AuthorityState {
     });
   }
 
-  createTicket(principal, request) {
+  createTicket(principal, request, { verifyGeneration } = {}) {
     return this._transition((next, transitionNow) => {
       validateCreateRequest(request);
       const checkedPrincipal = assertPrincipalMatches(principal, request);
@@ -1084,7 +1252,7 @@ export class AuthorityState {
       scheduleOffers(next, transitionNow, this.configuration.timing);
       ticket.createResponse = ticketPublic(next, ticket);
       return { ticket: clone(ticket.createResponse), replayed: false, created: true };
-    });
+    }, { verifyGeneration });
   }
 
   getTicket(principal, ticketId) {
@@ -1095,7 +1263,7 @@ export class AuthorityState {
     return ticketPublic(this.state, ticketForOwner(this.state, checkedPrincipal, ticketId));
   }
 
-  mutateTicket(principal, ticketId, action, request) {
+  mutateTicket(principal, ticketId, action, request, { verifyGeneration } = {}) {
     return this._transition((next, now) => {
       if (!["claim", "cancel", "renew", "complete"].includes(action)) throw new StateFault("authority operation is invalid");
       validateMutationRequest(request, action);
@@ -1157,10 +1325,10 @@ export class AuthorityState {
       const response = ticketPublic(next, ticket);
       rememberOperation(ticket, request.operationId, fingerprint, response, now);
       return { ticket: response, replayed: false };
-    }, { allowDraining: action === "renew" || action === "complete" || action === "cancel" });
+    }, { allowDraining: action === "renew" || action === "complete" || action === "cancel", verifyGeneration });
   }
 
-  publishAllowance(principal, request) {
+  publishAllowance(principal, request, { verifyGeneration } = {}) {
     return this._transition((next, transitionNow) => {
       validateAllowanceRequest(request, transitionNow);
       const checkedPrincipal = assertPrincipalMatches(principal, request);
@@ -1194,7 +1362,7 @@ export class AuthorityState {
         delete next.allowancePublishes[oldest];
       }
       return { allowance, replayed: false };
-    });
+    }, { verifyGeneration });
   }
 
   drain() {
@@ -1220,6 +1388,22 @@ export class AuthorityState {
       next.lifecycleState = "ready";
       scheduleOffers(next, now, this.configuration.timing);
       return true;
+    }, { allowDraining: true });
+  }
+
+  reconcileUncertain(ticketId) {
+    return this._transition((next, now) => {
+      if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");
+      const ticket = next.tickets[ticketId];
+      if (!ticket) fail("not_found", "ticket is unavailable");
+      if (ticket.state !== "uncertain") fail("invalid_transition", "ticket is not uncertain");
+      ticket.state = "released";
+      ticket.revision += 1;
+      ticket.terminalAtEpochMs = now;
+      ticket.terminalReason = "operator_reconciled";
+      ticket.lease = null;
+      scheduleOffers(next, now, this.configuration.timing);
+      return ticketPublic(next, ticket);
     }, { allowDraining: true });
   }
 
@@ -1261,6 +1445,13 @@ export class AuthorityState {
   }
 }
 
+function currentVerifierGenerationSync(configuration, minimumGeneration) {
+  let generation = configuration.verifierGeneration;
+  if (configuration.verifyGenerationSync) generation = configuration.verifyGenerationSync();
+  if (!isSafeInteger(generation, 1) || generation < minimumGeneration) throw verifierFault();
+  return generation;
+}
+
 export function openAuthorityState(options) {
   const configuration = normalizeConfiguration(options);
   if (typeof configuration.statePath !== "string" || !configuration.statePath) throw new StateFault("authority state path is required");
@@ -1268,6 +1459,7 @@ export function openAuthorityState(options) {
   let state;
   if (source === undefined) {
     if (!configuration.bootstrap) throw new StateFault("authority state is missing and bootstrap was not requested");
+    configuration.verifierGeneration = currentVerifierGenerationSync(configuration, 1);
     state = initialState(configuration);
     validateState(state, configuration);
     const authority = new AuthorityState(state, configuration);
@@ -1285,6 +1477,7 @@ export function openAuthorityState(options) {
     state = source.state;
   }
   validateState(state, configuration);
+  configuration.verifierGeneration = currentVerifierGenerationSync(configuration, state.verifierGeneration);
   if (configuration.authorityId && configuration.authorityId !== state.authorityId) throw new StateFault("authority identifier does not match state");
   const authority = new AuthorityState(state, configuration);
   try { invokeFault(configuration.faultInjector, "before-term-commit", configuration.statePath); } catch (error) { throw error instanceof AuthorityError ? error : new StateFault("authority state changed before term commit"); }
@@ -1293,6 +1486,7 @@ export function openAuthorityState(options) {
   const next = clone(state);
   next.laneTerm += 1;
   next.ownerNonce = crypto.randomUUID();
+  next.verifierGeneration = currentVerifierGenerationSync(configuration, state.verifierGeneration);
   if (next.timingDigest !== configuration.timing.digest) next.timingDigest = configuration.timing.digest;
   try {
     validateState(next, configuration);

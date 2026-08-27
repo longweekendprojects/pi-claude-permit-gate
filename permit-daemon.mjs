@@ -6,7 +6,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { AuthorityError, authorityErrorBody, authorityStatePath, authorityTimingFromEnvironment, openAuthorityState } from "./authority-state.mjs";
+import { AuthorityError, authenticateAuthorityBearer, authorityErrorBody, authorityStatePath, authorityTimingFromEnvironment, authorityVerifierPath, openAuthorityState, readAuthorityVerifierStore, readAuthorityVerifierStoreAsync } from "./authority-state.mjs";
 
 const DAEMON_MODE = process.env.CLAUDE_PERMIT_GATE_DAEMON_MODE ?? "local";
 
@@ -66,17 +66,42 @@ function authorityRequestBody(req) {
   return body;
 }
 
-function testAuthorityPrincipal(req, requiredScope) {
-  // Production authority mode remains fail-closed until the verifier store arrives in Task 3.
-  if (process.env.CLAUDE_PERMIT_GATE_TEST_MODE !== "1" || process.env.CLAUDE_PERMIT_GATE_TEST_AUTH !== "1") throw new AuthorityError("verifier_unavailable", { message: "verifier is unavailable" });
-  const installationId = req.headers["x-authority-test-installation"];
-  const accountBindingId = req.headers["x-authority-test-account-binding"];
-  const providerHeader = req.headers["x-authority-test-providers"];
-  const providers = providerHeader === undefined ? undefined : String(providerHeader).split(",").filter(Boolean);
-  if (!Array.isArray(providers) || providers.length === 0 || providers.length > 4 || new Set(providers).size !== providers.length || !providers.every((provider) => ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"].includes(provider))) throw new AuthorityError("unauthenticated", { message: "principal is unavailable" });
-  const scopes = new Set(String(req.headers["x-authority-test-scopes"] ?? "permit:mutate,snapshot:read,allowance:publish").split(",").filter(Boolean));
-  if (requiredScope && !scopes.has(requiredScope)) throw new AuthorityError("forbidden_scope", { message: "scope is not allowed" });
-  return { installationId, accountBindingId, providers };
+function isAuthorityUuid(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function authorityAuthorization(req) {
+  const values = [];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) if (req.rawHeaders[index].toLowerCase() === "authorization") values.push(req.rawHeaders[index + 1]);
+  if (values.length !== 1) throw new AuthorityError("unauthenticated", { message: "bearer is unavailable" });
+  return values[0];
+}
+
+async function authorityPrincipal(req, requiredScope, configuration, authority) {
+  let store;
+  try {
+    store = await readAuthorityVerifierStoreAsync(configuration.verifierStorePath, { minimumGeneration: authority.verifierGeneration });
+  } catch (error) {
+    if (error instanceof AuthorityError && error.code === "verifier_unavailable") authority.markVerifierUnavailable();
+    throw error;
+  }
+  const verified = authenticateAuthorityBearer(authorityAuthorization(req), store, { requiredScope, provider: configuration.provider });
+  return {
+    ...verified,
+    principal: {
+      installationId: verified.installationId,
+      accountBindingId: configuration.accountBindingId,
+      providers: verified.providers,
+    },
+  };
+}
+
+function authorityPrecommitVerifier(req, requiredScope, configuration, authority, authenticated) {
+  return async () => {
+    const rechecked = await authorityPrincipal(req, requiredScope, configuration, authority);
+    if (rechecked.tokenId !== authenticated.tokenId || rechecked.installationId !== authenticated.installationId || rechecked.scope !== authenticated.scope) throw new AuthorityError("unauthenticated", { message: "bearer changed before commit" });
+    return rechecked.verifierGeneration;
+  };
 }
 
 function startAuthorityDaemon() {
@@ -88,19 +113,25 @@ function startAuthorityDaemon() {
     const testMode = process.env.CLAUDE_PERMIT_GATE_TEST_MODE === "1";
     const providerPorts = { "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 };
     const authorityId = process.env.CLAUDE_PERMIT_GATE_AUTHORITY_ID || undefined;
+    const accountBindingId = process.env.CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID;
+    const verifierStoreOverride = process.env.CLAUDE_PERMIT_GATE_VERIFIER_STORE;
     buildId = process.env.CLAUDE_PERMIT_GATE_BUILD_ID || "development";
-    if ((authorityId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorityId)) || !/^[\x20-\x7e]{1,64}$/.test(buildId)) throw new Error("authority identity is invalid");
+    if ((authorityId !== undefined && !isAuthorityUuid(authorityId)) || !isAuthorityUuid(accountBindingId) || !testMode && verifierStoreOverride !== undefined || !/^[\x20-\x7e]{1,64}$/.test(buildId)) throw new Error("authority identity is invalid");
     const minimumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MIN", 1);
     const maximumConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_MAX", 2);
     const currentConcurrency = authorityInteger("CLAUDE_PERMIT_GATE_START", 2);
     const durableWriteDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_DELAY_MS", 0);
+    const verifierRecheckDelayMs = authorityInteger("CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_DELAY_MS", 0);
     const durableWriteMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_DURABLE_WRITE_MARKER : undefined;
+    const verifierRecheckMarker = testMode ? process.env.CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_MARKER : undefined;
     const shutdownTimeoutMs = testMode ? authorityInteger("CLAUDE_PERMIT_GATE_TEST_SHUTDOWN_TIMEOUT_MS", 10_000) : 10_000;
-    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode || durableWriteMarker !== undefined && !durableWriteMarker || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 30_000) throw new Error("authority configuration is invalid");
+    if (!(provider in providerPorts) || (!testMode && providerPorts[provider] !== port) || minimumConcurrency < 1 || maximumConcurrency > 64 || currentConcurrency < minimumConcurrency || currentConcurrency > maximumConcurrency || durableWriteDelayMs > 5_000 || verifierRecheckDelayMs > 5_000 || durableWriteDelayMs > 0 && !testMode || verifierRecheckDelayMs > 0 && !testMode || durableWriteMarker !== undefined && !durableWriteMarker || verifierRecheckMarker !== undefined && !verifierRecheckMarker || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 30_000) throw new Error("authority configuration is invalid");
     let durableWriteCount = 0;
     configuration = {
       provider,
       port,
+      accountBindingId,
+      verifierStorePath: authorityVerifierPath({ home: os.homedir(), verifierStore: testMode ? verifierStoreOverride : undefined }),
       statePath: authorityStatePath({ home: os.homedir(), stateDirectory: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR, port }),
       bootstrap: process.env.CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP === "1",
       authorityId,
@@ -110,7 +141,14 @@ function startAuthorityDaemon() {
       currentConcurrency,
       allowTestPort: testMode,
       shutdownTimeoutMs,
-      runtimeFaultInjector: durableWriteDelayMs === 0 && durableWriteMarker === undefined ? undefined : async ({ phase }) => {
+      verifyGenerationSync: () => readAuthorityVerifierStore(configuration.verifierStorePath).generation,
+      verifyGeneration: async () => (await readAuthorityVerifierStoreAsync(configuration.verifierStorePath)).generation,
+      runtimeFaultInjector: durableWriteDelayMs === 0 && durableWriteMarker === undefined && verifierRecheckDelayMs === 0 && verifierRecheckMarker === undefined ? undefined : async ({ phase }) => {
+        if (phase === "before-verifier-recheck") {
+          if (verifierRecheckMarker !== undefined) await fs.promises.writeFile(verifierRecheckMarker, "ready", { mode: 0o600 });
+          if (verifierRecheckDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, verifierRecheckDelayMs));
+          return;
+        }
         if (phase !== "before-write") return;
         durableWriteCount += 1;
         if (durableWriteMarker !== undefined) await fs.promises.writeFile(durableWriteMarker, String(durableWriteCount), { mode: 0o600 });
@@ -155,44 +193,47 @@ function startAuthorityDaemon() {
       const pathname = url.pathname;
       if (req.method === "POST" && req.headers["content-type"] !== "application/json") throw new AuthorityError("invalid_request", { message: "authority requests require JSON" });
       if (req.method === "GET" && pathname === "/v1/health") {
-        testAuthorityPrincipal(req);
+        await authorityPrincipal(req, undefined, configuration, authority);
         authorityReply(res, 200, authority.health({ instanceId, buildId }));
         return;
       }
       if (req.method === "GET" && pathname === "/v1/snapshot") {
-        testAuthorityPrincipal(req, "snapshot:read");
+        await authorityPrincipal(req, "snapshot:read", configuration, authority);
         authorityReply(res, 200, authority.snapshot({ instanceId, buildId }));
         return;
       }
       const ticket = pathname.match(/^\/v1\/tickets\/([0-9a-f-]{36})(?:\/(claim|cancel|renew|complete))?$/i);
       if (req.method === "GET" && ticket && !ticket[2]) {
-        const principal = testAuthorityPrincipal(req, "permit:mutate");
-        const result = authority.getTicket(principal, ticket[1]);
+        const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
+        const result = authority.getTicket(authenticated.principal, ticket[1]);
         authorityReply(res, 200, result, { etag: `"revision-${result.revision}"` });
         return;
       }
       if (req.method === "POST" && pathname === "/v1/tickets") {
-        const principal = testAuthorityPrincipal(req, "permit:mutate");
+        const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
         const body = authorityRequestBody(req);
-        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.createTicket(principal, requestBody)));
+        const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
+        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.createTicket(authenticated.principal, requestBody, { verifyGeneration })));
         const headers = { etag: `"revision-${result.ticket.revision}"`, location: `/v1/tickets/${result.ticket.ticketId}` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, result.created ? 201 : 200, result.ticket, headers);
         return;
       }
       if (req.method === "POST" && ticket && ticket[2]) {
-        const principal = testAuthorityPrincipal(req, "permit:mutate");
+        const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
         const body = authorityRequestBody(req);
-        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.mutateTicket(principal, ticket[1], ticket[2], requestBody)));
+        const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
+        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.mutateTicket(authenticated.principal, ticket[1], ticket[2], requestBody, { verifyGeneration })));
         const headers = { etag: `"revision-${result.ticket.revision}"` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, 200, result.ticket, headers);
         return;
       }
       if (req.method === "POST" && pathname === "/v1/allowance") {
-        const principal = testAuthorityPrincipal(req, "allowance:publish");
+        const authenticated = await authorityPrincipal(req, "allowance:publish", configuration, authority);
         const body = authorityRequestBody(req);
-        authorityReply(res, 200, await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(principal, requestBody))));
+        const verifyGeneration = authorityPrecommitVerifier(req, "allowance:publish", configuration, authority, authenticated);
+        authorityReply(res, 200, await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(authenticated.principal, requestBody, { verifyGeneration }))));
         return;
       }
       throw new AuthorityError("not_found", { message: "authority route is unavailable" });

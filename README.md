@@ -42,6 +42,48 @@ The protocol is build-only until its documented H1, deployment, identity, timing
 node scripts/validate-authority-contract.mjs
 ```
 
+### Authority administration
+
+`authority-admin.mjs` is a local-only operator tool. It creates lane state, enrolls or rotates verifier records, revokes one token or installation, drains or resumes a stopped lane, and reconciles one uncertain lease only after explicit approval. It never exposes these actions as HTTP routes.
+
+Authority mode reads the shared owner-only verifier store at `~/Library/Application Support/Claude Permit Authority/verifiers-v1.json`. Each lane also requires its non-secret `CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID`; every request body must match that lane binding.
+
+Bearer secrets are accepted only from standard input. The tool pipes the value directly to macOS Keychain with `security add-generic-password ... -w` as the final prompted option, writes only SHA-256 verifiers to disk, and emits no secret value. Do not pass a bearer value through an argument, environment variable, file, log, or fixture.
+
+```bash
+# The generator and admin process exchange the bearer only through a pipe.
+node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | \
+  node scripts/authority-admin.mjs enroll \
+    --installation-id <installation-uuid> \
+    --scope permit:mutate \
+    --lanes anthropic-a,anthropic-b,anthropic-c,anthropic-d \
+    --token-id <opaque-token-id> \
+    --keychain-service <keychain-service> \
+    --keychain-account <keychain-account> \
+    --expires-at-epoch-ms <expiry-epoch-ms>
+
+# Rotation retains one predecessor/successor verifier overlap with the same owner, role, and lanes.
+node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | \
+  node scripts/authority-admin.mjs rotate \
+    --old-token-id <old-opaque-token-id> \
+    --new-token-id <new-opaque-token-id> \
+    --keychain-service <keychain-service> \
+    --keychain-account <keychain-account> \
+    --expires-at-epoch-ms <expiry-epoch-ms>
+```
+
+The lane-state commands require the four explicit authority timing variables from the normative protocol. They refuse a running listener or launchd-owned lane and reserve the loopback port while they operate. `bootstrap` only creates a missing state file. `reconcile` requires a state backup, one uncertain ticket ID, and `--approve-uncertain-reconciliation`; it is the only path that can emit `operator_reconciled`.
+
+```bash
+node scripts/authority-admin.mjs bootstrap --provider anthropic-a
+node scripts/authority-admin.mjs drain --provider anthropic-a
+node scripts/authority-admin.mjs resume --provider anthropic-a
+node scripts/authority-admin.mjs revoke --installation-id <installation-uuid>
+node scripts/authority-admin.mjs reconcile --provider anthropic-a --ticket-id <uncertain-ticket-uuid> --backup-path <new-backup-path> --approve-uncertain-reconciliation
+```
+
+These commands are build artifacts, not authorization to access a live Keychain, state store, daemon, or launchd job. Follow the protocol's deployment and maintenance gates before using them outside a temporary test home.
+
 ## Provider pools
 
 The default mapping supports Pi's built-in Anthropic provider and four account-lane aliases:

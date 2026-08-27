@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -9,11 +10,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthorityError, openAuthorityState } from "../authority-state.mjs";
+import { AuthorityError, authorityVerifierPath, openAuthorityState, writeAuthorityVerifierStore } from "../authority-state.mjs";
 import { ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const daemonPath = path.join(root, "permit-daemon.mjs");
+const authorityAdminPath = path.join(root, "scripts", "authority-admin.mjs");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function unusedPort() {
@@ -61,11 +63,38 @@ function authorityUuid(value) {
   const hex = Number(value).toString(16).padStart(8, "0");
   return `${hex}-0000-4000-8000-${hex.padStart(12, "0")}`;
 }
-function authorityPrincipal(value) {
-  return { installationId: authorityUuid(value), accountBindingId: authorityUuid(100 + value), providers: ["anthropic-a"] };
+function authorityPrincipal(value, { accountBindingId = authorityUuid(100 + value), providers = ["anthropic-a"] } = {}) {
+  return { installationId: authorityUuid(value), accountBindingId, providers };
 }
-function authorityHeaders(principal, scopes = "permit:mutate,snapshot:read,allowance:publish") {
-  return { "x-authority-test-installation": principal.installationId, "x-authority-test-account-binding": principal.accountBindingId, "x-authority-test-providers": principal.providers.join(","), "x-authority-test-scopes": scopes };
+function authorityToken(principal, scope = "permit:mutate") {
+  const tokenId = `test-${scope.replace(":", "-")}-${principal.installationId.slice(0, 8)}`;
+  const secret = crypto.createHash("sha256").update(`test-authority-token:${principal.installationId}:${scope}`).digest();
+  return { tokenId, secret };
+}
+function authorityHeaders(principal, scope = "permit:mutate") {
+  const { tokenId, secret } = authorityToken(principal, scope);
+  return { authorization: `Bearer ${tokenId}.${secret.toString("base64url")}` };
+}
+function authorityVerifierRecord(principal, scope, generation = 1) {
+  const { tokenId, secret } = authorityToken(principal, scope);
+  return {
+    tokenId,
+    verifierSha256: crypto.createHash("sha256").update(secret).digest("hex"),
+    installationId: principal.installationId,
+    scope,
+    laneAllowlist: [...principal.providers],
+    generation,
+    issuedAtEpochMs: Date.now() - 1_000,
+    expiresAtEpochMs: Date.now() + 3_600_000,
+    predecessorTokenId: null,
+    revokedAtEpochMs: null,
+  };
+}
+async function seedAuthorityVerifiers(home, principals) {
+  const verifierStore = authorityVerifierPath({ home });
+  const verifiers = principals.flatMap((principal) => ["permit:mutate", "snapshot:read", "allowance:publish"].map((scope) => authorityVerifierRecord(principal, scope)));
+  await writeAuthorityVerifierStore(verifierStore, { schemaVersion: 1, generation: 1, verifiers }, { allowCreate: true });
+  return verifierStore;
 }
 function ticketCreate(principal, { session = authorityUuid(200), request = authorityUuid(300), now = 1_760_000_000_000 } = {}) {
   return { schemaVersion: 1, provider: "anthropic-a", accountBindingId: principal.accountBindingId, installationId: principal.installationId, sessionId: session, requestId: request, createdAtEpochMs: now };
@@ -106,20 +135,81 @@ async function durableAuthority(t, overrides = {}) {
     restart(extra = {}) { authority = openAuthorityState({ ...base, ...extra, bootstrap: false }); return authority; },
   };
 }
+function authorityAdminEnvironment(home) {
+  return {
+    ...process.env,
+    HOME: home,
+    CLAUDE_PERMIT_GATE_TEST_MODE: "1",
+    CLAUDE_PERMIT_GATE_TEST_KEYCHAIN_WRITER: "/bin/cat",
+    CLAUDE_PERMIT_GATE_TEST_ADMIN_ASSUME_OFFLINE: "1",
+    CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000",
+    CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000",
+    CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000",
+    CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000",
+  };
+}
+
+async function runAuthorityAdmin(home, args, secret) {
+  const input = secret ? Buffer.from(`${secret.toString("base64url")}\n`) : undefined;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [authorityAdminPath, ...args], { env: authorityAdminEnvironment(home), stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      input?.fill(0);
+      resolve({ code, signal, stdout, stderr });
+    });
+    child.stdin.end(input);
+  });
+}
+
+async function startSharedAuthority(home, stateDirectory, provider, port, accountBindingId, authorization, overrides = {}) {
+  const child = spawn(process.execPath, [daemonPath], {
+    env: {
+      ...authorityAdminEnvironment(home),
+      CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority",
+      CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "0",
+      CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: stateDirectory,
+      CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: accountBindingId,
+      CLAUDE_PERMIT_GATE_PROVIDER: provider,
+      CLAUDE_PERMIT_GATE_PORT: String(port),
+      CLAUDE_PERMIT_GATE_MIN: "1",
+      CLAUDE_PERMIT_GATE_MAX: "1",
+      CLAUDE_PERMIT_GATE_START: "1",
+      ...overrides,
+    },
+    stdio: "ignore",
+  });
+  await eventually(async () => (await request(port, "GET", "/v1/health", undefined, { authorization })).status === 200, "shared authority daemon did not become ready");
+  return child;
+}
+
+async function stopChild(child) {
+  if (child.exitCode === null) child.kill("SIGTERM");
+  if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+}
+
 async function authorityDaemon(t, overrides = {}) {
   const port = await unusedPort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authority-daemon-"));
   const stateDirectory = path.join(home, "state");
   const principal = authorityPrincipal(700);
+  const secondPrincipal = authorityPrincipal(701, { accountBindingId: principal.accountBindingId });
+  const wrongLanePrincipal = authorityPrincipal(702, { accountBindingId: principal.accountBindingId, providers: ["anthropic-b"] });
+  const verifierStore = await seedAuthorityVerifiers(home, [principal, secondPrincipal, wrongLanePrincipal]);
   const child = spawn(process.execPath, [daemonPath], {
     env: {
       ...process.env,
       HOME: home,
       CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority",
       CLAUDE_PERMIT_GATE_TEST_MODE: "1",
-      CLAUDE_PERMIT_GATE_TEST_AUTH: "1",
       CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1",
       CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: stateDirectory,
+      CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: principal.accountBindingId,
+      CLAUDE_PERMIT_GATE_VERIFIER_STORE: verifierStore,
       CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a",
       CLAUDE_PERMIT_GATE_PORT: String(port),
       CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000",
@@ -136,7 +226,7 @@ async function authorityDaemon(t, overrides = {}) {
   await eventually(async () => (await request(port, "GET", "/v1/health", undefined, authorityHeaders(principal))).status === 200, "authority daemon did not become ready");
   const statePath = path.join(stateDirectory, `lane-${port}.json`);
   t.after(async () => { if (child.exitCode === null) child.kill("SIGTERM"); if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve)); await fs.rm(home, { recursive: true, force: true }); });
-  return { port, home, stateDirectory, statePath, principal, child };
+  return { port, home, stateDirectory, statePath, verifierStore, principal, secondPrincipal, wrongLanePrincipal, child };
 }
 
 test("daemon health reports provenance and EADDRINUSE re-probes a compatible owner", async (t) => {
@@ -271,32 +361,26 @@ test("authority replays creates and compacts terminal records without recreating
   await assert.rejects(() => gate.authority.createTicket(principal, create), (error) => error instanceof AuthorityError && error.code === "invalid_request");
 });
 
-test("authority keeps reconnect-stable tickets through cancellation and claim dispatch", async (t) => {
+test("authority authenticates reconnect-stable tickets and manages verifier generations offline", async (t) => {
   const gate = await authorityDaemon(t);
   const firstPrincipal = gate.principal;
-  const secondPrincipal = authorityPrincipal(701);
+  const secondPrincipal = gate.secondPrincipal;
   const now = Date.now();
   const firstRequest = ticketCreate(firstPrincipal, { session: authorityUuid(2701), request: authorityUuid(3701), now });
   const secondRequest = ticketCreate(secondPrincipal, { session: authorityUuid(2702), request: authorityUuid(3702), now });
-  const missingProviders = authorityHeaders(firstPrincipal); delete missingProviders["x-authority-test-providers"];
-  const emptyProviders = { ...authorityHeaders(firstPrincipal), "x-authority-test-providers": "" };
-  const malformedProviders = { ...authorityHeaders(firstPrincipal), "x-authority-test-providers": "anthropic-z" };
-  const duplicateProviders = { ...authorityHeaders(firstPrincipal), "x-authority-test-providers": "anthropic-a,anthropic-a" };
-  const oversizedProviders = { ...authorityHeaders(firstPrincipal), "x-authority-test-providers": "anthropic-a,anthropic-b,anthropic-c,anthropic-d,anthropic-a" };
-  for (const headers of [missingProviders, emptyProviders, malformedProviders, duplicateProviders, oversizedProviders]) {
+  for (const headers of [{}, { authorization: "Bearer malformed" }, { authorization: "Bearer unknown.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]) {
     const rejected = await request(gate.port, "POST", "/v1/tickets", firstRequest, headers);
     assert.equal(rejected.status, 401); assert.equal(rejected.body.error.code, "unauthenticated");
   }
-  const wrongLane = await request(gate.port, "POST", "/v1/tickets", { ...firstRequest, provider: "anthropic-b", requestId: authorityUuid(3799) }, authorityHeaders({ ...firstPrincipal, providers: ["anthropic-a", "anthropic-b"] }));
+  const wrongLane = await request(gate.port, "POST", "/v1/tickets", { ...firstRequest, provider: "anthropic-b", requestId: authorityUuid(3799) }, authorityHeaders(firstPrincipal));
   const first = await request(gate.port, "POST", "/v1/tickets", firstRequest, authorityHeaders(firstPrincipal));
   const queued = await request(gate.port, "POST", "/v1/tickets", secondRequest, authorityHeaders(secondPrincipal));
   const reconnect = await request(gate.port, "POST", "/v1/tickets", secondRequest, authorityHeaders(secondPrincipal));
-  assert.equal(wrongLane.status, 409); assert.equal(wrongLane.body.error.code, "provider_mismatch");
+  assert.equal(wrongLane.status, 403); assert.equal(wrongLane.body.error.code, "forbidden_lane");
   assert.equal(first.status, 201); assert.equal(first.body.state, "offered"); assert.equal(first.headers.etag, `"revision-${first.body.revision}"`);
   assert.equal(queued.status, 201); assert.equal(queued.body.state, "queued"); assert.equal(reconnect.status, 200); assert.equal(reconnect.headers["idempotency-replayed"], "true"); assert.equal(reconnect.body.ticketId, queued.body.ticketId);
-  const forbiddenPrincipal = { ...secondPrincipal, providers: ["anthropic-b"] };
-  const forbiddenExisting = await request(gate.port, "GET", `/v1/tickets/${queued.body.ticketId}`, undefined, authorityHeaders(forbiddenPrincipal));
-  const forbiddenMissing = await request(gate.port, "GET", `/v1/tickets/${authorityUuid(4799)}`, undefined, authorityHeaders(forbiddenPrincipal));
+  const forbiddenExisting = await request(gate.port, "GET", `/v1/tickets/${queued.body.ticketId}`, undefined, authorityHeaders(gate.wrongLanePrincipal));
+  const forbiddenMissing = await request(gate.port, "GET", `/v1/tickets/${authorityUuid(4799)}`, undefined, authorityHeaders(gate.wrongLanePrincipal));
   assert.equal(forbiddenExisting.status, 403); assert.equal(forbiddenExisting.body.error.code, "forbidden_lane");
   assert.equal(forbiddenMissing.status, forbiddenExisting.status); assert.equal(forbiddenMissing.body.error.code, forbiddenExisting.body.error.code);
   const cancelRequest = ticketMutation(firstPrincipal, { operation: authorityUuid(4701), revision: first.body.revision });
@@ -306,6 +390,144 @@ test("authority keeps reconnect-stable tickets through cancellation and claim di
   const claimRequest = ticketMutation(secondPrincipal, { operation: authorityUuid(4702), revision: offered.body.revision });
   const claimed = await request(gate.port, "POST", `/v1/tickets/${queued.body.ticketId}/claim`, claimRequest, authorityHeaders(secondPrincipal));
   assert.equal(cancelled.body.state, "cancelled"); assert.equal(replayedCancel.headers["idempotency-replayed"], "true"); assert.equal(offered.body.state, "offered"); assert.equal(claimed.body.state, "active");
+
+  const sharedHome = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-authentication-"));
+  const sharedStateDirectory = path.join(sharedHome, "state");
+  const providers = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
+  const sharedPorts = await Promise.all(providers.map(() => unusedPort()));
+  const laneBindings = new Map(providers.map((provider, index) => [provider, authorityUuid(8_000 + index)]));
+  const installationOne = authorityUuid(810);
+  const installationTwo = authorityUuid(811);
+  const installationThree = authorityUuid(812);
+  const tokenOne = crypto.randomBytes(32);
+  const tokenRead = crypto.randomBytes(32);
+  const tokenPublish = crypto.randomBytes(32);
+  const tokenTwo = crypto.randomBytes(32);
+  const tokenNarrow = crypto.randomBytes(32);
+  const tokenRotated = crypto.randomBytes(32);
+  const bearer = (tokenId, secret) => `Bearer ${tokenId}.${secret.toString("base64url")}`;
+  const expiry = String(Date.now() + 3_600_000);
+  const enroll = async ({ tokenId, secret, installationId, scope, lanes }) => {
+    const result = await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", installationId, "--scope", scope, "--lanes", lanes.join(","), "--token-id", tokenId, "--keychain-service", "test.authority", "--keychain-account", `${tokenId}.account`, "--expires-at-epoch-ms", expiry], secret);
+    assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null });
+    assert.equal(result.stdout.includes(secret.toString("base64url")), false); assert.equal(result.stderr.includes(secret.toString("base64url")), false);
+  };
+  await enroll({ tokenId: "permit-one", secret: tokenOne, installationId: installationOne, scope: "permit:mutate", lanes: providers });
+  await enroll({ tokenId: "read-one", secret: tokenRead, installationId: installationOne, scope: "snapshot:read", lanes: providers });
+  await enroll({ tokenId: "publish-one", secret: tokenPublish, installationId: installationOne, scope: "allowance:publish", lanes: providers });
+  await enroll({ tokenId: "permit-two", secret: tokenTwo, installationId: installationTwo, scope: "permit:mutate", lanes: providers });
+  await enroll({ tokenId: "permit-narrow", secret: tokenNarrow, installationId: installationThree, scope: "permit:mutate", lanes: ["anthropic-a"] });
+  const verifierStore = authorityVerifierPath({ home: sharedHome });
+  for (const [index, provider] of providers.entries()) {
+    const result = await runAuthorityAdmin(sharedHome, ["bootstrap", "--provider", provider, "--port", String(sharedPorts[index]), "--state-dir", sharedStateDirectory]);
+    assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null });
+  }
+  const verifierRecheckMarker = path.join(sharedHome, "verifier-recheck");
+  const sharedDaemons = [];
+  t.after(async () => { await Promise.all(sharedDaemons.map(stopChild)); await fs.rm(sharedHome, { recursive: true, force: true }); });
+  for (const [index, provider] of providers.entries()) {
+    sharedDaemons.push(await startSharedAuthority(sharedHome, sharedStateDirectory, provider, sharedPorts[index], laneBindings.get(provider), bearer("permit-one", tokenOne), provider === "anthropic-a" ? { CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_MARKER: verifierRecheckMarker, CLAUDE_PERMIT_GATE_TEST_VERIFIER_RECHECK_DELAY_MS: "1000" } : {}));
+  }
+  const sharedCreate = (installationId, provider, accountBindingId, requestId) => ({ schemaVersion: 1, provider, accountBindingId, installationId, sessionId: crypto.randomUUID(), requestId, createdAtEpochMs: Date.now() });
+  const laneAStatePath = path.join(sharedStateDirectory, `lane-${sharedPorts[0]}.json`);
+  const laneBStatePath = path.join(sharedStateDirectory, `lane-${sharedPorts[1]}.json`);
+  const laneABeforeDenials = await fs.readFile(laneAStatePath, "utf8");
+  const laneBBeforeDenials = await fs.readFile(laneBStatePath, "utf8");
+  const wrongRole = await request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", laneBindings.get("anthropic-a"), crypto.randomUUID()), { authorization: bearer("read-one", tokenRead) });
+  const wrongOwner = await request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", laneBindings.get("anthropic-a"), crypto.randomUUID()), { authorization: bearer("permit-two", tokenTwo) });
+  const sharedWrongLane = await request(sharedPorts[1], "POST", "/v1/tickets", sharedCreate(installationThree, "anthropic-b", laneBindings.get("anthropic-b"), crypto.randomUUID()), { authorization: bearer("permit-narrow", tokenNarrow) });
+  const wrongBinding = await request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", authorityUuid(8_100), crypto.randomUUID()), { authorization: bearer("permit-one", tokenOne) });
+  const snapshotAllowed = await request(sharedPorts[0], "GET", "/v1/snapshot", undefined, { authorization: bearer("read-one", tokenRead) });
+  const snapshotWrongRole = await request(sharedPorts[0], "GET", "/v1/snapshot", undefined, { authorization: bearer("permit-one", tokenOne) });
+  const publishWrongRole = await request(sharedPorts[0], "POST", "/v1/allowance", { schemaVersion: 1, installationId: installationOne, provider: "anthropic-a", accountBindingId: laneBindings.get("anthropic-a"), publishId: crypto.randomUUID(), publisherSequence: 1, observedAtEpochMs: Date.now(), fiveHour: null, sevenDay: null }, { authorization: bearer("read-one", tokenRead) });
+  assert.deepEqual([wrongRole.body.error.code, wrongOwner.body.error.code, sharedWrongLane.body.error.code, wrongBinding.body.error.code], ["forbidden_scope", "unauthenticated", "forbidden_lane", "account_binding_mismatch"]);
+  assert.deepEqual([wrongRole.status, wrongOwner.status, sharedWrongLane.status, wrongBinding.status], [403, 401, 403, 409]);
+  assert.equal(snapshotAllowed.status, 200); assert.equal(snapshotWrongRole.status, 403); assert.equal(publishWrongRole.status, 403);
+  assert.equal(await fs.readFile(laneAStatePath, "utf8"), laneABeforeDenials); assert.equal(await fs.readFile(laneBStatePath, "utf8"), laneBBeforeDenials);
+
+  const precommitState = await fs.readFile(laneAStatePath, "utf8");
+  const revokedCreate = request(sharedPorts[0], "POST", "/v1/tickets", sharedCreate(installationOne, "anthropic-a", laneBindings.get("anthropic-a"), crypto.randomUUID()), { authorization: bearer("permit-one", tokenOne) });
+  await eventually(async () => (await fs.readFile(verifierRecheckMarker, "utf8")) === "ready", "mutation did not reach the verifier recheck");
+  const storeBeforeRevocation = await fs.readFile(verifierStore);
+  const revokeResult = await runAuthorityAdmin(sharedHome, ["revoke", "--installation-id", installationOne]);
+  assert.deepEqual({ code: revokeResult.code, signal: revokeResult.signal }, { code: 0, signal: null });
+  const revokedCreateResult = await revokedCreate;
+  assert.equal(revokedCreateResult.status, 401); assert.equal(revokedCreateResult.body.error.code, "unauthenticated"); assert.equal(await fs.readFile(laneAStatePath, "utf8"), precommitState);
+  const storeAfterRevocation = await fs.readFile(verifierStore);
+  assert.equal(JSON.parse(storeAfterRevocation).generation, JSON.parse(storeBeforeRevocation).generation + 1);
+  for (const [index, provider] of providers.entries()) {
+    const revoked = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-one", tokenOne) });
+    const unaffected = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+    const committed = await request(sharedPorts[index], "POST", "/v1/tickets", sharedCreate(installationTwo, provider, laneBindings.get(provider), crypto.randomUUID()), { authorization: bearer("permit-two", tokenTwo) });
+    assert.equal(revoked.status, 401); assert.equal(unaffected.status, 200); assert.equal(committed.status, 201);
+    assert.equal(JSON.parse(await fs.readFile(path.join(sharedStateDirectory, `lane-${sharedPorts[index]}.json`), "utf8")).verifierGeneration, JSON.parse(storeAfterRevocation).generation);
+  }
+  const rotation = await runAuthorityAdmin(sharedHome, ["rotate", "--old-token-id", "permit-two", "--new-token-id", "permit-two-next", "--keychain-service", "test.authority", "--keychain-account", "permit-two-next.account", "--expires-at-epoch-ms", String(Date.now() + 3_600_000)], tokenRotated);
+  assert.equal(rotation.code, 0);
+  const storeAfterRotation = await fs.readFile(verifierStore);
+  for (const [index, provider] of providers.entries()) {
+    const overlap = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+    const successor = await request(sharedPorts[index], "GET", "/v1/health", undefined, { authorization: bearer("permit-two-next", tokenRotated) });
+    const committed = await request(sharedPorts[index], "POST", "/v1/tickets", sharedCreate(installationTwo, provider, laneBindings.get(provider), crypto.randomUUID()), { authorization: bearer("permit-two-next", tokenRotated) });
+    assert.equal(overlap.status, 200); assert.equal(successor.status, 200); assert.equal(committed.status, 201);
+    assert.equal(JSON.parse(await fs.readFile(path.join(sharedStateDirectory, `lane-${sharedPorts[index]}.json`), "utf8")).verifierGeneration, JSON.parse(storeAfterRotation).generation);
+  }
+
+  await fs.writeFile(verifierStore, storeAfterRevocation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  const rolledBack = await request(sharedPorts[2], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+  assert.equal(rolledBack.status, 503); assert.equal(rolledBack.body.error.code, "verifier_unavailable");
+  await fs.writeFile(verifierStore, storeAfterRotation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  await fs.chmod(verifierStore, 0o644);
+  const unreadable = await request(sharedPorts[3], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+  assert.equal(unreadable.status, 503); assert.equal(unreadable.body.error.code, "verifier_unavailable");
+  await fs.chmod(verifierStore, 0o600);
+  await fs.writeFile(verifierStore, "{broken", { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  const malformed = await request(sharedPorts[0], "GET", "/v1/health", undefined, { authorization: bearer("permit-two", tokenTwo) });
+  assert.equal(malformed.status, 503); assert.equal(malformed.body.error.code, "verifier_unavailable");
+  await fs.writeFile(verifierStore, storeAfterRotation, { mode: 0o600 }); await fs.chmod(verifierStore, 0o600);
+  const expiredToken = crypto.randomBytes(32);
+  const expiredEnrollment = await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", authorityUuid(813), "--scope", "snapshot:read", "--lanes", providers.join(","), "--token-id", "expired-read", "--keychain-service", "test.authority", "--keychain-account", "expired-read.account", "--expires-at-epoch-ms", String(Date.now() + 100)], expiredToken);
+  assert.equal(expiredEnrollment.code, 0); await delay(150);
+  const expired = await request(sharedPorts[1], "GET", "/v1/snapshot", undefined, { authorization: bearer("expired-read", expiredToken) });
+  assert.equal(expired.status, 401); assert.equal(expired.body.error.code, "unauthenticated");
+
+  const adminPort = await unusedPort();
+  const adminStateDirectory = path.join(sharedHome, "admin-state");
+  const adminBootstrap = await runAuthorityAdmin(sharedHome, ["bootstrap", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory]);
+  assert.equal(adminBootstrap.code, 0);
+  const adminStatePath = path.join(adminStateDirectory, `lane-${adminPort}.json`);
+  const adminGeneration = JSON.parse(await fs.readFile(verifierStore, "utf8")).generation;
+  const adminClock = { now: Date.now() };
+  const adminConfiguration = { statePath: adminStatePath, provider: "anthropic-a", port: adminPort, timing: AUTHORITY_TIMING, minimumConcurrency: 1, maximumConcurrency: 1, currentConcurrency: 1, verifierGeneration: adminGeneration, allowTestPort: true, clock: () => adminClock.now, bootstrap: false };
+  const offlineAuthority = openAuthorityState(adminConfiguration);
+  const offlinePrincipal = { installationId: installationTwo, accountBindingId: laneBindings.get("anthropic-a"), providers: ["anthropic-a"] };
+  const offlineTicket = await offlineAuthority.createTicket(offlinePrincipal, ticketCreate(offlinePrincipal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: adminClock.now }));
+  const occupiedListener = net.createServer();
+  await new Promise((resolve, reject) => { occupiedListener.once("error", reject); occupiedListener.listen(adminPort, "127.0.0.1", resolve); });
+  const blockedDrain = await runAuthorityAdmin(sharedHome, ["drain", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory]);
+  assert.notEqual(blockedDrain.code, 0); await new Promise((resolve) => occupiedListener.close(resolve));
+  const drained = await runAuthorityAdmin(sharedHome, ["drain", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory]);
+  assert.equal(drained.code, 0);
+  const drainedState = JSON.parse(await fs.readFile(adminStatePath, "utf8"));
+  assert.equal(drainedState.lifecycleState, "draining"); assert.equal(drainedState.tickets[offlineTicket.ticket.ticketId].terminalReason, "authority_draining");
+  const resumed = await runAuthorityAdmin(sharedHome, ["resume", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory]);
+  assert.equal(resumed.code, 0); assert.equal(JSON.parse(await fs.readFile(adminStatePath, "utf8")).lifecycleState, "ready");
+  const uncertainAuthority = openAuthorityState(adminConfiguration);
+  const uncertainTicket = await uncertainAuthority.createTicket(offlinePrincipal, ticketCreate(offlinePrincipal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: adminClock.now }));
+  const uncertainClaim = await uncertainAuthority.mutateTicket(offlinePrincipal, uncertainTicket.ticket.ticketId, "claim", ticketMutation(offlinePrincipal, { operation: crypto.randomUUID(), revision: uncertainTicket.ticket.revision }));
+  adminClock.now = uncertainClaim.ticket.lease.serverDeadlineEpochMs + 1;
+  await uncertainAuthority.reconcile();
+  assert.equal(uncertainAuthority.getTicket(offlinePrincipal, uncertainTicket.ticket.ticketId).state, "uncertain");
+  const backupPath = path.join(sharedHome, "admin-state-backup.json");
+  const missingApproval = await runAuthorityAdmin(sharedHome, ["reconcile", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory, "--ticket-id", uncertainTicket.ticket.ticketId, "--backup-path", backupPath]);
+  assert.notEqual(missingApproval.code, 0);
+  const reconciled = await runAuthorityAdmin(sharedHome, ["reconcile", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory, "--ticket-id", uncertainTicket.ticket.ticketId, "--backup-path", backupPath, "--approve-uncertain-reconciliation"]);
+  assert.equal(reconciled.code, 0);
+  const reconciledState = JSON.parse(await fs.readFile(adminStatePath, "utf8"));
+  assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].state, "released"); assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].terminalReason, "operator_reconciled"); assert.equal((await fs.stat(backupPath)).mode & 0o777, 0o600);
+  const persistedText = `${await fs.readFile(verifierStore, "utf8")}\n${await fs.readFile(adminStatePath, "utf8")}\n${await fs.readFile(backupPath, "utf8")}`;
+  for (const secret of [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken]) assert.equal(persistedText.includes(secret.toString("base64url")), false);
+  for (const secret of [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken]) secret.fill(0);
 });
 
 test("authority quarantines missed renewals and restores only an acknowledged matching lease", async (t) => {
@@ -593,7 +815,7 @@ test("authority fails closed for migration, fsync faults, socket ownership, and 
   assert.deepEqual(await timeoutExitPromise, { code: 1, signal: null }); await timingOutMutation;
 
   const socketGate = await authorityDaemon(t); const beforeSocketRace = await fs.readFile(socketGate.statePath, "utf8");
-  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: socketGate.home, CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority", CLAUDE_PERMIT_GATE_TEST_MODE: "1", CLAUDE_PERMIT_GATE_TEST_AUTH: "1", CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1", CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: socketGate.stateDirectory, CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", CLAUDE_PERMIT_GATE_PORT: String(socketGate.port), CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000", CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000" }, stdio: "ignore" });
+  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: socketGate.home, CLAUDE_PERMIT_GATE_DAEMON_MODE: "authority", CLAUDE_PERMIT_GATE_TEST_MODE: "1", CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP: "1", CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR: socketGate.stateDirectory, CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID: socketGate.principal.accountBindingId, CLAUDE_PERMIT_GATE_VERIFIER_STORE: socketGate.verifierStore, CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", CLAUDE_PERMIT_GATE_PORT: String(socketGate.port), CLAUDE_PERMIT_GATE_OFFER_TTL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_INTERVAL_MS: "5000", CLAUDE_PERMIT_GATE_RENEW_DEADLINE_MS: "15000", CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS: "86400000" }, stdio: "ignore" });
   assert.equal((await new Promise((resolve) => contender.once("exit", resolve))), 3);
   assert.equal(await fs.readFile(socketGate.statePath, "utf8"), beforeSocketRace);
 });
