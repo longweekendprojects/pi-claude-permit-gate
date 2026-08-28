@@ -32,7 +32,11 @@ const AGENTS_DIR = path.join(HOME, "Library/LaunchAgents");
 const LOG_DIR = path.join(HOME, "Library/Logs/Claude Permit Authority");
 const ORIGIN = process.env.CLAUDE_PERMIT_GATE_ORIGIN ?? "https://ruminaider.tail252378.ts.net";
 const AUTHORITY_ID = process.env.CLAUDE_PERMIT_AUTHORITY_ID ?? "ce298942-e550-44f2-8566-b45ea813d01c";
-const KEYCHAIN_ACCOUNT = process.env.CLAUDE_PERMIT_KEYCHAIN_ACCOUNT ?? os.hostname().split(".")[0].replace(/[^A-Za-z0-9_-]/g, "");
+// The Keychain account names credentials already enrolled with the authority, so an existing
+// configuration is authoritative. Deriving it from the hostname would silently point a working
+// machine at credentials that do not exist.
+const existingAccount = (() => { try { return JSON.parse(fs.readFileSync(path.join(HOME, ".pi/agent/claude-permit-gate/authority-client.json"), "utf8")).keychain?.snapshotRead?.account; } catch { return undefined; } })();
+const KEYCHAIN_ACCOUNT = process.env.CLAUDE_PERMIT_KEYCHAIN_ACCOUNT ?? existingAccount ?? os.hostname().split(".")[0].replace(/[^A-Za-z0-9_-]/g, "");
 const LANES = {
   "anthropic-a": { port: 8791, accountBindingId: "6da67cea-ef88-4093-94b8-54b39c1b1ea2" },
   "anthropic-b": { port: 8792, accountBindingId: "49c0e5bf-478c-4752-ab23-89f7e8b64626" },
