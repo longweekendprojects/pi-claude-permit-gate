@@ -18,6 +18,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 const PORT = Number(process.env.CLAUDE_AUTHORITY_EXPORTER_PORT ?? 9713);
+// Defaults to loopback. A second machine binds its tailnet address so the Netdata instance on the
+// authority host can scrape its client-side metrics; tailnet traffic is already WireGuard-encrypted.
+const HOST = process.env.CLAUDE_AUTHORITY_EXPORTER_HOST ?? "127.0.0.1";
 const PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
 const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client.json");
 
@@ -136,4 +139,4 @@ http.createServer(async (request, response) => {
   } catch (error) {
     response.writeHead(500).end(`# exporter error: ${error.message}\n`);
   }
-}).listen(PORT, "127.0.0.1", () => process.stdout.write(`[${new Date().toISOString()}] authority exporter on 127.0.0.1:${PORT}/metrics\n`));
+}).listen(PORT, HOST, () => process.stdout.write(`[${new Date().toISOString()}] authority exporter on ${HOST}:${PORT}/metrics\n`));
