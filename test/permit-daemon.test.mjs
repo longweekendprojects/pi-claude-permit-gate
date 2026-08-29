@@ -346,6 +346,33 @@ test("reclaims abandoned permits and drains waiters on shutdown", async () => {
   gate.child.kill("SIGTERM"); const retry = await another; assert.equal(retry.status, 503); assert.equal(retry.body.retry, true); await new Promise((resolve) => gate.child.once("exit", resolve));
 });
 
+test("authority keeps mutating after a request stalls mid-body", async (t) => {
+  const gate = await authorityDaemon(t);
+  const principal = gate.principal;
+  const payload = JSON.stringify(ticketCreate(principal, { session: authorityUuid(2750), request: authorityUuid(3750), now: Date.now() }));
+  const { tokenId, secret } = authorityToken(principal);
+  const authorization = `Bearer ${tokenId}.${secret.toString("base64url")}`;
+  // A stalled request announces its headers and part of its body, then never finishes. Its
+  // mutation must not be queued, or one such request wedges every later write on the lane.
+  const stalled = await new Promise((resolve, reject) => {
+    const socket = net.connect(gate.port, "127.0.0.1", () => {
+      socket.write(`POST /v1/tickets HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: ${authorization}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n\r\n`);
+      socket.write(payload.slice(0, 20));
+      resolve(socket);
+    });
+    socket.on("error", reject);
+  });
+  t.after(() => stalled.destroy());
+  const healthy = await request(gate.port, "POST", "/v1/tickets", ticketCreate(principal, { session: authorityUuid(2751), request: authorityUuid(3751), now: Date.now() }), authorityHeaders(principal));
+  assert.equal(healthy.status, 201); assert.equal(healthy.body.state, "offered");
+  // Destroying the stalled request must reject its body instead of leaving it unsettled forever.
+  stalled.destroy();
+  const cancelled = await request(gate.port, "POST", `/v1/tickets/${healthy.body.ticketId}/cancel`, ticketMutation(principal, { operation: authorityUuid(4751), revision: healthy.body.revision }), authorityHeaders(principal));
+  assert.equal(cancelled.status, 200); assert.equal(cancelled.body.state, "cancelled");
+  const after = await request(gate.port, "POST", "/v1/tickets", ticketCreate(principal, { session: authorityUuid(2752), request: authorityUuid(3752), now: Date.now() }), authorityHeaders(principal));
+  assert.equal(after.status, 201); assert.equal(after.body.state, "offered");
+});
+
 test("authority replays creates and compacts terminal records without recreating them", async (t) => {
   const gate = await durableAuthority(t);
   const principal = authorityPrincipal(1);

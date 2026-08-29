@@ -60,9 +60,11 @@ function authorityRequestBody(req) {
     req.on("end", () => {
       try { resolveOnce(text ? JSON.parse(text) : {}); } catch { rejectOnce(new AuthorityError("invalid_json", { message: "request body is invalid" })); }
     });
+    // A request whose connection closes before the body completes never emits "end" or "error":
+    // Node destroys a stalled request socket silently on its request timeout. Without this,
+    // the body promise stays unsettled forever, so a mutation chained behind it wedges the lane.
+    req.on("close", () => rejectOnce(new AuthorityError("invalid_request", { message: "request body is incomplete" })));
   });
-  // A queued mutation can wait behind a slow durable transaction. Observe rejection now and rethrow it from the queued operation later.
-  void body.catch(() => {});
   return body;
 }
 
@@ -228,9 +230,9 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && pathname === "/v1/tickets") {
         const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
-        const body = authorityRequestBody(req);
+        const requestBody = await authorityRequestBody(req);
         const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
-        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.createTicket(authenticated.principal, requestBody, { verifyGeneration })));
+        const result = await serializeAuthorityMutation(() => authority.createTicket(authenticated.principal, requestBody, { verifyGeneration }));
         const headers = { etag: `"revision-${result.ticket.revision}"`, location: `/v1/tickets/${result.ticket.ticketId}` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, result.created ? 201 : 200, result.ticket, headers);
@@ -238,9 +240,11 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && ticket && ticket[2]) {
         const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
-        const body = authorityRequestBody(req);
+        const requestBody = await authorityRequestBody(req);
         const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
-        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.mutateTicket(authenticated.principal, ticket[1], ticket[2], requestBody, { verifyGeneration })));
+        // The body is read before the mutation is queued, so a stalled or abandoned request can
+        // never sit at the head of the serialized queue and block every later write on the lane.
+        const result = await serializeAuthorityMutation(() => authority.mutateTicket(authenticated.principal, ticket[1], ticket[2], requestBody, { verifyGeneration }));
         const headers = { etag: `"revision-${result.ticket.revision}"` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, 200, result.ticket, headers);
@@ -248,9 +252,9 @@ function startAuthorityDaemon() {
       }
       if (req.method === "POST" && pathname === "/v1/allowance") {
         const authenticated = await authorityPrincipal(req, "allowance:publish", configuration, authority);
-        const body = authorityRequestBody(req);
+        const requestBody = await authorityRequestBody(req);
         const verifyGeneration = authorityPrecommitVerifier(req, "allowance:publish", configuration, authority, authenticated);
-        const result = await serializeAuthorityMutation(() => body.then((requestBody) => authority.publishAllowance(authenticated.principal, requestBody, { verifyGeneration })));
+        const result = await serializeAuthorityMutation(() => authority.publishAllowance(authenticated.principal, requestBody, { verifyGeneration }));
         const headers = result.replayed ? { "idempotency-replayed": "true" } : {};
         authorityReply(res, 200, authority.allowancePublishResponse(result, { instanceId }), headers);
         return;
