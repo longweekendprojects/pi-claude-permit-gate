@@ -81,12 +81,19 @@ const writeBackoff = () => fs.writeFileSync(BACKOFF_FILE, JSON.stringify(backoff
 // Anthropic reports utilization as a percentage (24 means 24%). The wire format and the menu use
 // a 0-1 fraction, matching what the `anthropic-ratelimit-unified-*` headers produce, so publishing
 // the raw percentage renders as 2400%.
-function windowFrom(raw) {
+// Anthropic returns `resets_at: null` for an idle window that has already reset, typically an
+// account whose weekly limit just rolled over and reports 0% again. That is a real, publishable
+// observation, not a malformed one, so a null reset must not discard the whole window: dropping it
+// froze the lane at its last non-zero reading and the menu bar went stale two hours later. When the
+// reset instant is genuinely unknown, synthesize one a full window ahead of now. The lane reads 0%,
+// so the exact countdown does not matter, and both the authority and the monitor require a non-null
+// reset, so a plausible upper bound keeps the observation fresh without a wire-protocol change.
+function windowFrom(raw, windowSeconds) {
   if (!raw || typeof raw.utilization !== "number") return null;
   const utilization = raw.utilization / 100;
   const status = utilization >= 1 ? "rejected" : utilization >= 0.8 ? "allowed_warning" : "allowed";
-  const resetEpochSeconds = raw.resets_at ? Math.floor(new Date(raw.resets_at).getTime() / 1000) : null;
-  if (resetEpochSeconds === null || !Number.isSafeInteger(resetEpochSeconds)) return null;
+  const resetEpochSeconds = raw.resets_at ? Math.floor(new Date(raw.resets_at).getTime() / 1000) : Math.floor(Date.now() / 1000) + windowSeconds;
+  if (!Number.isSafeInteger(resetEpochSeconds)) return null;
   return { utilization, status, resetEpochSeconds };
 }
 
@@ -114,8 +121,8 @@ for (const provider of PROVIDERS) {
     if (!response.ok) { results.push(`${provider}: usage HTTP ${response.status}`); continue; }
     if (backoff[provider]) { delete backoff[provider]; writeBackoff(); }
     const usage = await response.json();
-    const fiveHour = windowFrom(usage.five_hour);
-    const sevenDay = windowFrom(usage.seven_day);
+    const fiveHour = windowFrom(usage.five_hour, 5 * 60 * 60);
+    const sevenDay = windowFrom(usage.seven_day, 7 * 24 * 60 * 60);
     if (!fiveHour && !sevenDay) { results.push(`${provider}: no windows reported`); continue; }
 
     const sequence = (sequences[provider] ?? 0) + 1;
