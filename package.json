@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-permit-gate",
-  "version": "0.3.0",
+  "version": "0.3.8",
   "description": "A shared concurrency gate for native Anthropic Claude requests in Pi.",
   "type": "module",
   "license": "MIT",
