@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquirePermitResponse, classifyDaemonHealth, createAuthorityClient, defaultLedgerWriter, providerPorts, resolveClientMode } from "../index.ts";
+import { acquirePermitResponse, bypassStatePath, classifyDaemonHealth, clearBypassState, createAuthorityClient, defaultLedgerWriter, providerPorts, readBypassState, resolveClientMode, writeBypassState } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = await fs.readFile(path.join(root, "index.ts"), "utf8");
@@ -280,4 +280,72 @@ test("authority-client completes cleanly when its lease was already reclaimed", 
   record.ticket = { ...record.ticket, state: "released", terminalReason: "operator_reconciled", terminalAtEpochMs: 3_000, lease: null };
   await client.complete(record);
   assert.equal(Object.keys(ledger.tickets).length, 0);
+});
+
+test("remote bypass is an explicit owner-only toggle that fails closed on invalid or expired state", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "claude-permit-bypass-"));
+  try {
+    const configFile = path.join(directory, "authority-client-v1.json");
+    const file = bypassStatePath(configFile);
+    assert.equal(file, path.join(directory, "authority-client-bypass-v1.json"));
+
+    assert.deepEqual(readBypassState(file, 1_000, false), { enabled: false, source: "none" });
+
+    writeBypassState(file, { since: 1_000, expiresAtEpochMs: null });
+    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+    const standing = readBypassState(file, 2_000, false);
+    assert.equal(standing.enabled, true); assert.equal(standing.source, "file"); assert.equal(standing.expiresAtEpochMs, null);
+
+    writeBypassState(file, { since: 1_000, expiresAtEpochMs: 5_000, reason: "tailnet down" });
+    assert.equal(readBypassState(file, 4_999, false).enabled, true);
+    const lapsed = readBypassState(file, 5_000, false);
+    assert.equal(lapsed.enabled, false); assert.equal(lapsed.expired, true);
+
+    await fs.writeFile(file, "{ not json", { mode: 0o600 });
+    assert.match(readBypassState(file, 1_000, false).invalid, /not JSON/);
+    await fs.writeFile(file, JSON.stringify({ schemaVersion: 1, enabled: true, since: 1_000, expiresAtEpochMs: null, extra: 1 }), { mode: 0o600 });
+    assert.match(readBypassState(file, 1_000, false).invalid, /fields are invalid/);
+    await fs.chmod(file, 0o644);
+    assert.match(readBypassState(file, 1_000, false).invalid, /owner-only/);
+
+    // The environment pin outranks any file state, including a group-readable one.
+    assert.deepEqual(readBypassState(file, 1_000, true), { enabled: true, source: "environment" });
+
+    clearBypassState(file);
+    assert.deepEqual(readBypassState(file, 1_000, false), { enabled: false, source: "none" });
+    clearBypassState(file);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("bypass gates locally on the same lane ports and abandons a held shared lease without network", async () => {
+  assert.match(source, /const bypassed = bypassState\(\)\.enabled; if \(mode\.mode === "authority-client" && !bypassed\)/);
+  assert.match(source, /mode\.lanes\[provider as keyof AuthorityClientConfig\["lanes"\]\]\.port : undefined/);
+  // Bypass never loosens the local gate itself: it still acquires a local permit before the request.
+  assert.match(source, /await acquire\(ctx, directory, port, provider\); return undefined;/);
+
+  const config = {
+    mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
+    keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+    lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+  };
+  let ledger = { schemaVersion: 1, tickets: {} }; const paths = [];
+  const client = createAuthorityClient(config, {
+    sessionId: "99999999-9999-4999-8999-999999999999",
+    token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      paths.push(request.pathname);
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") return { status: 201, body: { schemaVersion: 1, ticketId: "8888cccc-1111-4111-8111-111111111111", requestId: request.body.requestId, provider: "anthropic-a", state: "active", revision: 2, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: 2_050, offerExpiresAtEpochMs: 2_100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    },
+  });
+  const record = await client.acquire("anthropic-a");
+  const requestsBeforeAbandon = paths.length;
+  await client.abandon(record);
+  assert.equal(paths.length, requestsBeforeAbandon, "abandoning a lease must not reach the authority");
+  assert.equal(Object.keys(ledger.tickets).length, 0);
+  // The lane is free again for the next acquire once the toggle returns to shared mode.
+  await client.acquire("anthropic-a");
+  assert.equal(Object.keys(ledger.tickets).length, 1);
 });

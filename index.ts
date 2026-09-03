@@ -40,6 +40,44 @@ export function providerPorts(value = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PO
 }
 const PROVIDER_PORTS = providerPorts();
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Remote bypass. A client machine that leaves the authority's network cannot reach the shared
+// authority at all, and authority-client mode has no fallback by design, so every provider request
+// blocks until the network returns. Bypass is the operator's explicit answer to that: it switches
+// this machine to its own local daemon pool for the same lane ports, gating concurrency locally
+// instead of sharing it. It is deliberately a per-machine operator decision, not an automatic
+// failover, because a machine that silently stops sharing capacity double-spends the account
+// whenever another machine is still working. It is read per request so the toggle needs no restart.
+export type BypassState = { enabled: boolean; source: "environment" | "file" | "none"; since?: number; expiresAtEpochMs?: number | null; reason?: string; expired?: boolean; invalid?: string };
+const BYPASS_ENVIRONMENT = process.env.CLAUDE_PERMIT_GATE_BYPASS === "1";
+export function bypassStatePath(configFile: string): string { return path.join(path.dirname(configFile), "authority-client-bypass-v1.json"); }
+export function readBypassState(file: string, now = Date.now(), environmentBypass = BYPASS_ENVIRONMENT): BypassState {
+  if (environmentBypass) return { enabled: true, source: "environment" };
+  let stat: fs.Stats; let raw: string;
+  try { stat = fs.statSync(file); raw = fs.readFileSync(file, "utf8"); } catch { return { enabled: false, source: "none" }; }
+  if (!stat.isFile() || (stat.mode & 0o077) !== 0) return { enabled: false, source: "file", invalid: "bypass state must be an owner-only regular file" };
+  let parsed: unknown; try { parsed = JSON.parse(raw); } catch { return { enabled: false, source: "file", invalid: "bypass state is not JSON" }; }
+  if (!isRecord(parsed) || !hasOnlyKeys(parsed, ["schemaVersion", "enabled", "since", "expiresAtEpochMs", "reason"]) || parsed.schemaVersion !== 1 || typeof parsed.enabled !== "boolean" || !Number.isSafeInteger(parsed.since) || (parsed.expiresAtEpochMs !== null && !Number.isSafeInteger(parsed.expiresAtEpochMs)) || (parsed.reason !== undefined && typeof parsed.reason !== "string")) return { enabled: false, source: "file", invalid: "bypass state fields are invalid" };
+  const expiresAtEpochMs = parsed.expiresAtEpochMs as number | null;
+  const expired = expiresAtEpochMs !== null && now >= expiresAtEpochMs;
+  return { enabled: parsed.enabled && !expired, source: "file", since: parsed.since as number, expiresAtEpochMs, reason: parsed.reason as string | undefined, expired };
+}
+export function writeBypassState(file: string, state: { since: number; expiresAtEpochMs: number | null; reason?: string }): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const payload = JSON.stringify({ schemaVersion: 1, enabled: true, since: state.since, expiresAtEpochMs: state.expiresAtEpochMs, ...(state.reason ? { reason: state.reason } : {}) });
+  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, `${payload}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+export function clearBypassState(file: string): void { fs.rmSync(file, { force: true }); }
+function describeBypass(state: BypassState): string {
+  if (state.source === "environment") return "on for this process (CLAUDE_PERMIT_GATE_BYPASS=1)";
+  if (state.invalid) return `off; ${state.invalid}`;
+  if (state.expired) return "off; the bypass window expired";
+  if (!state.enabled) return "off; this machine shares the authority pool";
+  const expiry = state.expiresAtEpochMs ? ` until ${new Date(state.expiresAtEpochMs).toISOString()}` : " with no expiry";
+  return `on${expiry}; this machine gates locally and does not share the authority pool`;
+}
 function abortError() { return Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isAborted(signal?: AbortSignal) { return signal?.aborted === true; }
@@ -256,8 +294,13 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // finally ends there is nothing left to complete, so drop the record instead of raising. Failing
   // here surfaces as a session-ending error for work that actually succeeded.
   const complete = async (record: UnresolvedTicket, failure?: "rate-limit" | "overloaded") => { const lease = record.ticket?.lease; if (!lease || !isUuid(lease.leaseId)) { if (record.ticket && ["released", "throttled", "cancelled", "offerExpired"].includes(record.ticket.state)) { await remove(record); acquisitions.delete(record.provider); return; } if (!record.ticket?.lease) { await remove(record); acquisitions.delete(record.provider); return; } throw new Error("authority lease is invalid"); } const additions = failure ? { leaseId: lease.leaseId, generation: lease.generation, outcome: "throttled", reason: failure === "rate-limit" ? "assistant_rate_limit" : "assistant_overloaded", cooldownMs: cooldown(failure) } : { leaseId: lease.leaseId, generation: lease.generation, outcome: "released", reason: null }; const existing = completions.get(record.provider); if (existing) return existing; const completion = (async () => { const completed = await operation(record.provider, record, "complete", additions); if (!["released", "throttled"].includes(completed.state)) throw new Error("authority completion was not acknowledged"); await remove(record); acquisitions.delete(record.provider); })(); completions.set(record.provider, completion); try { await completion; } finally { if (completions.get(record.provider) === completion) completions.delete(record.provider); } };
+  // Offline abandonment. Bypass exists for a machine that has already lost the authority network,
+  // so completing the lease is impossible; every mutation would retry until the link returns. The
+  // record is dropped locally instead, and the authority reclaims or quarantines the lease on its
+  // own renewal deadline. It performs no request and never rejects.
+  const abandon = async (record: UnresolvedTicket) => { acquisitions.delete(record.provider); completions.delete(record.provider); await remove(record).catch(() => {}); };
   const cancel = async (record: UnresolvedTicket) => { const cancelled = await operation(record.provider, record, "cancel", {}); if (cancelled.state === "cancelled") { await remove(record); acquisitions.delete(record.provider); } return cancelled; };
-  return { acquire, renew, complete, cancel, health };
+  return { abandon, acquire, renew, complete, cancel, health };
 }
 let authorityLifecycle: Promise<void> | undefined;
 let settleAuthorityLifecycle: (() => void) | undefined;
@@ -275,8 +318,14 @@ let sessionId = "unknown";
 export default function (pi: ExtensionAPI) {
   if (DISABLED) return;
   const mode = resolveClientMode(); // Configuration is complete before the first hook is registered.
-  const directory = mode.mode === "local" ? path.dirname(fileURLToPath(import.meta.url)) : undefined;
+  const directory = path.dirname(fileURLToPath(import.meta.url));
   const authorityClient = mode.mode === "authority-client" ? createAuthorityClient(mode) : undefined;
+  const bypassFile = mode.mode === "authority-client" ? bypassStatePath(process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : undefined;
+  const bypassState = (): BypassState => bypassFile ? readBypassState(bypassFile) : { enabled: false, source: "none" };
+  const gatedPort = (provider: string, bypassed: boolean): number | undefined => mode.mode === "local" ? PROVIDER_PORTS[provider] : bypassed && (AUTHORITY_PROVIDERS as readonly string[]).includes(provider) ? mode.lanes[provider as keyof AuthorityClientConfig["lanes"]].port : undefined;
+  // Switching to bypass drops the shared lease locally rather than completing it, because the
+  // machine reaching for bypass has usually already lost the authority network.
+  const abandonAuthorityPermit = async () => { const permit = activePermit; if (permit?.kind !== "authority") return false; activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer); await permit.client.abandon(permit.record); endAuthorityLifecycle(); return true; };
   // `pi update --extensions` reconciles code only; the machine-level install (config, environment,
   // login agents, background jobs) has no package hook and used to drift until someone remembered
   // to redo it by hand. Stamp the applied build and re-run the installer once whenever it changes,
@@ -284,10 +333,34 @@ export default function (pi: ExtensionAPI) {
   const selfProvision = () => { try { const directory = path.dirname(fileURLToPath(import.meta.url)); const script = path.join(directory, "scripts", "bootstrap-client.mjs"); if (!fs.existsSync(script)) return; const stampFile = path.join(path.dirname(mode.mode === "authority-client" ? (process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : script), "provisioned-v1.json"); const build = (() => { try { return JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")).version as string; } catch { return "unknown"; } })(); let applied: string | undefined; try { applied = JSON.parse(fs.readFileSync(stampFile, "utf8")).build; } catch {} if (applied === build) return; const child = spawn(process.execPath, [script], { detached: true, stdio: "ignore" }); child.unref(); fs.writeFileSync(stampFile, JSON.stringify({ build, appliedAtEpochMs: Date.now() }) + "\n", { mode: 0o600 }); } catch {} };
   if (mode.mode === "authority-client") selfProvision();
 
-  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const port = provider && PROVIDER_PORTS[provider]; if (mode.mode === "local" && port) { try { await ensureDaemon(directory, port, provider); } catch {} } if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); });
-  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const ready = mode.mode === "authority-client" ? !!authorityClient && AUTHORITY_PROVIDERS.includes(provider) : !!PROVIDER_PORTS[provider]; ctx.ui.setStatus("claude-permit-gate", ready ? "Claude gate: ready" : undefined); });
-  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; if (!provider) return undefined; if (mode.mode === "authority-client") { if ((AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) await acquireAuthority(ctx, authorityClient!, provider); return undefined; } const port = PROVIDER_PORTS[provider]; if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
-  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); if (ctx.hasUI && (mode.mode === "authority-client" ? AUTHORITY_PROVIDERS.includes(ctx.model?.provider) : PROVIDER_PORTS[ctx.model?.provider])) ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready"); return undefined; });
+  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const bypassed = bypassState().enabled; const port = provider ? gatedPort(provider, bypassed) : undefined; if (port) { try { await ensureDaemon(directory, port, provider!); } catch {} } if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready"); });
+  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const bypassed = bypassState().enabled; const ready = mode.mode === "authority-client" ? (bypassed ? !!gatedPort(provider, true) : !!authorityClient && AUTHORITY_PROVIDERS.includes(provider)) : !!PROVIDER_PORTS[provider]; ctx.ui.setStatus("claude-permit-gate", ready ? (bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready") : undefined); });
+  pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; if (!provider) return undefined; const bypassed = bypassState().enabled; if (mode.mode === "authority-client" && !bypassed) { if ((AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) await acquireAuthority(ctx, authorityClient!, provider); return undefined; } const port = gatedPort(provider, bypassed); if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
+  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined); const bypassed = bypassState().enabled; if (ctx.hasUI && (mode.mode === "authority-client" ? (bypassed ? !!gatedPort(ctx.model?.provider, true) : AUTHORITY_PROVIDERS.includes(ctx.model?.provider)) : PROVIDER_PORTS[ctx.model?.provider])) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready"); return undefined; });
   pi.on("agent_end", async () => { await release(false, "agent-end"); }); pi.on("session_shutdown", async () => { await release(false, "session-shutdown"); });
-  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { if (mode.mode === "authority-client") { ctx.ui.notify("Claude permit authority client is configured.", "info"); return; } const lines = ["Claude permit gate doctor:"]; for (const [provider, port] of Object.entries(PROVIDER_PORTS)) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const state = bypassState(); if (mode.mode === "authority-client" && !state.enabled) { ctx.ui.notify(`Claude permit authority client is configured. Bypass is ${describeBypass(state)}.`, "info"); return; } const lines = mode.mode === "authority-client" ? [`Claude permit gate doctor (bypass is ${describeBypass(state)}):`] : ["Claude permit gate doctor:"]; const pools = mode.mode === "authority-client" ? AUTHORITY_PROVIDERS.map((provider) => [provider, mode.lanes[provider].port] as const) : Object.entries(PROVIDER_PORTS); for (const [provider, port] of pools) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  pi.registerCommand("claude-permit-bypass", { description: "Gate Claude locally while off the authority network: /claude-permit-bypass [on [hours]|off|status]", handler: async (args, ctx) => {
+    if (mode.mode !== "authority-client" || !bypassFile) { ctx.ui.notify("Claude permit bypass applies only to an authority client. This session already gates locally.", "warn"); return; }
+    const [action = "status", duration] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
+    const current = bypassState();
+    if (action === "status") { ctx.ui.notify(`Claude permit bypass is ${describeBypass(current)}.`, "info"); return; }
+    if (current.source === "environment") { ctx.ui.notify("Claude permit bypass is pinned on by CLAUDE_PERMIT_GATE_BYPASS=1. Unset it and restart this session to change the toggle.", "warn"); return; }
+    if (action === "on") {
+      const hours = duration === undefined ? undefined : Number.parseFloat(duration);
+      if (hours !== undefined && (!Number.isFinite(hours) || hours <= 0 || hours > 720)) { ctx.ui.notify("Claude permit bypass duration must be a positive number of hours no greater than 720.", "error"); return; }
+      const now = Date.now(); const abandoned = await abandonAuthorityPermit();
+      try { writeBypassState(bypassFile, { since: now, expiresAtEpochMs: hours === undefined ? null : Math.round(now + hours * 3_600_000) }); } catch (error) { ctx.ui.notify(`Claude permit bypass could not be written: ${errorText(error)}`, "error"); return; }
+      ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready (bypass)");
+      ctx.ui.notify(`Claude permit bypass is ${describeBypass(bypassState())}.${abandoned ? " The held shared lease was dropped locally and the authority reclaims it on its own deadline." : ""} Other machines on this account no longer see this machine's usage, so avoid running them at the same time.`, "warn");
+      return;
+    }
+    if (action === "off") {
+      if (activePermit?.kind === "local") await release(false, "bypass-off");
+      try { clearBypassState(bypassFile); } catch (error) { ctx.ui.notify(`Claude permit bypass could not be cleared: ${errorText(error)}`, "error"); return; }
+      ctx.ui.setStatus("claude-permit-gate", "Claude gate: ready");
+      ctx.ui.notify("Claude permit bypass is off. This machine shares the authority pool again; local lane daemons stay running until you stop them.", "info");
+      return;
+    }
+    ctx.ui.notify("Usage: /claude-permit-bypass [on [hours]|off|status]", "error");
+  } });
 }

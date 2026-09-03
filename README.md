@@ -110,13 +110,31 @@ Only providers in this map are gated. Every Pi process that should share a pool 
 
 `CLAUDE_PERMIT_GATE_MODE=authority-client` is an explicit shared-authority client. It requires `CLAUDE_PERMIT_GATE_ORIGIN=https://<dns-host>` and an absolute `CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG` path before Pi registers hooks. The owner-only (`0600`) non-secret JSON configuration must conform to `AuthorityClientConfigV1` in the [normative protocol](docs/authority-protocol-v1.md), including its matching origin, authority UUID, stable installation UUID, three Keychain references, monitor fields, and fixed A-D ports/account bindings. An optional `CLAUDE_PERMIT_GATE_PROVIDER_PORTS` must contain exactly that A-D mapping.
 
-Authority-client requests append each configured lane port to the HTTPS origin. They retrieve only the `permit:mutate` bearer from the configured Keychain reference, verify authority/provider/port/protocol identity before ticket creation, and persist unresolved tickets beside the configuration with owner-only permissions. They never probe loopback, start a daemon, use a local fallback, or include a working directory in authority payloads. A lost mutation response reads the ticket before retrying its operation ID, and Pi does not begin another provider request until the previous completion is acknowledged.
+Authority-client requests append each configured lane port to the HTTPS origin. They retrieve only the `permit:mutate` bearer from the configured Keychain reference, verify authority/provider/port/protocol identity before ticket creation, and persist unresolved tickets beside the configuration with owner-only permissions. While attached to the authority they never probe loopback, start a daemon, use a local fallback, or include a working directory in authority payloads; only the explicit operator bypass below detaches a machine to local gating. A lost mutation response reads the ticket before retrying its operation ID, and Pi does not begin another provider request until the previous completion is acknowledged.
+
+### Working off the authority network
+
+An authority client has no automatic fallback: when the machine cannot reach the authority host, every gated request keeps waiting rather than sending an ungated one. Bypass is the operator's explicit answer for a machine that has to keep working while disconnected. It switches that machine to its own local daemon pools on the same lane ports, so requests are still gated, but only against local concurrency.
+
+```text
+/claude-permit-bypass status
+/claude-permit-bypass on          # no expiry
+/claude-permit-bypass on 6        # lapses after six hours
+/claude-permit-bypass off
+```
+
+The toggle takes effect on the next provider request; no restart is needed. Turning it on drops any shared lease this machine holds without contacting the authority, because the network is usually already gone, and the authority reclaims that lease on its own renewal deadline. Turning it off releases the local permit and returns the machine to the shared pool.
+
+Bypass trades the shared invariant for availability. While it is on, other machines on the same account no longer see this machine's usage, so running them at the same time over-subscribes the account. Use it when you expect to be the only active machine.
+
+State lives in an owner-only `authority-client-bypass-v1.json` beside the authority configuration. Unreadable, malformed, group-readable, or expired state counts as off, so the machine returns to the shared pool rather than silently staying detached. `CLAUDE_PERMIT_GATE_BYPASS=1` pins bypass on for one process and outranks the file; the slash command refuses to fight it.
 
 The daemon reads its settings when it first starts. Each pool defaults to two concurrent requests, starts at two, backs off no lower than one, caps a throttle cooldown at one minute, and reclaims unrenewed permits after five minutes.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `CLAUDE_PERMIT_GATE_DISABLE` | `0` | Set to `1` to bypass the extension for one process. |
+| `CLAUDE_PERMIT_GATE_BYPASS` | `0` | Set to `1` to pin an authority client to local gating for one process. |
 | `CLAUDE_PERMIT_GATE_PROVIDER_PORTS` | default map above | Comma-separated `provider:port` entries. |
 | `CLAUDE_PERMIT_GATE_MAX` | `2` | Maximum concurrent requests in a pool. |
 | `CLAUDE_PERMIT_GATE_START` | `2` | Initial pool concurrency. |
@@ -135,13 +153,15 @@ The daemon reads its settings when it first starts. Each pool defaults to two co
 
 Account-lane installations can retain `CLAUDE_LANE_A_*` through `CLAUDE_LANE_D_*` settings for each lane's `MIN`, `MAX`, `START`, `COOLDOWN_MS`, `MAX_COOLDOWN_MS`, `INCREASE_AFTER_MS`, and `PERMIT_TTL_MS` values. The initial release also honors matching legacy `ANTHROPIC_PERMIT_GATE_*` names while migrating to `CLAUDE_PERMIT_GATE_*`.
 
-`CLAUDE_PERMIT_GATE_PROVIDER_PORTS`, `CLAUDE_PERMIT_GATE_DISABLE`, retry settings, and throttle settings are read when Pi loads the extension. Restart Pi after changing them. The daemon reads its own concurrency settings when it starts. Normal request handling and this package's commands never terminate a daemon.
+`CLAUDE_PERMIT_GATE_PROVIDER_PORTS`, `CLAUDE_PERMIT_GATE_DISABLE`, `CLAUDE_PERMIT_GATE_BYPASS`, retry settings, and throttle settings are read when Pi loads the extension. Restart Pi after changing them. The `/claude-permit-bypass` toggle is read per request and needs no restart. The daemon reads its own concurrency settings when it starts. Normal request handling and this package's commands never terminate a daemon.
 
 ### Approved idle replacement
 
 A legacy daemon may remain usable until a separately approved maintenance window. During that window, an operator handles one daemon at a time: confirm that its health is legacy, observe `active === 0` and `queued === 0` twice at least two seconds apart, restart only that eligible daemon, then verify that its replacement reports the expected provider, protocol `1`, and schema version `3`. If work or queueing returns, defer that daemon. This package intentionally provides no termination command.
 
 ## Operations
+
+`/claude-permit-bypass` toggles this machine between shared and local gating, as described under [Working off the authority network](#working-off-the-authority-network).
 
 `/claude-permit` is the doctor surface for every configured pool. It reports health schema, protocol, reported provider, daemon age, and a compatibility status alongside occupancy. Raw health is also available locally:
 
