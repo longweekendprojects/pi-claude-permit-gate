@@ -37,6 +37,8 @@ const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client.json");
 const SEQUENCE_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-publisher-sequence.json");
 const BACKOFF_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-prober-backoff.json");
+const BYPASS_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client-bypass-v1.json");
+const STORE_DIR = path.join(os.homedir(), ".pi/agent/usage-windows");
 const PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
 const PROBER_KEYCHAIN_ACCOUNT = "prober";
 
@@ -65,7 +67,23 @@ async function refreshProvider(provider) {
   auth = current;
   return { refreshed: true };
 }
-const bearer = execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8" }).trim();
+// While this machine is bypassed, the authority is unreachable by design, so poll results are
+// written into the lane's local usage file instead of published, and no publish token is needed.
+// Mirrors readBypassState in index.ts.
+function bypassed() {
+  if (process.env.CLAUDE_PERMIT_GATE_BYPASS === "1") return true;
+  try {
+    const stat = fs.statSync(BYPASS_FILE);
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0) return false;
+    const state = JSON.parse(fs.readFileSync(BYPASS_FILE, "utf8"));
+    if (state.schemaVersion !== 1 || state.enabled !== true) return false;
+    return state.expiresAtEpochMs === null || Date.now() < state.expiresAtEpochMs;
+  } catch {
+    return false;
+  }
+}
+const isBypassed = bypassed();
+const bearer = isBypassed ? undefined : execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8" }).trim();
 
 // Sequences are tracked per lane because the authority orders publications by (installation, lane).
 const readSequences = () => { try { return JSON.parse(fs.readFileSync(SEQUENCE_FILE, "utf8")); } catch { return {}; } };
@@ -99,6 +117,21 @@ function windowFrom(raw, windowSeconds) {
 
 const results = [];
 
+function writeLocalUsage(provider, fiveHour, sevenDay, observedAtEpochMs) {
+  const file = path.join(STORE_DIR, `${provider.replace(/[^a-zA-Z0-9_.-]/g, "_")}.json`);
+  let existing;
+  try { existing = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+  if (existing && typeof existing.at === "number" && existing.at >= observedAtEpochMs) return false;
+  const windowFor = (w) => w ? { utilization: w.utilization, status: w.status, reset: w.resetEpochSeconds } : undefined;
+  const representative = existing?.representative ?? (fiveHour && sevenDay ? (fiveHour.utilization >= sevenDay.utilization ? "five_hour" : "seven_day") : fiveHour ? "five_hour" : "seven_day");
+  const snapshot = { provider, ...(fiveHour ? { fiveHour: windowFor(fiveHour) } : {}), ...(sevenDay ? { sevenDay: windowFor(sevenDay) } : {}), representative, at: observedAtEpochMs };
+  fs.mkdirSync(STORE_DIR, { recursive: true });
+  const temporary = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify(snapshot));
+  fs.renameSync(temporary, file);
+  return true;
+}
+
 for (const provider of PROVIDERS) {
   const token = auth[provider]?.access;
   const expires = auth[provider]?.expires;
@@ -128,6 +161,12 @@ for (const provider of PROVIDERS) {
     const sequence = (sequences[provider] ?? 0) + 1;
     sequences[provider] = sequence;
     writeSequences();
+    if (isBypassed) {
+      const written = writeLocalUsage(provider, fiveHour, sevenDay, Date.now());
+      const asPercent = (window) => window ? `${(window.utilization * 100).toFixed(1)}%` : "-";
+      results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)} -> ${written ? "local file" : "local file already newer"}`);
+      continue;
+    }
     const lane = config.lanes[provider];
     const publish = await fetch(`${config.origin}:${lane.port}/v1/allowance`, {
       method: "POST",
