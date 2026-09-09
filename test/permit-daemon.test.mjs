@@ -808,6 +808,25 @@ test("authority applies throttle completion exactly once before releasing capaci
   assert.equal(gate.authority.health({ instanceId: authorityUuid(501), buildId: "test" }).active, 0);
 });
 
+test("authority restores throttled concurrency after the post-throttle quiet period", async (t) => {
+  const gate = await durableAuthority(t, { maximumConcurrency: 2, currentConcurrency: 2 });
+  const principal = authorityPrincipal(24);
+  const created = await gate.authority.createTicket(principal, ticketCreate(principal, { session: authorityUuid(224), request: authorityUuid(324), now: gate.time.now }));
+  const claimed = await gate.authority.mutateTicket(principal, created.ticket.ticketId, "claim", ticketMutation(principal, { operation: authorityUuid(424), revision: created.ticket.revision }));
+  await gate.authority.mutateTicket(principal, created.ticket.ticketId, "complete", ticketMutation(principal, { operation: authorityUuid(425), revision: claimed.ticket.revision, lease: claimed.ticket.lease, outcome: "throttled", reason: "assistant_rate_limit", cooldownMs: 1_000 }));
+  assert.equal(gate.authority.health({ instanceId: authorityUuid(524), buildId: "test" }).currentConcurrency, 1);
+
+  // The cooldown is shorter than one renew interval, so the sweep that clears it cannot yet restore
+  // capacity. A later sweep must, or the lane stays stuck at the throttled concurrency forever.
+  gate.time.now += 1_500;
+  await gate.authority.reconcile();
+  assert.equal(gate.authority.health({ instanceId: authorityUuid(525), buildId: "test" }).currentConcurrency, 1);
+
+  gate.time.now += AUTHORITY_TIMING.renewIntervalMs;
+  await gate.authority.reconcile();
+  assert.equal(gate.authority.health({ instanceId: authorityUuid(526), buildId: "test" }).currentConcurrency, 2);
+});
+
 test("authority persists nested machine and session fairness across restart", async (t) => {
   const gate = await durableAuthority(t);
   const firstPrincipal = authorityPrincipal(6); const secondPrincipal = authorityPrincipal(7);

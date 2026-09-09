@@ -1307,10 +1307,18 @@ function expireAndQuarantine(state, now, timing) {
   const scheduler = state.scheduler;
   if (scheduler.cooldownUntilEpochMs !== null && scheduler.cooldownUntilEpochMs <= now) {
     scheduler.cooldownUntilEpochMs = null;
-    if (scheduler.currentConcurrency < scheduler.maximumConcurrency && now - scheduler.lastThrottleAtEpochMs >= timing.renewIntervalMs && now - scheduler.lastIncreaseAtEpochMs >= timing.renewIntervalMs) {
-      scheduler.currentConcurrency += 1;
-      scheduler.lastIncreaseAtEpochMs = now;
-    }
+    changed = true;
+  }
+  // Recovery is evaluated on every sweep, not only on the tick that clears the cooldown. A cooldown
+  // shorter than one renew interval always expires before the post-throttle quiet period has
+  // elapsed, so a recovery attached to the clearing tick would fail its own timing guard once and
+  // never run again, stranding the lane at the throttled concurrency until the daemon restarted.
+  if (scheduler.cooldownUntilEpochMs === null
+    && scheduler.currentConcurrency < scheduler.maximumConcurrency
+    && now - (scheduler.lastThrottleAtEpochMs ?? 0) >= timing.renewIntervalMs
+    && now - scheduler.lastIncreaseAtEpochMs >= timing.renewIntervalMs) {
+    scheduler.currentConcurrency += 1;
+    scheduler.lastIncreaseAtEpochMs = now;
     changed = true;
   }
   return changed;
