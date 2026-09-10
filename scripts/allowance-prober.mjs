@@ -37,6 +37,7 @@ const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client.json");
 const SEQUENCE_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-publisher-sequence.json");
 const BACKOFF_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-prober-backoff.json");
+const CREDENTIAL_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-prober-credentials-v1.json");
 const BYPASS_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client-bypass-v1.json");
 const STORE_DIR = path.join(os.homedir(), ".pi/agent/usage-windows");
 const PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
@@ -96,6 +97,44 @@ const readBackoff = () => { try { return JSON.parse(fs.readFileSync(BACKOFF_FILE
 const backoff = readBackoff();
 const writeBackoff = () => fs.writeFileSync(BACKOFF_FILE, JSON.stringify(backoff) + "\n", { mode: 0o600 });
 
+// A lane whose OAuth credential is dead never recovers on its own: the token is expired, the
+// refresh is rejected, and no amount of polling or waiting brings the lane back. That is a
+// different condition from an ageing observation, but the only place it is visible is this
+// script's log, which nothing reads, so the lane silently freezes at its last value and the menu
+// shows it as merely stale. The condition is recorded here, per lane, so the monitor can present
+// it as a sign-in problem an operator must resolve rather than as data that will refresh itself.
+// Only an interactive `/login` in Pi can clear it, so the record carries no retry schedule.
+const CREDENTIAL_SCHEMA_VERSION = 1;
+const readCredentialFailures = () => {
+  try {
+    const stored = JSON.parse(fs.readFileSync(CREDENTIAL_FILE, "utf8"));
+    return stored?.schemaVersion === CREDENTIAL_SCHEMA_VERSION && stored.lanes && typeof stored.lanes === "object" ? stored.lanes : {};
+  } catch { return {}; }
+};
+const credentialFailures = readCredentialFailures();
+let credentialFailuresChanged = false;
+const writeCredentialFailures = () => {
+  if (!credentialFailuresChanged) return;
+  const payload = { schemaVersion: CREDENTIAL_SCHEMA_VERSION, lanes: credentialFailures };
+  const temporary = `${CREDENTIAL_FILE}.tmp.${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify(payload) + "\n", { mode: 0o600 });
+  fs.renameSync(temporary, CREDENTIAL_FILE);
+  credentialFailuresChanged = false;
+};
+// The first failure instant is preserved across runs so the monitor can say how long a lane has
+// been signed out rather than resetting the clock every 90 seconds.
+function recordCredentialFailure(provider, reason) {
+  const existing = credentialFailures[provider];
+  if (existing?.reason === reason) return;
+  credentialFailures[provider] = { failedAtEpochMs: existing?.failedAtEpochMs ?? Date.now(), reason };
+  credentialFailuresChanged = true;
+}
+function clearCredentialFailure(provider) {
+  if (!credentialFailures[provider]) return;
+  delete credentialFailures[provider];
+  credentialFailuresChanged = true;
+}
+
 // Anthropic reports utilization as a percentage (24 means 24%). The wire format and the menu use
 // a 0-1 fraction, matching what the `anthropic-ratelimit-unified-*` headers produce, so publishing
 // the raw percentage renders as 2400%.
@@ -137,8 +176,16 @@ for (const provider of PROVIDERS) {
   const expires = auth[provider]?.expires;
   if (!token || (typeof expires === "number" && expires <= Date.now())) {
     const outcome = await refreshProvider(provider).catch((error) => ({ error: error.message }));
-    if (!outcome) { results.push(`${provider}: no refresh token, skipped`); continue; }
-    if (outcome.error) { results.push(`${provider}: ${outcome.error}`); continue; }
+    if (!outcome) {
+      recordCredentialFailure(provider, "no refresh token stored");
+      results.push(`${provider}: no refresh token, skipped`);
+      continue;
+    }
+    if (outcome.error) {
+      recordCredentialFailure(provider, outcome.error);
+      results.push(`${provider}: ${outcome.error}`);
+      continue;
+    }
     results.push(`${provider}: token refreshed`);
   }
   if (typeof backoff[provider] === "number" && backoff[provider] > Date.now()) { results.push(`${provider}: backing off ${Math.ceil((backoff[provider] - Date.now()) / 1000)}s`); continue; }
@@ -151,7 +198,13 @@ for (const provider of PROVIDERS) {
       results.push(`${provider}: rate limited, backing off ${Math.ceil((backoff[provider] - Date.now()) / 1000)}s`);
       continue;
     }
+    if (response.status === 401 || response.status === 403) {
+      recordCredentialFailure(provider, `usage HTTP ${response.status}`);
+      results.push(`${provider}: usage HTTP ${response.status}`);
+      continue;
+    }
     if (!response.ok) { results.push(`${provider}: usage HTTP ${response.status}`); continue; }
+    clearCredentialFailure(provider);
     if (backoff[provider]) { delete backoff[provider]; writeBackoff(); }
     const usage = await response.json();
     const fiveHour = windowFrom(usage.five_hour, 5 * 60 * 60);
@@ -180,5 +233,7 @@ for (const provider of PROVIDERS) {
     results.push(`${provider}: ${error.message}`);
   }
 }
+
+writeCredentialFailures();
 
 process.stdout.write(`[${new Date().toISOString()}] ${results.join(" | ")}\n`);
