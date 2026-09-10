@@ -112,7 +112,11 @@ function ensureAgent(label, plist, { optional = false } = {}) {
   record(label, boot.status === 0 ? "changed" : "error", boot.status === 0 ? "installed" : "bootstrap failed");
 }
 
-const plist = (label, args, { env = {}, keepAlive = true, interval } = {}) => `<?xml version="1.0" encoding="UTF-8"?>
+// `background` keeps a job out of the login session, where a Keychain read on a locked keychain
+// raises an unlock dialog nobody can complete: the job has no window, the dialog is replaced by the
+// next cycle's dialog, and the operator is left clicking at a window that keeps vanishing. Outside
+// that session the same read simply fails, which the caller already handles.
+const plist = (label, args, { env = {}, keepAlive = true, interval, sessionType } = {}) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -125,7 +129,8 @@ const plist = (label, args, { env = {}, keepAlive = true, interval } = {}) => `<
   </dict>` : ""}
   <key>RunAtLoad</key><true/>${interval ? `
   <key>StartInterval</key><integer>${interval}</integer>` : ""}${keepAlive ? `
-  <key>KeepAlive</key><true/>` : ""}
+  <key>KeepAlive</key><true/>` : ""}${sessionType ? `
+  <key>LimitLoadToSessionType</key><string>${sessionType}</string>` : ""}
   <key>StandardOutPath</key><string>${LOG_DIR}/${label.split(".").pop()}.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/${label.split(".").pop()}.err.log</string>
 </dict>
@@ -186,8 +191,8 @@ ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweeken
 // Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what
 // discovers a lane whose sign-in has died, and the syncer feeds shared readings back into this
 // machine's usage files. Both are per-machine jobs, so every client runs its own.
-ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }));
-ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }));
+ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90, sessionType: "Background" }));
+ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60, sessionType: "Background" }));
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
 if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
 else record("com.longweekendprojects.claude-lane-monitor", "ok", "monitor app not installed, skipped");
