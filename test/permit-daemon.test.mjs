@@ -756,6 +756,26 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(reconciled.code, 0);
   const reconciledState = JSON.parse(await fs.readFile(adminStatePath, "utf8"));
   assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].state, "released"); assert.equal(reconciledState.tickets[uncertainTicket.ticket.ticketId].terminalReason, "operator_reconciled"); assert.equal((await fs.stat(backupPath)).mode & 0o777, 0o600);
+  // The lane ceiling is persisted, so configuration alone cannot raise it after bootstrap. Only the
+  // offline capacity command can, and it must refuse to cut capacity below what is already leased.
+  const capacityBackup = path.join(sharedHome, "admin-capacity-backup.json");
+  const raised = await runAuthorityAdmin(sharedHome, ["capacity", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory, "--maximum-concurrency", "4", "--backup-path", capacityBackup]);
+  assert.equal(raised.code, 0);
+  const raisedScheduler = JSON.parse(await fs.readFile(adminStatePath, "utf8")).scheduler;
+  assert.equal(raisedScheduler.maximumConcurrency, 4); assert.equal(raisedScheduler.minimumConcurrency, 1);
+  // Raising the ceiling alone leaves the live concurrency where the scheduler had it; the additive
+  // increase path climbs into the new headroom rather than jumping there.
+  const priorCurrent = raisedScheduler.currentConcurrency;
+  assert.equal(priorCurrent, 2);
+  const capacityAuthority = openAuthorityState({ ...adminConfiguration, maximumConcurrency: 4, currentConcurrency: priorCurrent });
+  for (let held = 0; held < priorCurrent; held += 1) {
+    const leased = await capacityAuthority.createTicket(offlinePrincipal, ticketCreate(offlinePrincipal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: adminClock.now }));
+    await capacityAuthority.mutateTicket(offlinePrincipal, leased.ticket.ticketId, "claim", ticketMutation(offlinePrincipal, { operation: crypto.randomUUID(), revision: leased.ticket.revision }));
+  }
+  const belowCommitted = await runAuthorityAdmin(sharedHome, ["capacity", "--provider", "anthropic-a", "--port", String(adminPort), "--state-dir", adminStateDirectory, "--maximum-concurrency", "1", "--current-concurrency", "1", "--backup-path", path.join(sharedHome, "admin-capacity-reject.json")]);
+  assert.notEqual(belowCommitted.code, 0);
+  assert.equal(JSON.parse(await fs.readFile(adminStatePath, "utf8")).scheduler.maximumConcurrency, 4, "a reduction below committed capacity must not apply");
+
   const persistedText = `${await fs.readFile(verifierStore, "utf8")}\n${await fs.readFile(adminStatePath, "utf8")}\n${await fs.readFile(backupPath, "utf8")}`;
   const persistedSecrets = [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken, ...concurrentVerifiers.map(({ secret }) => secret), ...rotatedVerifiers.map(({ secret }) => secret)];
   for (const secret of persistedSecrets) assert.equal(persistedText.includes(secret.toString("base64url")), false);

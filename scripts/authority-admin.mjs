@@ -14,7 +14,7 @@ const SCOPES = new Set(["permit:mutate", "snapshot:read", "allowance:publish"]);
 const TOKEN_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REFERENCE_PATTERN = /^[\x20-\x7e]{1,128}$/;
-const COMMANDS = new Set(["bootstrap", "enroll", "rotate", "revoke", "drain", "resume", "reconcile"]);
+const COMMANDS = new Set(["bootstrap", "capacity", "enroll", "rotate", "revoke", "drain", "resume", "reconcile"]);
 const VALUE_OPTIONS = new Set(["--provider", "--port", "--state-dir", "--verifier-store", "--authority-id", "--minimum-concurrency", "--maximum-concurrency", "--current-concurrency", "--installation-id", "--scope", "--lanes", "--token-id", "--new-token-id", "--old-token-id", "--keychain-service", "--keychain-account", "--issued-at-epoch-ms", "--expires-at-epoch-ms", "--ticket-id", "--backup-path"]);
 const FLAG_OPTIONS = new Set(["--approve-uncertain-reconciliation"]);
 const COMMAND_OPTIONS = Object.freeze({
@@ -22,6 +22,7 @@ const COMMAND_OPTIONS = Object.freeze({
   enroll: new Set(["--installation-id", "--scope", "--lanes", "--token-id", "--keychain-service", "--keychain-account", "--issued-at-epoch-ms", "--expires-at-epoch-ms", "--verifier-store"]),
   rotate: new Set(["--old-token-id", "--new-token-id", "--keychain-service", "--keychain-account", "--issued-at-epoch-ms", "--expires-at-epoch-ms", "--verifier-store"]),
   revoke: new Set(["--installation-id", "--token-id", "--verifier-store"]),
+  capacity: new Set(["--provider", "--port", "--state-dir", "--verifier-store", "--authority-id", "--minimum-concurrency", "--maximum-concurrency", "--current-concurrency", "--backup-path"]),
   drain: new Set(["--provider", "--port", "--state-dir", "--verifier-store", "--authority-id"]),
   resume: new Set(["--provider", "--port", "--state-dir", "--verifier-store", "--authority-id"]),
   reconcile: new Set(["--provider", "--port", "--state-dir", "--verifier-store", "--authority-id", "--ticket-id", "--backup-path"]),
@@ -364,6 +365,18 @@ async function stateAction(command, values, flags) {
       await durableBackup(configuration.statePath, backupPath);
       const authority = openAuthorityState({ ...configuration, bootstrap: false });
       await authority.reconcileUncertain(assertUuid(required(values, "--ticket-id")));
+      await authority.awaitIdle();
+      return;
+    }
+    if (command === "capacity") {
+      const backupPath = path.resolve(required(values, "--backup-path"));
+      await durableBackup(configuration.statePath, backupPath);
+      const authority = openAuthorityState({ ...configuration, bootstrap: false });
+      await authority.setCapacity({
+        minimumConcurrency: values.has("--minimum-concurrency") ? configuration.minimumConcurrency : undefined,
+        maximumConcurrency: values.has("--maximum-concurrency") ? configuration.maximumConcurrency : undefined,
+        currentConcurrency: values.has("--current-concurrency") ? configuration.currentConcurrency : undefined,
+      });
       await authority.awaitIdle();
       return;
     }

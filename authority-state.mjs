@@ -1850,6 +1850,26 @@ export class AuthorityState {
     }, { allowDraining: true });
   }
 
+  // The lane ceiling lives in persisted state, so a configured maximum only applies at bootstrap.
+  // Raising or lowering it later is an offline operator action against a stopped lane. The floor is
+  // whatever capacity is already committed: a reduction must never invalidate a live lease.
+  setCapacity({ minimumConcurrency, maximumConcurrency, currentConcurrency }) {
+    return this._transition((next, now) => {
+      const minimum = minimumConcurrency ?? next.scheduler.minimumConcurrency;
+      const maximum = maximumConcurrency ?? next.scheduler.maximumConcurrency;
+      const inUse = capacityInUse(next);
+      const current = currentConcurrency ?? Math.min(Math.max(next.scheduler.currentConcurrency, minimum), maximum);
+      if (!isSafeInteger(minimum, 1, 64) || !isSafeInteger(maximum, minimum, 64) || !isSafeInteger(current, minimum, maximum)) fail("invalid_request", "authority concurrency is invalid");
+      if (current < inUse) fail("invalid_transition", "concurrency is below committed capacity");
+      next.scheduler.minimumConcurrency = minimum;
+      next.scheduler.maximumConcurrency = maximum;
+      next.scheduler.currentConcurrency = current;
+      next.scheduler.lastIncreaseAtEpochMs = now;
+      scheduleOffers(next, now, this.configuration.timing);
+      return { minimumConcurrency: minimum, currentConcurrency: current, maximumConcurrency: maximum };
+    }, { allowDraining: true });
+  }
+
   reconcileUncertain(ticketId) {
     return this._transition((next, now) => {
       if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");

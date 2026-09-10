@@ -44,7 +44,17 @@ node scripts/validate-authority-contract.mjs
 
 ### Authority administration
 
-`authority-admin.mjs` is a local-only operator tool. It creates lane state, enrolls or rotates verifier records, revokes one token or installation, drains or resumes a stopped lane, and reconciles one uncertain lease only after explicit approval. It never exposes these actions as HTTP routes.
+`authority-admin.mjs` is a local-only operator tool. It creates lane state, changes a lane's concurrency ceiling, enrolls or rotates verifier records, revokes one token or installation, drains or resumes a stopped lane, and reconciles one uncertain lease only after explicit approval. It never exposes these actions as HTTP routes.
+
+A lane keeps its concurrency in persisted state, so `CLAUDE_PERMIT_GATE_MAX` applies only at bootstrap. Changing the ceiling afterwards is an offline action against a stopped lane, and it refuses any reduction below the capacity already leased:
+
+```bash
+node scripts/authority-admin.mjs capacity \\
+  --provider anthropic-a --maximum-concurrency 4 \\
+  --backup-path ~/lane-8791.backup.json
+```
+
+Raising the ceiling does not raise live concurrency by itself. The scheduler climbs into the new headroom one step per renew interval, and backs off again after an overload or rate limit.
 
 Authority mode reads the shared owner-only verifier store at `~/Library/Application Support/Claude Permit Authority/verifiers-v1.json`. Each lane also requires its non-secret `CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID`; every request body must match that lane binding.
 
