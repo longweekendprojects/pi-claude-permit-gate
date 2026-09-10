@@ -345,7 +345,11 @@ async function openVerifierFenceLiveness(file, owner) {
     if (error instanceof AuthorityError) throw error;
     if (error?.code !== "ENOENT") throw verifierFault();
   }
-  const server = net.createServer((socket) => { socket.end(`${JSON.stringify(fenceBirthProof(owner))}\n`); });
+  // A peer that disconnects before the birth proof is fully written raises EPIPE on the socket. A
+  // socket with no error listener emits an unhandled 'error' event, which terminates the lane
+  // daemon and orphans every live lease into the uncertain quarantine. The proof is advisory, so a
+  // failed write is discarded rather than escalated.
+  const server = net.createServer((socket) => { socket.on("error", () => {}); socket.end(`${JSON.stringify(fenceBirthProof(owner))}\n`); });
   server.on("error", () => {});
   let listening = false;
   let endpointStat;

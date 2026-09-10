@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthorityError, authenticateAuthorityBearer, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, writeAuthorityVerifierStore } from "../authority-state.mjs";
+import { AuthorityError, authenticateAuthorityBearer, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, withAuthorityVerifierFence, writeAuthorityVerifierStore } from "../authority-state.mjs";
 import { ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -790,6 +790,57 @@ test("authority quarantines missed renewals and restores only an acknowledged ma
   const afterReclaim = gate.authority.health({ instanceId: authorityUuid(502), buildId: "test" });
   assert.equal(afterReclaim.uncertain, 0);
   assert.equal(gate.authority.getTicket(secondPrincipal, waiting.ticket.ticketId).state, "offered");
+});
+
+test("a fence liveness peer that disconnects mid-write cannot terminate the lane", async (t) => {
+  // A lane holds its liveness endpoint open for the whole verifier commit. Before the socket
+  // carried an error listener, a peer that hung up before the birth proof flushed raised an
+  // unhandled EPIPE that killed the daemon, orphaning every live lease into uncertain quarantine.
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-fence-liveness-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const verifierStore = path.join(home, "verifiers-v1.json");
+  const fencePath = authorityVerifierFencePath(verifierStore);
+  // The unguarded failure kills the process rather than rejecting, so the fence holder runs in a
+  // child: a crash shows up as a non-zero exit instead of hanging this suite on an unreleased fence.
+  const script = path.join(home, "hammer-fence-liveness.mjs");
+  await fs.writeFile(script, `
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+import { authorityVerifierFencePath, withAuthorityVerifierFence } from ${JSON.stringify(path.join(root, "authority-state.mjs"))};
+const store = process.argv[2];
+const fencePath = authorityVerifierFencePath(store);
+const storeId = crypto.createHash("sha256").update(path.resolve(fencePath)).digest("base64url").slice(0, 16);
+const held = await withAuthorityVerifierFence(store, async () => {
+  const owner = JSON.parse(await fs.readFile(fencePath, "utf8"));
+  const endpoint = path.join("/tmp", ".cpf-" + process.getuid(), storeId + "-" + owner.livenessId);
+  // Hanging up while the accept queue is backed up races the server's write of the birth proof.
+  // Some of those writes land on a closed peer and fail with EPIPE, the condition that crashed a
+  // lane. Sequential connections almost never lose the race, so the peers arrive in bursts.
+  for (let round = 0; round < 20; round += 1) {
+    await Promise.all(Array.from({ length: 200 }, () => new Promise((resolve) => {
+      const socket = net.createConnection({ path: endpoint });
+      socket.on("error", () => resolve());
+      setImmediate(() => { socket.destroy(); resolve(); });
+    })));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return "fence held";
+});
+if (held !== "fence held") process.exit(3);
+// The endpoint must still be usable for a later commit.
+const again = await withAuthorityVerifierFence(store, async () => "reacquired");
+process.exit(again === "reacquired" ? 0 : 4);
+`);
+  const hammer = spawn(process.execPath, [script, verifierStore], { env: { ...process.env, HOME: home }, stdio: ["ignore", "ignore", "pipe"] });
+  let hammerStderr = ""; hammer.stderr.on("data", (chunk) => { hammerStderr += chunk; });
+  const outcome = await Promise.race([
+    new Promise((resolve) => hammer.once("exit", (code, signal) => resolve({ code, signal }))),
+    delay(20_000).then(() => ({ code: null, signal: "timeout" })),
+  ]);
+  if (hammer.exitCode === null) hammer.kill("SIGKILL");
+  assert.deepEqual(outcome, { code: 0, signal: null }, `a reset liveness peer must not terminate the fence holder: ${hammerStderr}`);
 });
 
 test("authority applies throttle completion exactly once before releasing capacity", async (t) => {
