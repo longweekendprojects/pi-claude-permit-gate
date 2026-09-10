@@ -21,6 +21,25 @@ const CONFIG_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/author
 const STORE_DIR = path.join(os.homedir(), ".pi/agent/usage-windows");
 
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+
+// Reading a bearer from a locked keychain puts up an unlock dialog. This job has no window, so the
+// dialog cannot be brought forward or answered, and the next run replaces it with another one: the
+// operator sees a password prompt that keeps vanishing. The lock state is therefore checked first,
+// with a call that reports it rather than asking for it, and a locked keychain simply ends the run.
+function keychainIsUnlocked() {
+  try {
+    execFileSync("/usr/bin/security", ["show-keychain-info", path.join(os.homedir(), "Library/Keychains/login.keychain-db")], { stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (!keychainIsUnlocked()) {
+  process.stdout.write(`[${new Date().toISOString()}] login keychain is locked, skipped\n`);
+  process.exit(0);
+}
+
 const bearer = execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.snapshotRead.service, "-a", config.keychain.snapshotRead.account, "-w"], { encoding: "utf8" }).trim();
 
 // The extension's on-disk shape: utilization is a 0-1 fraction and reset is epoch seconds.

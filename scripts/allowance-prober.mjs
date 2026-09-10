@@ -89,10 +89,23 @@ function bypassed() {
   }
 }
 const isBypassed = bypassed();
+// Reading a bearer from a locked keychain puts up an unlock dialog. This job has no window, so the
+// dialog cannot be answered, and the next run replaces it with another: the operator sees a password
+// prompt that keeps vanishing. The lock state is checked with a call that reports it rather than
+// asking for it, and a locked keychain falls through to the local usage file like a missing one.
+const keychainIsUnlocked = () => {
+  try {
+    execFileSync("/usr/bin/security", ["show-keychain-info", path.join(os.homedir(), "Library/Keychains/login.keychain-db")], { stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+};
 // A machine without an enrolled prober credential still benefits from polling: the poll is what
 // keeps its own lanes fresh and what discovers a dead sign-in. Only the shared publication needs
 // the credential, so its absence falls back to the local usage file rather than disabling the job.
 const readPublishBearer = () => {
+  if (!keychainIsUnlocked()) return undefined;
   try {
     return execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
