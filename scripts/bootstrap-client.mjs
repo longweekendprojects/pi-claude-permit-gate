@@ -91,31 +91,33 @@ function ensureShellEnvironment() {
 }
 
 // A plist is rewritten only when its content differs, so re-running does not churn launchd.
-function ensureAgent(label, plist, { optional = false } = {}) {
+// A job that must never raise a Keychain dialog is loaded in the plain user domain instead of the
+// login session: outside that session a read on a locked keychain fails immediately, rather than
+// putting up an unlock window that no background job can bring forward or complete.
+function ensureAgent(label, plist, { optional = false, domain = `gui/${process.getuid()}` } = {}) {
   const file = path.join(AGENTS_DIR, `${label}.plist`);
   fs.mkdirSync(AGENTS_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
   let existing = "";
   try { existing = fs.readFileSync(file, "utf8"); } catch {}
-  const loaded = spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status === 0;
+  const loaded = spawnSync("/bin/launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0;
   if (existing === plist && loaded) { record(label, "ok", optional ? "optional" : "required"); return; }
   if (CHECK_ONLY) { record(label, existing ? "changed" : "missing", optional ? "optional" : "required"); return; }
   fs.writeFileSync(file, plist);
   if (spawnSync("/usr/bin/plutil", ["-lint", file], { stdio: "ignore" }).status !== 0) { record(label, "error", "plist failed lint"); return; }
-  spawnSync("/bin/launchctl", ["bootout", `gui/${process.getuid()}/${label}`], { stdio: "ignore" });
+  // The job may already exist in either domain, so both are torn down before it is loaded again.
+  for (const target of new Set([domain, `gui/${process.getuid()}`, `user/${process.getuid()}`])) {
+    spawnSync("/bin/launchctl", ["bootout", `${target}/${label}`], { stdio: "ignore" });
+  }
   // launchd unloads asynchronously; bootstrapping a label still tearing down fails with EIO.
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status !== 0) break;
+    if (spawnSync("/bin/launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status !== 0) break;
     spawnSync("/bin/sleep", ["0.1"], { stdio: "ignore" });
   }
-  const boot = spawnSync("/bin/launchctl", ["bootstrap", `gui/${process.getuid()}`, file], { stdio: "ignore" });
+  const boot = spawnSync("/bin/launchctl", ["bootstrap", domain, file], { stdio: "ignore" });
   record(label, boot.status === 0 ? "changed" : "error", boot.status === 0 ? "installed" : "bootstrap failed");
 }
 
-// `background` keeps a job out of the login session, where a Keychain read on a locked keychain
-// raises an unlock dialog nobody can complete: the job has no window, the dialog is replaced by the
-// next cycle's dialog, and the operator is left clicking at a window that keeps vanishing. Outside
-// that session the same read simply fails, which the caller already handles.
 const plist = (label, args, { env = {}, keepAlive = true, interval, sessionType } = {}) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -191,8 +193,9 @@ ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweeken
 // Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what
 // discovers a lane whose sign-in has died, and the syncer feeds shared readings back into this
 // machine's usage files. Both are per-machine jobs, so every client runs its own.
-ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90, sessionType: "Background" }));
-ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60, sessionType: "Background" }));
+const backgroundDomain = `user/${process.getuid()}`;
+ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }), { domain: backgroundDomain });
+ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }), { domain: backgroundDomain });
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
 // The monitor is the one job that must run in the login session: it reads its bearer from the
 // Keychain, which a job bootstrapped from a remote shell can never reach. Leaving it alone here
