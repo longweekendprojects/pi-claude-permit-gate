@@ -112,6 +112,9 @@ function ensureAgent(label, plist, { optional = false } = {}) {
   record(label, boot.status === 0 ? "changed" : "error", boot.status === 0 ? "installed" : "bootstrap failed");
 }
 
+// `keepAlive: "crash"` restarts a job that fails but respects a deliberate Quit. Plain `true` makes
+// the menu bar app unquittable: it reappears seconds after the operator quits it, which is what
+// turned a broken launch into something nobody could stop.
 const plist = (label, args, { env = {}, keepAlive = true, interval } = {}) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -124,7 +127,9 @@ const plist = (label, args, { env = {}, keepAlive = true, interval } = {}) => `<
   <dict>${Object.entries(env).map(([k, v]) => `\n    <key>${k}</key><string>${v}</string>`).join("")}
   </dict>` : ""}
   <key>RunAtLoad</key><true/>${interval ? `
-  <key>StartInterval</key><integer>${interval}</integer>` : ""}${keepAlive ? `
+  <key>StartInterval</key><integer>${interval}</integer>` : ""}${keepAlive === "crash" ? `
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>` : keepAlive ? `
   <key>KeepAlive</key><true/>` : ""}
   <key>StandardOutPath</key><string>${LOG_DIR}/${label.split(".").pop()}.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/${label.split(".").pop()}.err.log</string>
@@ -194,7 +199,7 @@ const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Content
 // keeps a remote run from silently replacing a working job with an unreachable one.
 const remoteShell = Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY);
 if (remoteShell && fs.existsSync(monitorApp)) record("com.longweekendprojects.claude-lane-monitor", "ok", "left alone; run from Terminal at the machine");
-else if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
+else if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { keepAlive: "crash", env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
 else record("com.longweekendprojects.claude-lane-monitor", "ok", "monitor app not installed, skipped");
 checkCredentials();
 checkProberCredential(config);
