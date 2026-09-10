@@ -194,7 +194,12 @@ ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweeken
 ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90, sessionType: "Background" }));
 ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60, sessionType: "Background" }));
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
-if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
+// The monitor is the one job that must run in the login session: it reads its bearer from the
+// Keychain, which a job bootstrapped from a remote shell can never reach. Leaving it alone here
+// keeps a remote run from silently replacing a working job with an unreachable one.
+const remoteShell = Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY);
+if (remoteShell && fs.existsSync(monitorApp)) record("com.longweekendprojects.claude-lane-monitor", "ok", "left alone; run from Terminal at the machine");
+else if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
 else record("com.longweekendprojects.claude-lane-monitor", "ok", "monitor app not installed, skipped");
 checkCredentials();
 checkProberCredential(config);
