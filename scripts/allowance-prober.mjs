@@ -40,10 +40,15 @@ const BACKOFF_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allow
 const CREDENTIAL_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/allowance-prober-credentials-v1.json");
 const BYPASS_FILE = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client-bypass-v1.json");
 const STORE_DIR = path.join(os.homedir(), ".pi/agent/usage-windows");
-const PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
+// The authority orders publications by (installation, lane), so every machine running this job needs
+// its own prober identity: a shared one would make two machines invalidate each other's sequences.
+// The first machine's identity stays the default because it is already enrolled with the authority;
+// a second machine sets `proberInstallationId` in its client configuration.
+const DEFAULT_PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
 const PROBER_KEYCHAIN_ACCOUNT = "prober";
 
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+const PROBER_INSTALLATION_ID = config.proberInstallationId ?? DEFAULT_PROBER_INSTALLATION_ID;
 let auth = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
 
 // Pi owns this file, so the window between reading and writing is kept as small as possible: the
@@ -84,7 +89,18 @@ function bypassed() {
   }
 }
 const isBypassed = bypassed();
-const bearer = isBypassed ? undefined : execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8" }).trim();
+// A machine without an enrolled prober credential still benefits from polling: the poll is what
+// keeps its own lanes fresh and what discovers a dead sign-in. Only the shared publication needs
+// the credential, so its absence falls back to the local usage file rather than disabling the job.
+const readPublishBearer = () => {
+  try {
+    return execFileSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return undefined;
+  }
+};
+const bearer = isBypassed ? undefined : readPublishBearer();
+const publishesToAuthority = !isBypassed && bearer !== undefined;
 
 // Sequences are tracked per lane because the authority orders publications by (installation, lane).
 const readSequences = () => { try { return JSON.parse(fs.readFileSync(SEQUENCE_FILE, "utf8")); } catch { return {}; } };
@@ -214,10 +230,11 @@ for (const provider of PROVIDERS) {
     const sequence = (sequences[provider] ?? 0) + 1;
     sequences[provider] = sequence;
     writeSequences();
-    if (isBypassed) {
+    if (!publishesToAuthority) {
       const written = writeLocalUsage(provider, fiveHour, sevenDay, Date.now());
       const asPercent = (window) => window ? `${(window.utilization * 100).toFixed(1)}%` : "-";
-      results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)} -> ${written ? "local file" : "local file already newer"}`);
+      const destination = written ? "local file" : "local file already newer";
+      results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)} -> ${destination}${isBypassed ? "" : " (no prober publish credential)"}`);
       continue;
     }
     const lane = config.lanes[provider];

@@ -37,6 +37,12 @@ const AUTHORITY_ID = process.env.CLAUDE_PERMIT_AUTHORITY_ID ?? "ce298942-e550-44
 // machine at credentials that do not exist.
 const existingAccount = (() => { try { return JSON.parse(fs.readFileSync(path.join(HOME, ".pi/agent/claude-permit-gate/authority-client.json"), "utf8")).keychain?.snapshotRead?.account; } catch { return undefined; } })();
 const KEYCHAIN_ACCOUNT = process.env.CLAUDE_PERMIT_KEYCHAIN_ACCOUNT ?? existingAccount ?? os.hostname().split(".")[0].replace(/[^A-Za-z0-9_-]/g, "");
+const PROBER_KEYCHAIN_ACCOUNT = "prober";
+// The identity the first machine's prober already publishes under. A machine holding that machine's
+// prober credential keeps it; any other machine mints its own, because the authority rejects a
+// repeated (installation, scope) enrolment and orders publications per installation.
+const ENROLLED_PROBER_INSTALLATION_ID = "e478e53b-3ed3-48a0-9932-cda84c889e8f";
+const PROBER_INSTALLATION_ID = process.env.CLAUDE_PERMIT_PROBER_INSTALLATION_ID;
 const LANES = {
   "anthropic-a": { port: 8791, accountBindingId: "6da67cea-ef88-4093-94b8-54b39c1b1ea2" },
   "anthropic-b": { port: 8792, accountBindingId: "49c0e5bf-478c-4752-ab23-89f7e8b64626" },
@@ -56,7 +62,14 @@ function ensureConfig() {
   // The installation id identifies this machine to the authority and must never be shared or reused:
   // enrolment rejects a repeated installation and scope pair, even after revocation.
   const installationId = config?.installationId && /^[0-9a-f-]{36}$/i.test(config.installationId) ? config.installationId : crypto.randomUUID();
-  const desired = { schemaVersion: 1, mode: "authority-client", origin: ORIGIN, expectedAuthorityId: AUTHORITY_ID, installationId, keychain: Object.fromEntries(SCOPES.map(([scope, service]) => [scope === "permit:mutate" ? "permitMutate" : scope === "snapshot:read" ? "snapshotRead" : "allowancePublish", { service, account: KEYCHAIN_ACCOUNT }])), monitorSource: "authority", publisherEnabled: true, lanes: LANES };
+  // The allowance prober publishes under its own identity, and the authority orders publications by
+  // (installation, lane), so a second machine's prober needs an id of its own or the two machines
+  // invalidate each other's sequences. The first machine keeps the identity already enrolled.
+  const proberCredentialPresent = spawnSync("/usr/bin/security", ["find-generic-password", "-s", "claude-permit-authority-allowance-publish", "-a", PROBER_KEYCHAIN_ACCOUNT], { stdio: "ignore" }).status === 0;
+  const proberInstallationId = config?.proberInstallationId && /^[0-9a-f-]{36}$/i.test(config.proberInstallationId)
+    ? config.proberInstallationId
+    : PROBER_INSTALLATION_ID ?? (proberCredentialPresent ? ENROLLED_PROBER_INSTALLATION_ID : crypto.randomUUID());
+  const desired = { schemaVersion: 1, mode: "authority-client", origin: ORIGIN, expectedAuthorityId: AUTHORITY_ID, installationId, proberInstallationId, keychain: Object.fromEntries(SCOPES.map(([scope, service]) => [scope === "permit:mutate" ? "permitMutate" : scope === "snapshot:read" ? "snapshotRead" : "allowancePublish", { service, account: KEYCHAIN_ACCOUNT }])), monitorSource: "authority", publisherEnabled: true, lanes: LANES };
   const current = config ? JSON.stringify(config) : "";
   if (current === JSON.stringify(desired) && (fs.statSync(CONFIG_FILE).mode & 0o077) === 0) { record("client config", "ok", installationId); return desired; }
   if (CHECK_ONLY) { record("client config", config ? "changed" : "missing", installationId); return desired; }
@@ -125,6 +138,14 @@ function checkCredentials() {
   else record("keychain credentials", "missing", `enrol on the authority host: ${missing.join(", ")}`);
 }
 
+// Without this credential the prober still polls, refreshes tokens, and reports dead sign-ins; it
+// writes its readings to this machine's usage files instead of publishing them to the shared pool.
+function checkProberCredential(config) {
+  const present = spawnSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT], { stdio: "ignore" }).status === 0;
+  if (present) record("prober publish credential", "ok", `account ${PROBER_KEYCHAIN_ACCOUNT}`);
+  else record("prober publish credential", "missing", `local readings only until allowance:publish is enrolled for installation ${config.proberInstallationId}`);
+}
+
 // A local daemon on an A-D port means this machine is scheduling permits by itself, which spends the
 // shared account's capacity without the authority knowing. Only stop one that is provably idle.
 function stopLocalLaneDaemons() {
@@ -162,10 +183,16 @@ const config = ensureConfig();
 ensureShellEnvironment();
 ensureAgent("com.longweekendprojects.claude-permit-env", plist("com.longweekendprojects.claude-permit-env", ["/bin/sh", "-c", `launchctl setenv CLAUDE_PERMIT_GATE_MODE authority-client; launchctl setenv CLAUDE_PERMIT_GATE_ORIGIN ${ORIGIN}; launchctl setenv CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG ${CONFIG_FILE}`], { keepAlive: false }));
 ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweekendprojects.claude-lane-sampler", [NODE, path.join(REPO, "scripts/lane-sampler.mjs")]), { optional: true });
+// Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what
+// discovers a lane whose sign-in has died, and the syncer feeds shared readings back into this
+// machine's usage files. Both are per-machine jobs, so every client runs its own.
+ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }));
+ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }));
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
 if (fs.existsSync(monitorApp)) ensureAgent("com.longweekendprojects.claude-lane-monitor", plist("com.longweekendprojects.claude-lane-monitor", [monitorApp], { env: { CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: ORIGIN, CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: CONFIG_FILE } }), { optional: true });
 else record("com.longweekendprojects.claude-lane-monitor", "ok", "monitor app not installed, skipped");
 checkCredentials();
+checkProberCredential(config);
 stopLocalLaneDaemons();
 verifyAuthority(config);
 
