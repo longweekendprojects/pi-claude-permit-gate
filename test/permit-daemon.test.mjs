@@ -863,6 +863,27 @@ process.exit(again === "reacquired" ? 0 : 4);
   assert.deepEqual(outcome, { code: 0, signal: null }, `a reset liveness peer must not terminate the fence holder: ${hammerStderr}`);
 });
 
+test("a degraded lane exits so its supervisor restarts it instead of refusing every request", async (t) => {
+  // A degraded AuthorityState refuses work for the rest of the process lifetime. Left running, the
+  // lane answers 503 forever and every client on it waits; exiting hands recovery to launchd.
+  const gate = await authorityDaemon(t);
+  const headers = authorityHeaders(gate.principal);
+  assert.equal((await request(gate.port, "GET", "/v1/health", undefined, headers)).status, 200);
+  // Rewriting the state out from under the owner breaks the ownership fence on the next commit.
+  const stored = JSON.parse(await fs.readFile(gate.statePath, "utf8"));
+  stored.ownerNonce = crypto.randomUUID();
+  await fs.writeFile(gate.statePath, `${JSON.stringify(stored)}\n`, { mode: 0o600 });
+  // The fence is only checked on a commit, so the lane needs one mutation to notice.
+  const rejected = await request(gate.port, "POST", "/v1/tickets", ticketCreate(gate.principal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: Date.now() }), headers);
+  assert.equal(rejected.status, 503);
+  const exited = await Promise.race([
+    new Promise((resolve) => gate.child.once("exit", (code) => resolve(code))),
+    delay(30_000).then(() => "timeout"),
+  ]);
+  assert.notEqual(exited, "timeout", "a degraded lane must not keep running");
+  assert.notEqual(exited, 0, "the exit must be non-zero so KeepAlive restarts the lane");
+});
+
 test("authority applies throttle completion exactly once before releasing capacity", async (t) => {
   const gate = await durableAuthority(t, { maximumConcurrency: 2, currentConcurrency: 2 });
   const firstPrincipal = authorityPrincipal(4); const secondPrincipal = authorityPrincipal(5);

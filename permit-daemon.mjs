@@ -194,6 +194,18 @@ function startAuthorityDaemon() {
     return result;
   }
 
+  // A degraded lane refuses every request for the rest of the process lifetime, so leaving it up
+  // strands the whole lane until an operator notices. Exiting non-zero lets launchd restart it,
+  // which reopens the persisted state; live leases are quarantined and reclaimed on their own
+  // deadline exactly as they are after any other restart.
+  let degradedExitScheduled = false;
+  function exitForDegradedAuthority() {
+    if (degradedExitScheduled) return;
+    degradedExitScheduled = true;
+    process.stderr.write(`authority lane ${configuration.provider} degraded; exiting for restart\n`);
+    setTimeout(() => process.exit(1), 250).unref?.();
+  }
+
   async function handleAuthorityRequest(req, res) {
     try {
       if (!authority) {
@@ -204,6 +216,7 @@ function startAuthorityDaemon() {
       }
       if (authority.status === "degraded") {
         authorityError(res, new AuthorityError("authority_degraded", { message: "authority is degraded" }));
+        exitForDegradedAuthority();
         return;
       }
       if (shuttingDown) throw new AuthorityError("authority_draining", { message: "authority is shutting down" });
@@ -263,6 +276,9 @@ function startAuthorityDaemon() {
     } catch (error) {
       if (!res.headersSent) authorityError(res, error);
       else res.destroy();
+      // The commit that degrades the lane fails this request, so the degraded state is first
+      // observable here rather than on the next request's precheck.
+      if (authority?.status === "degraded") exitForDegradedAuthority();
     }
   }
 
@@ -278,7 +294,14 @@ function startAuthorityDaemon() {
       if (shuttingDown) return;
       try {
         authority = openAuthorityState(configuration);
-        reconcileTimer = setInterval(() => { void serializeAuthorityMutation(() => authority.reconcile()).catch(() => {}); }, 1_000);
+        reconcileTimer = setInterval(() => {
+          void serializeAuthorityMutation(() => authority.reconcile()).catch((error) => {
+            if (authority.status === "degraded") {
+              process.stderr.write(`authority lane ${configuration.provider} degraded: ${error?.message ?? "unknown fault"}\n`);
+              exitForDegradedAuthority();
+            }
+          });
+        }, 1_000);
         reconcileTimer.unref?.();
       } catch (error) {
         startupFault = error instanceof AuthorityError && error.code === "verifier_unavailable" ? "verifier_unavailable" : "authority_degraded";
