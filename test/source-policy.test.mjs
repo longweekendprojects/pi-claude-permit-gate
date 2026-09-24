@@ -318,7 +318,9 @@ test("remote bypass is an explicit owner-only toggle that fails closed on invali
 });
 
 test("bypass gates locally on the same lane ports and abandons a held shared lease without network", async () => {
-  assert.match(source, /const bypassed = bypassState\(\)\.enabled; if \(mode\.mode === "authority-client" && !bypassed\)/);
+  assert.match(source, /let bypassed = bypassState\(\)\.enabled; if \(mode\.mode === "authority-client" && !bypassed\)/);
+  // A request moved off the authority by bypass falls through to the local gate in the same hook.
+  assert.match(source, /!== "bypassed"\) return undefined; bypassed = true; \}/);
   assert.match(source, /mode\.lanes\[provider as keyof AuthorityClientConfig\["lanes"\]\]\.port : undefined/);
   // Bypass never loosens the local gate itself: it still acquires a local permit before the request.
   assert.match(source, /await acquire\(ctx, directory, port, provider\); return undefined;/);
@@ -364,4 +366,19 @@ test("aborting an acquisition clears the waiting status without surfacing an err
   const failingClient = { acquire: async () => { throw new Error("authority health identity is invalid"); }, cancel: async () => {} };
   await assert.rejects(acquireAuthority({ ui: ctx.ui }, failingClient, "anthropic-b"), /authority health identity is invalid/);
   await acquireAuthority(ctx, abortingClient, "anthropic-b");
+});
+
+// Turning bypass on must free a request already waiting on an unreachable authority, not only
+// requests that start afterwards, so a restarted or offline main server cannot strand this machine.
+test("turning bypass on moves a request already waiting on the authority to local gating", async () => {
+  const statuses = []; let detachedNow = false; let sawAbort = false;
+  const ctx = { ui: { setStatus: (_key, value) => statuses.push(value), notify: () => {} } };
+  const waitingClient = { acquire: (_provider, signal) => new Promise((_resolve, reject) => { signal.addEventListener("abort", () => { sawAbort = true; reject(Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" })); }, { once: true }); }), cancel: async () => {} };
+  const pending = acquireAuthority(ctx, waitingClient, "anthropic-a", () => detachedNow);
+  detachedNow = true;
+  assert.equal(await pending, "bypassed");
+  assert.equal(sawAbort, true);
+  assert.deepEqual(statuses, ["Claude: waiting for shared permit...", "Claude gate: ready (bypass)"]);
+  // The lifecycle is released, so the next request is not blocked behind the detached one.
+  assert.equal(await acquireAuthority(ctx, waitingClient, "anthropic-a", () => true), "bypassed");
 });

@@ -133,7 +133,7 @@ An authority client has no automatic fallback: when the machine cannot reach the
 /claude-permit-bypass off
 ```
 
-The toggle takes effect on the next provider request; no restart is needed. Turning it on drops any shared lease this machine holds without contacting the authority, because the network is usually already gone, and the authority reclaims that lease on its own renewal deadline. Turning it off releases the local permit and returns the machine to the shared pool.
+The toggle takes effect within about a second; no restart is needed. A request already waiting for a shared permit, or still trying to hand one back to an unreachable authority, stops waiting and continues through the local gate instead. Its queued ticket is cancelled in the background when the authority answers, and otherwise expires there. Turning it on drops any shared lease this machine holds without contacting the authority, because the network is usually already gone, and the authority reclaims that lease on its own renewal deadline. Turning it off releases the local permit and returns the machine to the shared pool.
 
 Bypass trades the shared invariant for availability. While it is on, other machines on the same account no longer see this machine's usage, so running them at the same time over-subscribes the account. Use it when you expect to be the only active machine.
 
