@@ -20,4 +20,6 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # The standalone prober loads Pi from the Node installation; CI must exercise the real resolver.
+      - run: npm install --global --no-audit --no-fund @earendil-works/pi-coding-agent@0.87.1
       - run: npm test
