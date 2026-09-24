@@ -17,3 +17,7 @@
 - Detaching cannot complete the lease it holds, because the link is already gone. Drop the record locally and let the authority reclaim on its renewal deadline; attempting the completion is what leaves a session retrying forever.
 - OAuth token rotation requires every credential writer to share Pi's lock across reading, refreshing, and persisting. The allowance prober's atomic rename bypasses that lock, so an overlapping Pi update to another account can erase its replacement refresh token. A synthetic reproduction proves this defect, but an `invalid_grant` incident alone does not prove that the race occurred.
 - The scheduled allowance prober loads its script afresh on each run. Install a new helper before atomically replacing the entry script, and verify the next scheduled run instead of terminating a process that may be rotating OAuth credentials. Preserve unrelated changes in the installed checkout.
+
+## Bypass must reach in-flight work, not only new requests (v0.4.2)
+
+An operator toggle that is read only at the start of a request does nothing for work already waiting on the resource the toggle routes around. When a switch exists to escape an unreachable dependency, every wait on that dependency (acquire, retrying completion) must observe the switch while it waits. Prove such a change against the installed package with an isolated harness: temporary state paths, a fake authority that never answers, and the real bypass-file reader, so live agents on the machine are never touched.
