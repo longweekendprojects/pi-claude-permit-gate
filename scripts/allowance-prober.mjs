@@ -110,6 +110,7 @@ const writeBackoff = () => fs.writeFileSync(BACKOFF_FILE, JSON.stringify(backoff
 // it as a sign-in problem an operator must resolve rather than as data that will refresh itself.
 // Only an interactive `/login` in Pi can clear it, so the record carries no retry schedule.
 const CREDENTIAL_SCHEMA_VERSION = 1;
+const RESOLVER_UNAVAILABLE_REASON = "Pi OAuth resolver unavailable";
 const readCredentialFailures = () => {
   try {
     const stored = JSON.parse(fs.readFileSync(CREDENTIAL_FILE, "utf8"));
@@ -177,9 +178,10 @@ function writeLocalUsage(provider, fiveHour, sevenDay, observedAtEpochMs) {
 }
 
 for (const provider of PROVIDERS) {
+  // A resolver load failure is operational, not evidence that this lane's sign-in expired.
+  if (credentialFailures[provider]?.reason === RESOLVER_UNAVAILABLE_REASON) clearCredentialFailure(provider);
   if (!resolveToken) {
-    recordCredentialFailure(provider, "Pi OAuth resolver unavailable");
-    results.push(`${provider}: Pi OAuth resolver unavailable`);
+    results.push(`${provider}: ${RESOLVER_UNAVAILABLE_REASON}`);
     continue;
   }
   let token;

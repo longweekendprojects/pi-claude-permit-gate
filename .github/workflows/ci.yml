@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         node-version: [22, 24]
+        pi-version: ["0.87.1", "0.99.1"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,5 +22,5 @@ jobs:
           cache: npm
       - run: npm ci
       # The standalone prober loads Pi from the Node installation; CI must exercise the real resolver.
-      - run: npm install --global --no-audit --no-fund @earendil-works/pi-coding-agent@0.87.1
+      - run: npm install --global --no-audit --no-fund @earendil-works/pi-coding-agent@${{ matrix.pi-version }}
       - run: npm test

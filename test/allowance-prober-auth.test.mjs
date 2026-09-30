@@ -172,3 +172,63 @@ test("standalone prober resolves from its Node installation and continues usage 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("unreviewed Pi leaves real sign-in failures intact without reading auth or using transport", { timeout: 30_000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "allowance-unreviewed-home-"));
+  try {
+    const agentDir = path.join(home, ".pi/agent");
+    const gateDir = path.join(agentDir, "claude-permit-gate");
+    fs.mkdirSync(gateDir, { recursive: true });
+    const authPath = path.join(agentDir, "auth.json");
+    fs.writeFileSync(path.join(gateDir, "authority-client.json"), "{}", { mode: 0o600 });
+    const failurePath = path.join(gateDir, "allowance-prober-credentials-v1.json");
+    const expectedFailures = {
+      "anthropic-b": { failedAtEpochMs: 222, reason: "OAuth credential unavailable" },
+      "anthropic-d": { failedAtEpochMs: 333, reason: "usage HTTP 401" },
+    };
+    fs.writeFileSync(failurePath, JSON.stringify({ schemaVersion: 1, lanes: {
+      "anthropic-a": { failedAtEpochMs: 111, reason: "Pi OAuth resolver unavailable" },
+      ...expectedFailures,
+    } }), { mode: 0o600 });
+    const preload = path.join(home, "mock-unreviewed.mjs");
+    fs.writeFileSync(preload, `
+      import assert from "node:assert/strict";
+      import fs from "node:fs";
+      import os from "node:os";
+      import path from "node:path";
+      import childProcess from "node:child_process";
+      import { syncBuiltinESMExports } from "node:module";
+      assert.equal(os.homedir(), process.env.TEST_FAKE_HOME);
+      const runtime = path.resolve(path.dirname(process.execPath), "../lib/node_modules/@earendil-works/pi-coding-agent");
+      const packages = new Set([path.join(runtime, "package.json"), path.join(runtime, "node_modules/@earendil-works/pi-ai/package.json")]);
+      const authPath = path.join(os.homedir(), ".pi/agent/auth.json");
+      const forbidden = (action) => { console.error("UNEXPECTED_AUTH_ACCESS: " + action); throw new Error("Auth access forbidden in test"); };
+      const read = fs.readFileSync;
+      const write = fs.writeFileSync;
+      const exists = fs.existsSync;
+      fs.readFileSync = (file, ...args) => {
+        if (file === authPath) return forbidden("read");
+        if (packages.has(file)) return JSON.stringify({ ...JSON.parse(read(file, "utf8")), version: "0.99.2" });
+        return read(file, ...args);
+      };
+      fs.writeFileSync = (file, ...args) => file === authPath ? forbidden("write") : write(file, ...args);
+      fs.existsSync = (file) => file === authPath ? forbidden("exists") : exists(file);
+      childProcess.execFileSync = () => { console.error("UNEXPECTED_KEYCHAIN_ACCESS"); throw new Error("Keychain access forbidden in test"); };
+      syncBuiltinESMExports();
+      globalThis.fetch = async () => { console.error("UNEXPECTED_TRANSPORT"); throw new Error("Network access forbidden in test"); };
+    `);
+    const prober = path.resolve("scripts/allowance-prober.mjs");
+    const run = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, prober], {
+      encoding: "utf8", timeout: 25_000,
+      env: { ...process.env, HOME: home, TEST_FAKE_HOME: home, CLAUDE_PERMIT_GATE_BYPASS: "1" },
+    });
+    assert.equal(run.status, 0, `isolated prober exit: ${run.error?.code ?? run.stderr}`);
+    assert.match(run.stdout, /anthropic-a: Pi OAuth resolver unavailable/);
+    assert.match(run.stdout, /anthropic-d: Pi OAuth resolver unavailable/);
+    assert.doesNotMatch(run.stderr, /UNEXPECTED_AUTH_ACCESS|UNEXPECTED_KEYCHAIN_ACCESS|UNEXPECTED_TRANSPORT/);
+    assert.equal(fs.existsSync(authPath), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(failurePath, "utf8")), { schemaVersion: 1, lanes: expectedFailures });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
