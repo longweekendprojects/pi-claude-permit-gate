@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // Idempotent installer for everything `pi update --extensions` cannot carry.
 //
-// The package pin only reconciles extension code. A working install also needs a per-machine client
+// Pi reconciles package files but not LaunchAgents. A working install also needs a per-machine client
 // configuration, three Keychain credentials, environment variables that survive a reboot for both
 // terminal- and GUI-launched processes, background jobs, and the absence of local A-D daemons that
 // would double-spend account capacity. Those lived in operator memory, so every machine drifted.
 //
-// Run this after any `pi update --extensions`. It is safe to run repeatedly: each step reports
-// `ok` when already correct and only writes when something is missing or wrong.
+// Run this after an installation or update that changes the package location. The prober-only
+// mode moves its scheduled job without touching client configuration or other jobs.
 //
-//   node scripts/bootstrap-client.mjs            apply
-//   node scripts/bootstrap-client.mjs --check    report only, exit 1 if anything needs applying
+//   node scripts/bootstrap-client.mjs --prober-only --check   inspect the prober job
+//   node scripts/bootstrap-client.mjs --prober-only           move it when idle
+//   node scripts/bootstrap-client.mjs                         apply all client setup
+//   node scripts/bootstrap-client.mjs --check                 inspect all client setup
 //
 // Secret enrolment is deliberately excluded: the authority derives a verifier from the secret, so
 // credentials must be minted on the authority host. This reports which are missing and stops short
@@ -22,6 +24,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 
 const CHECK_ONLY = process.argv.includes("--check");
+const PROBER_ONLY = process.argv.includes("--prober-only");
 const HOME = os.homedir();
 const USER = os.userInfo().username;
 const NODE = process.execPath;
@@ -93,22 +96,57 @@ function ensureShellEnvironment() {
 // A plist is rewritten only when its content differs, so re-running does not churn launchd.
 function ensureAgent(label, plist, { optional = false } = {}) {
   const file = path.join(AGENTS_DIR, `${label}.plist`);
-  fs.mkdirSync(AGENTS_DIR, { recursive: true });
-  fs.mkdirSync(LOG_DIR, { recursive: true });
+  if (!CHECK_ONLY) {
+    fs.mkdirSync(AGENTS_DIR, { recursive: true });
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
   let existing = "";
   try { existing = fs.readFileSync(file, "utf8"); } catch {}
   const loaded = spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status === 0;
   if (existing === plist && loaded) { record(label, "ok", optional ? "optional" : "required"); return; }
   if (CHECK_ONLY) { record(label, existing ? "changed" : "missing", optional ? "optional" : "required"); return; }
-  fs.writeFileSync(file, plist);
-  if (spawnSync("/usr/bin/plutil", ["-lint", file], { stdio: "ignore" }).status !== 0) { record(label, "error", "plist failed lint"); return; }
-  spawnSync("/bin/launchctl", ["bootout", `gui/${process.getuid()}/${label}`], { stdio: "ignore" });
+  // A running prober may be in the middle of an OAuth refresh. Never boot it out: retry when idle.
+  if (label === "com.longweekendprojects.claude-allowance-prober" && loaded) {
+    const status = spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { encoding: "utf8" });
+    if (status.status !== 0 || /\bpid\s*=\s*\d+\b/.test(status.stdout ?? "")) {
+      record(label, "error", "job may be running; retry when idle");
+      return;
+    }
+  }
+  if (label === "com.longweekendprojects.claude-allowance-prober") {
+    // Validate before stopping the old job; a malformed new path must not take polling offline.
+    const candidate = `${file}.candidate.${process.pid}`;
+    try {
+      fs.writeFileSync(candidate, plist, { mode: 0o600 });
+      if (spawnSync("/usr/bin/plutil", ["-lint", candidate], { stdio: "ignore" }).status !== 0) {
+        record(label, "error", "plist failed lint; previous job unchanged");
+        return;
+      }
+      if (loaded && spawnSync("/bin/launchctl", ["bootout", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status !== 0) {
+        record(label, "error", "could not unload idle job; previous job unchanged");
+        return;
+      }
+      fs.renameSync(candidate, file);
+    } finally { fs.rmSync(candidate, { force: true }); }
+  } else {
+    fs.writeFileSync(file, plist);
+    if (spawnSync("/usr/bin/plutil", ["-lint", file], { stdio: "ignore" }).status !== 0) { record(label, "error", "plist failed lint"); return; }
+    spawnSync("/bin/launchctl", ["bootout", `gui/${process.getuid()}/${label}`], { stdio: "ignore" });
+  }
   // launchd unloads asynchronously; bootstrapping a label still tearing down fails with EIO.
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status !== 0) break;
     spawnSync("/bin/sleep", ["0.1"], { stdio: "ignore" });
   }
   const boot = spawnSync("/bin/launchctl", ["bootstrap", `gui/${process.getuid()}`, file], { stdio: "ignore" });
+  if (boot.status !== 0 && label === "com.longweekendprojects.claude-allowance-prober") {
+    // Do not leave an updated plist that looks current while launchd still has the old job (or none).
+    if (existing) fs.writeFileSync(file, existing);
+    else fs.rmSync(file, { force: true });
+    const restored = existing && loaded ? spawnSync("/bin/launchctl", ["bootstrap", `gui/${process.getuid()}`, file], { stdio: "ignore" }).status === 0 : !loaded;
+    record(label, "error", restored ? "bootstrap failed; previous job restored" : "bootstrap failed; check previous job manually");
+    return;
+  }
   record(label, boot.status === 0 ? "changed" : "error", boot.status === 0 ? "installed" : "bootstrap failed");
 }
 
@@ -184,6 +222,18 @@ function verifyAuthority(config) {
   } catch { record("authority reachability", "error", "no response"); }
 }
 
+const proberLabel = "com.longweekendprojects.claude-allowance-prober";
+const ensureProber = () => ensureAgent(proberLabel, plist(proberLabel, [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }));
+const report = () => {
+  const width = Math.max(...results.map((r) => r.step.length));
+  for (const { step, state, detail } of results) process.stdout.write(`${state.padEnd(8)} ${step.padEnd(width)}  ${detail}\n`);
+  if (results.some((r) => r.state === "error")) process.exitCode = 2;
+  else if (CHECK_ONLY && wouldChange()) process.exitCode = 1;
+};
+if (PROBER_ONLY) {
+  ensureProber();
+  report();
+} else {
 const config = ensureConfig();
 ensureShellEnvironment();
 ensureAgent("com.longweekendprojects.claude-permit-env", plist("com.longweekendprojects.claude-permit-env", ["/bin/sh", "-c", `launchctl setenv CLAUDE_PERMIT_GATE_MODE authority-client; launchctl setenv CLAUDE_PERMIT_GATE_ORIGIN ${ORIGIN}; launchctl setenv CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG ${CONFIG_FILE}`], { keepAlive: false }));
@@ -191,7 +241,7 @@ ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweeken
 // Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what
 // discovers a lane whose sign-in has died, and the syncer feeds shared readings back into this
 // machine's usage files. Both are per-machine jobs, so every client runs its own.
-ensureAgent("com.longweekendprojects.claude-allowance-prober", plist("com.longweekendprojects.claude-allowance-prober", [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }));
+ensureProber();
 ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }));
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
 // The monitor is the one job that must run in the login session: it reads its bearer from the
@@ -206,8 +256,5 @@ checkProberCredential(config);
 stopLocalLaneDaemons();
 verifyAuthority(config);
 
-const width = Math.max(...results.map((r) => r.step.length));
-for (const { step, state, detail } of results) process.stdout.write(`${state.padEnd(8)} ${step.padEnd(width)}  ${detail}\n`);
-const failed = results.some((r) => r.state === "error");
-if (failed) process.exitCode = 2;
-else if (CHECK_ONLY && wouldChange()) process.exitCode = 1;
+report();
+}

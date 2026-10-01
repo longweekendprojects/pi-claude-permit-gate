@@ -9,8 +9,10 @@ When several Pi sessions use the same Claude account, this extension queues dire
 Install an immutable release tag:
 
 ```bash
-pi install git:github.com/longweekendprojects/pi-claude-permit-gate@v0.2.0
+pi install git:github.com/longweekendprojects/pi-claude-permit-gate@v0.4.3
 ```
+
+Pinned Git packages stay on their configured release when `pi update --extensions` runs. To upgrade, change the pinned source in Pi settings and any package lockfile together, then reconcile the installed package with `pi update --extension git:github.com/longweekendprojects/pi-claude-permit-gate@<version>`. If a managed dotfiles setup owns Pi settings and its lockfile, make that change through the dotfiles workflow instead of running `pi install` separately. The existing scheduled allowance prober reads its script from the Pi installation. Updates within the same package source take effect on its next run; switching from Git to npm requires a one-time LaunchAgent path migration. From the newly installed package, run `node scripts/bootstrap-client.mjs --prober-only --check`, then `node scripts/bootstrap-client.mjs --prober-only` when the prober is idle. Verify the new path and a successful scheduled run before removing the old Git package. The command changes only the prober job, not credentials or other jobs; Pi warns on startup if the prober points to another package location. The separate Claude Lane Monitor app has its own installer.
 
 Start a new Pi session or run `/reload`, then inspect the local pools:
 

@@ -6,6 +6,7 @@ import { spawn, execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
@@ -353,14 +354,17 @@ export default function (pi: ExtensionAPI) {
   // Switching to bypass drops the shared lease locally rather than completing it, because the
   // machine reaching for bypass has usually already lost the authority network.
   const abandonAuthorityPermit = async () => { const permit = activePermit; if (permit?.kind !== "authority") return false; activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer); await permit.client.abandon(permit.record); endAuthorityLifecycle(); return true; };
-  // `pi update --extensions` reconciles code only; the machine-level install (config, environment,
-  // login agents, background jobs) has no package hook and used to drift until someone remembered
-  // to redo it by hand. Stamp the applied build and re-run the installer once whenever it changes,
-  // detached so startup never waits on it and never fails because of it.
-  const selfProvision = () => { try { const directory = path.dirname(fileURLToPath(import.meta.url)); const script = path.join(directory, "scripts", "bootstrap-client.mjs"); if (!fs.existsSync(script)) return; const stampFile = path.join(path.dirname(mode.mode === "authority-client" ? (process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : script), "provisioned-v1.json"); const build = (() => { try { return JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")).version as string; } catch { return "unknown"; } })(); let applied: string | undefined; try { applied = JSON.parse(fs.readFileSync(stampFile, "utf8")).build; } catch {} if (applied === build) return; const child = spawn(process.execPath, [script], { detached: true, stdio: "ignore" }); child.unref(); fs.writeFileSync(stampFile, JSON.stringify({ build, appliedAtEpochMs: Date.now() }) + "\n", { mode: 0o600 }); } catch {} };
-  if (mode.mode === "authority-client") selfProvision();
+  // Pi updates the package files, not the machine's LaunchAgent. Never reconfigure jobs silently
+  // on session startup: doing so can interrupt an OAuth refresh. Report a stale prober path so the
+  // operator can inspect and move the job explicitly, even when the new package has the same version.
+  const proberInstallCommand = `node "${path.join(directory, "scripts/bootstrap-client.mjs")}" --prober-only --check`;
+  const proberPathNeedsUpdate = () => {
+    const plist = path.join(os.homedir(), "Library/LaunchAgents/com.longweekendprojects.claude-allowance-prober.plist");
+    try { return !fs.readFileSync(plist, "utf8").includes(path.join(directory, "scripts/allowance-prober.mjs")); }
+    catch { return true; }
+  };
 
-  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const bypassed = bypassState().enabled; const port = provider ? gatedPort(provider, bypassed) : undefined; if (port) { try { await ensureDaemon(directory, port, provider!); } catch {} } if (ctx.hasUI) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready"); });
+  pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const bypassed = bypassState().enabled; const port = provider ? gatedPort(provider, bypassed) : undefined; if (port) { try { await ensureDaemon(directory, port, provider!); } catch {} } if (ctx.hasUI) { ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready"); if (mode.mode === "authority-client" && proberPathNeedsUpdate()) ctx.ui.notify(`Claude allowance prober does not point to this package. Inspect with ${proberInstallCommand}; then run without --check when the job is idle.`, "warn"); } });
   pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const bypassed = bypassState().enabled; const ready = mode.mode === "authority-client" ? (bypassed ? !!gatedPort(provider, true) : !!authorityClient && AUTHORITY_PROVIDERS.includes(provider)) : !!PROVIDER_PORTS[provider]; ctx.ui.setStatus("claude-permit-gate", ready ? (bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready") : undefined); });
   pi.on("before_provider_request", async (_event, ctx) => { const provider = ctx.model?.provider; if (!provider) return undefined; let bypassed = bypassState().enabled; if (mode.mode === "authority-client" && !bypassed) { if (!(AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) return undefined; if (await acquireAuthority(ctx, authorityClient!, provider, detached) !== "bypassed") return undefined; bypassed = true; } const port = gatedPort(provider, bypassed); if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider); return undefined; });
   pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined, detached); const bypassed = bypassState().enabled; if (ctx.hasUI && (mode.mode === "authority-client" ? (bypassed ? !!gatedPort(ctx.model?.provider, true) : AUTHORITY_PROVIDERS.includes(ctx.model?.provider)) : PROVIDER_PORTS[ctx.model?.provider])) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : "Claude gate: ready"); return undefined; });
