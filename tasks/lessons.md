@@ -17,6 +17,7 @@
 - Detaching cannot complete the lease it holds, because the link is already gone. Drop the record locally and let the authority reclaim on its renewal deadline; attempting the completion is what leaves a session retrying forever.
 - OAuth token rotation requires every credential writer to share Pi's lock across reading, refreshing, and persisting. The allowance prober's atomic rename bypasses that lock, so an overlapping Pi update to another account can erase its replacement refresh token. A synthetic reproduction proves this defect, but an `invalid_grant` incident alone does not prove that the race occurred.
 - The scheduled allowance prober loads its script afresh on each run. Install a new helper before atomically replacing the entry script, and verify the next scheduled run instead of terminating a process that may be rotating OAuth credentials. Preserve unrelated changes in the installed checkout.
+- Pi's managed Git and npm package roots differ, but each root is stable across updates. A source migration needs one explicit LaunchAgent repoint while the old checkout still exists; validate the replacement before unloading, refuse to interrupt an active OAuth refresh, and restore the old job if bootstrap fails. A version-only startup stamp misses same-version source moves and must not silently apply machine-level changes.
 
 ## Bypass must reach in-flight work, not only new requests (v0.4.2)
 
