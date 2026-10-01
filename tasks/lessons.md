@@ -6,6 +6,7 @@
 - The current allowance snapshot mixes epoch seconds for window resets with epoch milliseconds for capture time. Any shared contract must normalize and test those units explicitly.
 - A connection-owned long-poll queue loses fairness across unstable remote links because disconnecting removes the waiter. Cross-machine acquisition needs a reconnect-stable request ID or ticket before Tailnet rollout.
 - Sharing permits does not share OAuth credentials or prove that lane letters map to the same accounts. Cross-machine rollout must verify the provider-to-account mapping separately.
+- A prober failure on a retired account is not a recovery task. Verify which lanes remain active before recommending sign-in or treating stale allowance as a release failure; distinguish an active lane awaiting login from intentionally inactive lanes.
 - A remote active lease cannot safely auto-expire when Pi cannot fence the provider request. Missed renewals must quarantine capacity as uncertain until acknowledged completion or approval-gated reconciliation.
 - Routine authority startup must never bootstrap missing established state. Bootstrap is an explicit offline administration step; a missing or corrupt state file fails closed.
 - Verifier rollback protection must persist the highest generation observed by reads as well as mutations. Verifier updates and lane commits need one cross-process fence so a completed revocation cannot be followed by a stale commit.
