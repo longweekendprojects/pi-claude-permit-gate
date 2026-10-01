@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         node-version: [22, 24]
-        pi-version: ["0.87.1", "0.99.1"]
+        pi-version: ["0.87.1", "0.99.1", "0.99.2"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

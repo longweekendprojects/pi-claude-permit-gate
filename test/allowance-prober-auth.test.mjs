@@ -208,7 +208,7 @@ test("unreviewed Pi leaves real sign-in failures intact without reading auth or 
       const exists = fs.existsSync;
       fs.readFileSync = (file, ...args) => {
         if (file === authPath) return forbidden("read");
-        if (packages.has(file)) return JSON.stringify({ ...JSON.parse(read(file, "utf8")), version: "0.99.2" });
+        if (packages.has(file)) return JSON.stringify({ ...JSON.parse(read(file, "utf8")), version: "999.0.0-unreviewed" });
         return read(file, ...args);
       };
       fs.writeFileSync = (file, ...args) => file === authPath ? forbidden("write") : write(file, ...args);

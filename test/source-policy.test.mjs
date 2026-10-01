@@ -372,13 +372,22 @@ test("aborting an acquisition clears the waiting status without surfacing an err
 // requests that start afterwards, so a restarted or offline main server cannot strand this machine.
 test("turning bypass on moves a request already waiting on the authority to local gating", async () => {
   const statuses = []; let detachedNow = false; let sawAbort = false;
-  const ctx = { ui: { setStatus: (_key, value) => statuses.push(value), notify: () => {} } };
+  const controller = new AbortController();
+  const ctx = { signal: controller.signal, ui: { setStatus: (_key, value) => statuses.push(value), notify: () => {} } };
   const waitingClient = { acquire: (_provider, signal) => new Promise((_resolve, reject) => { signal.addEventListener("abort", () => { sawAbort = true; reject(Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" })); }, { once: true }); }), cancel: async () => {} };
   const pending = acquireAuthority(ctx, waitingClient, "anthropic-a", () => detachedNow);
-  detachedNow = true;
-  assert.equal(await pending, "bypassed");
-  assert.equal(sawAbort, true);
-  assert.deepEqual(statuses, ["Claude: waiting for shared permit...", "Claude gate: ready (bypass)"]);
-  // The lifecycle is released, so the next request is not blocked behind the detached one.
-  assert.equal(await acquireAuthority(ctx, waitingClient, "anthropic-a", () => true), "bypassed");
+  // The mocked request has no transport handle; keep the event loop alive until the unreferenced watcher polls.
+  let timeout;
+  const deadline = new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("bypass watcher did not detach within 5 seconds")), 5_000); });
+  try {
+    detachedNow = true;
+    assert.equal(await Promise.race([pending, deadline]), "bypassed");
+    assert.equal(sawAbort, true);
+    assert.deepEqual(statuses, ["Claude: waiting for shared permit...", "Claude gate: ready (bypass)"]);
+    // The lifecycle is released, so the next request is not blocked behind the detached one.
+    assert.equal(await acquireAuthority(ctx, waitingClient, "anthropic-a", () => true), "bypassed");
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
 });

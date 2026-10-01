@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
-const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1"]);
+const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1", "0.99.2"]);
 const runtimeFromNode = () => path.resolve(path.dirname(process.execPath), "../lib/node_modules/@earendil-works/pi-coding-agent");
 const loadError = () => new Error("Pi OAuth resolver is unavailable");
 
@@ -13,7 +13,7 @@ export async function createAllowanceAuth(authPath, runtimeDir = runtimeFromNode
     const aiDir = path.join(runtimeDir, "node_modules/@earendil-works/pi-ai");
     const piPackage = JSON.parse(fs.readFileSync(path.join(runtimeDir, "package.json"), "utf8"));
     const aiPackage = JSON.parse(fs.readFileSync(path.join(aiDir, "package.json"), "utf8"));
-    // These private paths and their refresh semantics were reviewed in both supported releases.
+    // These private paths and their refresh semantics were reviewed in the supported releases.
     // Require matching, reviewed package versions before accessing credentials.
     if (piPackage.name !== "@earendil-works/pi-coding-agent" || aiPackage.name !== "@earendil-works/pi-ai" || !REVIEWED_PI_VERSIONS.has(piPackage.version) || piPackage.version !== aiPackage.version) throw loadError();
     const [{ AuthStorage }, { createModels }, { anthropicOAuth }] = await Promise.all([
