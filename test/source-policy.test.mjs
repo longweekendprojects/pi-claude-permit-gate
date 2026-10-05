@@ -360,7 +360,7 @@ test("aborting an acquisition clears the waiting status without surfacing an err
   const ctx = { signal: controller.signal, ui: { setStatus: (_key, value) => statuses.push(value), notify: () => {} } };
   const abortingClient = { acquire: async (_provider, signal) => { controller.abort(); await new Promise((resolve) => setImmediate(resolve)); throw Object.assign(new Error("permit acquisition aborted"), { name: "AbortError" }); }, cancel: async () => {} };
   await acquireAuthority(ctx, abortingClient, "anthropic-b");
-  assert.deepEqual(statuses, ["Claude: waiting for shared permit...", "Claude gate: ready"]);
+  assert.deepEqual(statuses, ["Claude: waiting for shared permit...", undefined]);
 
   // A genuine gate fault still surfaces, and still releases the lifecycle for the next request.
   const failingClient = { acquire: async () => { throw new Error("authority health identity is invalid"); }, cancel: async () => {} };
