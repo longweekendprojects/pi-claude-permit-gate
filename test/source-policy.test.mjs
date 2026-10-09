@@ -391,3 +391,20 @@ test("turning bypass on moves a request already waiting on the authority to loca
     controller.abort();
   }
 });
+
+test("authority-client retries a completion through a proxy error that carries no authority body", async () => {
+  const config = { mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json", keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false, lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } } };
+  const lease = { leaseId: "44444444-4444-4444-8444-444444444444", generation: 1, claimedAtEpochMs: 1_100, renewSequence: 0, renewByEpochMs: 1_200, serverDeadlineEpochMs: 1_300 };
+  const ticket = (requestId, state, revision) => ({ schemaVersion: 1, ticketId: "22222222-2222-4222-8222-222222222222", requestId, provider: "anthropic-a", state, revision, createdAtEpochMs: 1_000, enqueuedAtEpochMs: 1_001, offeredAtEpochMs: 1_050, offerExpiresAtEpochMs: 1_100, terminalAtEpochMs: state === "active" ? null : 2_000, terminalReason: state === "active" ? null : "released", queueAhead: 0, lease: state === "active" ? lease : null });
+  let ledger = { schemaVersion: 1, tickets: {} }; let completes = 0;
+  const client = createAuthorityClient(config, { sessionId: "99999999-9999-4999-8999-999999999999", token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") return { status: 201, body: ticket(request.body.requestId, "active", 2) };
+      if (request.pathname.endsWith("/complete")) return ++completes === 1 ? { status: 502, body: {} } : { status: 200, body: ticket(Object.values(ledger.tickets)[0].requestId, "released", 3) };
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    } });
+  const record = await client.acquire("anthropic-a");
+  await client.complete(record);
+  assert.equal(completes, 2); assert.deepEqual(ledger.tickets, {});
+});
