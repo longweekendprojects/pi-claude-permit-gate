@@ -725,6 +725,10 @@ function stateHeader(state) {
   };
 }
 
+function sameFileStat(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
 function sameHeader(left, right) {
   return Object.keys(stateHeader(left)).every((key) => left[key] === right[key]);
 }
@@ -1328,6 +1332,17 @@ function expireAndQuarantine(state, now, timing) {
   return changed;
 }
 
+// The reconcile timer runs every second. Expiry and offer scheduling read and write only live tickets,
+// the scheduler, and fairness, so a dry run on copies of those parts answers whether a sweep would
+// change anything without copying the retained terminal history.
+function reconcileWouldChange(state, now, timing) {
+  const tickets = {};
+  for (const [ticketId, ticket] of Object.entries(state.tickets)) if (!TERMINAL_STATES.has(ticket.state)) tickets[ticketId] = clone(ticket);
+  const probe = { ...state, tickets, scheduler: clone(state.scheduler), fairness: clone(state.fairness) };
+  const changed = expireAndQuarantine(probe, now, timing);
+  return changed || (probe.lifecycleState === "ready" && scheduleOffers(probe, now, timing).length > 0);
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (!isObject(value)) return JSON.stringify(value);
@@ -1547,7 +1562,9 @@ export class AuthorityState {
         const store = await readAuthorityVerifierStoreAsync(this.configuration.verifierStorePath, { minimumGeneration: generation });
         next.verifierGeneration = store.generation;
         validateState(next, this.configuration);
+        this._storedStat = undefined;
         await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
+        await this._recordStoredStat();
       };
       try {
         if (!this.configuration.verifierStorePath) throw verifierFault();
@@ -1579,11 +1596,24 @@ export class AuthorityState {
     return run;
   }
 
+  // Committed state is never mutated in place: every change is built on a clone, validated, and then
+  // swapped in. Revalidating the same object proves nothing new, so it is validated once per swap.
   _validateCurrent() {
+    if (this._validatedState === this.state) return;
     try { validateState(this.state, this.configuration); } catch (error) { this._degrade(error); }
+    this._validatedState = this.state;
   }
 
+  // The full reread below parses, validates, and canonicalizes the whole state file, which costs
+  // several copies of a multi-megabyte state on every commit. A file this process wrote last keeps
+  // its identity, size, and nanosecond mtime, so an unchanged stat proves no other writer touched it.
+  // Any difference falls through to the full content comparison.
   async _assertStoredHeader() {
+    if (this._storedStat) {
+      let current;
+      try { current = await fsPromises.stat(this.configuration.statePath, { bigint: true }); } catch {}
+      if (current && sameFileStat(current, this._storedStat)) return;
+    }
     let stored;
     try {
       stored = await readJsonFileAsync(this.configuration.statePath);
@@ -1592,6 +1622,11 @@ export class AuthorityState {
       this._degrade(error);
     }
     if (!stored || !sameHeader(stored, this.state) || canonical(stored) !== canonical(this.state)) this._degrade(new StateFault("authority ownership fence changed"));
+    await this._recordStoredStat();
+  }
+
+  async _recordStoredStat() {
+    try { this._storedStat = await fsPromises.stat(this.configuration.statePath, { bigint: true }); } catch { this._storedStat = undefined; }
   }
 
   async _commit(next, verifyGeneration) {
@@ -1603,7 +1638,9 @@ export class AuthorityState {
       if (!isSafeInteger(generation, 1) || generation < this.state.verifierGeneration) throw verifierFault();
       next.verifierGeneration = generation;
       validateState(next, this.configuration);
+      this._storedStat = undefined;
       await writeDurableJson(this.configuration.statePath, next, this.configuration.runtimeFaultInjector);
+      await this._recordStoredStat();
     };
     try {
       await invokeFaultAsync(this.configuration.runtimeFaultInjector, "before-verifier-fence", this.configuration.statePath);
@@ -1633,8 +1670,9 @@ export class AuthorityState {
     return this._enqueue(async () => {
       if (this.degraded || this.state.lifecycleState === "degraded") return false;
       this._validateCurrent();
-      const next = clone(this.state);
       const now = this._now();
+      if (!reconcileWouldChange(this.state, now, this.configuration.timing)) return false;
+      const next = clone(this.state);
       const changed = expireAndQuarantine(next, now, this.configuration.timing);
       const offered = next.lifecycleState === "ready" ? scheduleOffers(next, now, this.configuration.timing) : [];
       if (!changed && offered.length === 0) return false;

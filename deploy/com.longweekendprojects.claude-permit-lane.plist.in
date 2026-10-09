@@ -35,6 +35,10 @@
     <string>__RENEW_DEADLINE_MS__</string>
     <key>CLAUDE_PERMIT_GATE_TERMINAL_RETENTION_MS</key>
     <string>__TERMINAL_RETENTION_MS__</string>
+    <key>MallocSpaceEfficient</key>
+    <string>1</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-semi-space-size=2</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
