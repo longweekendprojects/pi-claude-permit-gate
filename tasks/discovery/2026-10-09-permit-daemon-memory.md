@@ -47,3 +47,18 @@ This matches the live daemons, which confirms the per-change processing is the c
 - The main cost is the algorithm, not the language. A Rust or Go port that still copies, rereads, and re-serializes the whole state on every change would use less memory but still churn.
 - The fix in any language: keep state in memory, verify file ownership with a cheap check (inode, size, mtime, or a stored hash) instead of a full reread and canonical compare, and store operation results without embedding full ticket copies.
 - Four processes each pay runtime overhead. One process serving all four ports would remove three copies of that overhead.
+
+## Interim fix (deployed 2026-10-09 12:37 EDT, commit c9c0720)
+
+- Skip the full ownership reread when the state file stat matches the one this process last wrote.
+- Validate committed state once per swap instead of on every call.
+- Dry-run reconcile on live tickets only; copy the full state only when a sweep changes it.
+- Run lanes with `MallocSpaceEfficient=1` and `--max-semi-space-size=2`.
+
+Harness against a copy of lane a under create/claim/renew/complete load: peak 684 MB before, 285 MB after.
+
+Live footprint 7 minutes after deploy: a 41 MB, b 28 MB, c 20 MB, d 20 MB (was 853, 666, 128, 147 MB). No new entries in lane error logs. Daemon tests: same 39 pass; the same 4 OAuth prober tests fail before and after.
+
+Check: `for p in $(pgrep -f permit-daemon.mjs); do vmmap --summary $p | grep 'Physical footprint:'; done`
+
+Not yet done: the state file still grows to about 10 MB because each operation result embeds a full ticket copy. Each commit still clones and serializes the whole state.

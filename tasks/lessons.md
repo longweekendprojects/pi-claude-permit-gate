@@ -23,3 +23,4 @@
 ## Bypass must reach in-flight work, not only new requests (v0.4.2)
 
 An operator toggle that is read only at the start of a request does nothing for work already waiting on the resource the toggle routes around. When a switch exists to escape an unreachable dependency, every wait on that dependency (acquire, retrying completion) must observe the switch while it waits. Prove such a change against the installed package with an isolated harness: temporary state paths, a fake authority that never answers, and the real bypass-file reader, so live agents on the machine are never touched.
+- Authority lane memory scales with state file size times per-commit full-state passes (clone, reread, validate, canonicalize, stringify). Never add a whole-state pass to the commit or reconcile path; macOS malloc keeps the freed peak, so a busy lane held 850 MB.
