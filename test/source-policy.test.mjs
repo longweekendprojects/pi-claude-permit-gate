@@ -230,6 +230,43 @@ test("authority-client discards a persisted record whose reused request id yield
   assert.equal(Object.keys(ledger.tickets).includes(`${sessionId}:${staleRequestId}`), false);
 });
 
+test("authority-client keeps waiting through a refused create instead of aging into a rejected request", async () => {
+  const config = {
+    mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
+    keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+    lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+  };
+  const sessionId = "abab1111-9999-4999-8999-999999999999";
+  // The waiting record is already older than the refresh threshold, as after a long session-limit wait.
+  const agedRequestId = "abab2222-8888-4888-8888-888888888888";
+  let ledger = { schemaVersion: 1, tickets: { [`${sessionId}:${agedRequestId}`]: { provider: "anthropic-a", requestId: agedRequestId, sessionId, createdAtEpochMs: Date.now() - 20_000 } } };
+  const creates = [];
+  const client = createAuthorityClient(config, {
+    sessionId,
+    token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") {
+        creates.push({ requestId: request.body.requestId, createdAtEpochMs: request.body.createdAtEpochMs });
+        // The authority refuses while this machine holds its full share of lane sessions, then
+        // rejects outright any create whose timestamp has left its 30-second window.
+        if (Date.now() - request.body.createdAtEpochMs > 30_000) return { status: 400, body: { schemaVersion: 1, error: { code: "invalid_request", message: "request rejected", retryable: false, retryAfterMs: null } } };
+        if (creates.length === 1) return { status: 429, body: { schemaVersion: 1, error: { code: "principal_limit", message: "request rejected", retryable: true, retryAfterMs: 1_000 } } };
+        return { status: 201, body: { schemaVersion: 1, ticketId: "abab3333-6666-4666-8666-666666666666", requestId: request.body.requestId, provider: "anthropic-a", state: "active", revision: 2, createdAtEpochMs: request.body.createdAtEpochMs, enqueuedAtEpochMs: request.body.createdAtEpochMs, offeredAtEpochMs: request.body.createdAtEpochMs, offerExpiresAtEpochMs: request.body.createdAtEpochMs + 100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: request.body.createdAtEpochMs + 100, renewSequence: 0, renewByEpochMs: request.body.createdAtEpochMs + 200, serverDeadlineEpochMs: request.body.createdAtEpochMs + 300 } } };
+      }
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    },
+  });
+  const record = await client.acquire("anthropic-a");
+  assert.equal(record.ticket.state, "active");
+  assert.equal(creates.length, 2);
+  assert.equal(creates[0].requestId, agedRequestId);
+  assert.notEqual(creates[1].requestId, agedRequestId);
+  assert.ok(Date.now() - creates[1].createdAtEpochMs < 5_000);
+  assert.deepEqual(Object.keys(ledger.tickets), [`${sessionId}:${creates[1].requestId}`]);
+});
+
 test("authority-client breaks a ledger lock left behind by a killed session", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "permit-stale-lock-"));
   const statePath = path.join(directory, "authority-client-tickets-v1.json");
