@@ -143,9 +143,9 @@ function assertMetadata(schema) {
   }, "modes");
   equal(metadata.limits, {
     authenticatedInstallationPrincipalsPerAuthority: 32,
-    liveSessionsPerPrincipal: 32,
+    liveSessionsPerPrincipal: 128,
     nonterminalTicketsPerSession: 16,
-    nonterminalTicketsPerPrincipal: 64,
+    nonterminalTicketsPerPrincipal: 128,
     nonterminalTicketsPerLane: 256,
     retainedTicketOrTombstoneRecordsPerLane: 4096,
     operationResultsPerTicket: 32,

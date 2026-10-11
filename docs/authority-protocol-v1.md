@@ -137,8 +137,8 @@ The scheduler persists FIFO within a session, a session cursor within each authe
 
 The fixed v1 limits are:
 
-- 32 authenticated installation principals per authority and 32 live sessions per principal;
-- 16 nonterminal tickets per session, 64 per principal, and 256 per lane;
+- 32 authenticated installation principals per authority and 128 live sessions per principal;
+- 16 nonterminal tickets per session, 128 per principal, and 256 per lane;
 - 4,096 retained ticket/tombstone records per lane and 32 retained operation results per ticket;
 - 192 verifier records per authority, allowing up to two records for each of 32 principals × 3 scopes during one predecessor/successor overlap; no third concurrent verifier for an installation scope is permitted;
 - effective `currentConcurrency` and `maximumConcurrency` from 1 through 64, with `active + offered + uncertain <= currentConcurrency <= maximumConcurrency`;
