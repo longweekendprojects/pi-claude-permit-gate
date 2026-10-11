@@ -7,3 +7,5 @@ Evidence:
 - Anthropic documents no concurrency limit for subscription accounts. Public Claude Code issues (#53922, #44481, #60562) report an undocumented per-account throttle ("Server is temporarily limiting requests (not your usage limit)") at about 3 to 5 parallel streams, not scaling with plan tier.
 
 Conclusion: 4 has never produced a rate limit, so its headroom is unknown. On a throttle, the scheduler drops one slot, cools down 20 to 60 s, and climbs back one slot per 30 s, so a higher ceiling self-corrects at the cost of one failed turn per throttle.
+
+Decision (2026-10-11): keep lane A at 4. Revisit if rate-limit errors stay absent while queues grow, and spread agents across lanes B to D first.
