@@ -28,7 +28,7 @@ test("failed acquisition remains pending and later recovery returns a permit", a
 });
 
 test("extension preserves provider payloads and owns one acquire hook", () => {
-  assert.match(source, /await acquire\(ctx, directory, port, provider\); return undefined;/);
+  assert.match(source, /await acquire\(ctx, directory, port, provider, warm\); return undefined;/);
   assert.equal((source.match(/pi\.on\("before_provider_request"/g) || []).length, 1);
   assert.equal(source.includes("transformPayload"), false);
   assert.equal(source.includes("/renew"), true);
@@ -381,7 +381,7 @@ test("bypass gates locally on the same lane ports and abandons a held shared lea
   assert.match(source, /!== "bypassed"\) return undefined; bypassed = true; \}/);
   assert.match(source, /mode\.lanes\[provider as keyof AuthorityClientConfig\["lanes"\]\]\.port : undefined/);
   // Bypass never loosens the local gate itself: it still acquires a local permit before the request.
-  assert.match(source, /await acquire\(ctx, directory, port, provider\); return undefined;/);
+  assert.match(source, /await acquire\(ctx, directory, port, provider, warm\); return undefined;/);
 
   const config = {
     mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
