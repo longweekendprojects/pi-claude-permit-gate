@@ -184,6 +184,26 @@ test("authority-client drops a pending renewal whose lease already ended instead
   assert.equal(calls.filter((call) => call.endsWith("/renew")).length, 0);
 });
 
+test("authority-client rejoins the queue when its offer expires before the claim lands", async () => {
+  const config = { mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json", keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false, lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } } };
+  const sessionId = "88888888-8888-4888-8888-888888888888"; const firstTicketId = "77777777-7777-4777-8777-777777777777"; const secondTicketId = "99999999-9999-4999-8999-999999999999";
+  const lease = { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 1_100, renewSequence: 0, renewByEpochMs: 1_200, serverDeadlineEpochMs: 1_300 };
+  const ticket = (id, requestId, state, revision) => ({ schemaVersion: 1, ticketId: id, requestId, provider: "anthropic-a", state, revision, createdAtEpochMs: 1_000, enqueuedAtEpochMs: 1_001, offeredAtEpochMs: 1_050, offerExpiresAtEpochMs: 1_100, terminalAtEpochMs: state === "offerExpired" ? 1_100 : null, terminalReason: state === "offerExpired" ? "offer_expired" : null, queueAhead: 0, lease: state === "active" ? lease : null });
+  let ledger = { schemaVersion: 1, tickets: {} }; const requestIds = []; const calls = [];
+  const client = createAuthorityClient(config, { sessionId, token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {}, request: async (request) => {
+    calls.push(request.pathname);
+    if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+    if (request.pathname === "/v1/tickets") { requestIds.push(request.body.requestId); return { status: 201, body: requestIds.length === 1 ? ticket(firstTicketId, request.body.requestId, "offered", 2) : ticket(secondTicketId, request.body.requestId, "active", 3) }; }
+    // The offer lapsed while the claim was in flight: the revision moved and the ticket is terminal.
+    if (request.pathname === `/v1/tickets/${firstTicketId}/claim`) return request.body.expectedRevision === 2 ? { status: 409, body: { schemaVersion: 1, error: { code: "stale_revision", message: "request rejected", retryable: false, retryAfterMs: null } } } : { status: 409, body: { schemaVersion: 1, error: { code: "invalid_transition", message: "request rejected", retryable: false, retryAfterMs: null } } };
+    if (request.pathname === `/v1/tickets/${firstTicketId}`) return { status: 200, body: ticket(firstTicketId, requestIds[0], "offerExpired", 3) };
+    throw new Error(`unexpected request ${request.pathname}`);
+  } });
+  const record = await client.acquire("anthropic-a");
+  assert.equal(record.ticket.ticketId, secondTicketId);
+  assert.equal(calls.filter((call) => call.endsWith("/claim")).length, 1);
+});
+
 test("authority-client discards retry state naming a ticket the authority no longer knows", async () => {
   const sessionId = "99999999-9999-4999-8999-999999999999";
   const config = {
