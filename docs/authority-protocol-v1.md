@@ -104,7 +104,7 @@ All ticket endpoints require `permit:mutate`. The canonical endpoint/body contra
 | `POST /v1/tickets/:ticketId/renew` | `TicketRenewRequestV1` | Acknowledges the matching lease generation and sequence; it may restore `uncertain` to `active` without allocating another slot. |
 | `POST /v1/tickets/:ticketId/complete` | `TicketCompleteRequestV1` | Frees capacity once. A throttle outcome changes adaptive concurrency and cooldown once. |
 
-A create body contains exactly schema version, provider, account-binding UUID, installation UUID, opaque session UUID, opaque request UUID, and `createdAtEpochMs`. A new create timestamp must be within 30 seconds of server time. The idempotency key is `(authenticated installation, provider, requestId)`. A known retry remains readable; terminal records remain at least 24 hours and through the create retry horizon, and a compacted old timestamp cannot recreate work.
+A create body contains exactly schema version, provider, account-binding UUID, installation UUID, opaque session UUID, opaque request UUID, and `createdAtEpochMs`. A new create timestamp must be within 30 seconds of server time. The idempotency key is `(authenticated installation, provider, requestId)`. A known retry remains readable; terminal records remain 24 hours, or at least one hour when the retained ledger is full, and through the create retry horizon, and a compacted old timestamp cannot recreate work.
 
 A claim/cancel body contains exactly schema version, operation UUID, expected revision, installation UUID, provider, and account-binding UUID. Renew adds lease UUID, lease generation, and next renew sequence. Complete adds lease UUID and generation, `outcome` (`released|throttled`), `reason` (null for release or `assistant_rate_limit|assistant_overloaded`), and an optional non-negative safe-integer `cooldownMs` only for throttling.
 
@@ -146,7 +146,7 @@ The fixed v1 limits are:
 - finite allowance utilization from 0 through 1,000, reset seconds from 1 through 253402300799, and observed timestamps no more than 30 seconds in the future; and
 - publisher queues capped at 64 pending snapshots per provider and 256 per installation. Newer unsent same-provider observations supersede older unsent observations but never remove an in-flight ID.
 
-A principal/session limit returns `429 principal_limit`. A full lane queue returns `429 lane_limit`. A full retained ledger that cannot compact without violating replay retention returns `503 persistence_unavailable` and stops creates instead of deleting safety records.
+A principal/session limit returns `429 principal_limit`. A full lane queue returns `429 lane_limit`. A full retained ledger first compacts its oldest terminal records that are more than one hour old, leaving 256 free records. Only a ledger that is still full returns `503 persistence_unavailable` and stops creates.
 
 ## Timing and durable authority state
 

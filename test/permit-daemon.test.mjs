@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthorityError, authenticateAuthorityBearer, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, withAuthorityVerifierFence, writeAuthorityVerifierStore } from "../authority-state.mjs";
+import { AuthorityError, authenticateAuthorityBearer, compactRetainedState, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, withAuthorityVerifierFence, writeAuthorityVerifierStore } from "../authority-state.mjs";
 import { ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -1224,4 +1224,21 @@ test("authority persists allowance scope, skew, replay, and accepted truth acros
   assert.equal(restartedReplay.replayed, true); assert.equal(restartedReplay.publishId, first.publishId); assert.deepEqual(restartedReplay.accepted, accepted.accepted);
   const snapshot = gate.authority.snapshot({ instanceId: authorityUuid(504), buildId: "test" });
   assert.equal(snapshot.allowance.observedAtEpochMs, newest.observedAtEpochMs); assert.equal(snapshot.allowance.fiveHour.status, "warning"); assert.equal("installationId" in snapshot, false);
+});
+
+test("a full lane ledger compacts terminal records older than an hour instead of refusing creates", () => {
+  const now = 10 * AUTHORITY_TIMING.terminalRetentionMs;
+  const tickets = {};
+  for (let index = 0; index < 4096; index += 1) {
+    const ticketId = crypto.randomUUID();
+    // Every record is terminal and younger than the 24-hour window; the first half is over an hour old.
+    const terminalAtEpochMs = index < 2048 ? now - 7_200_000 + index : now - 60_000;
+    tickets[ticketId] = { ticketId, installationId: crypto.randomUUID(), provider: "anthropic-a", requestId: crypto.randomUUID(), sessionId: crypto.randomUUID(), state: "released", createdAtEpochMs: terminalAtEpochMs - 1_000, terminalAtEpochMs };
+  }
+  const recent = Object.values(tickets).filter((ticket) => now - ticket.terminalAtEpochMs < 3_600_000).map((ticket) => ticket.ticketId);
+  const state = { tickets, createTombstones: {}, fairness: { machineOrder: [], machineCursor: 0, sessionOrder: {}, sessionCursor: {} } };
+  compactRetainedState(state, now, AUTHORITY_TIMING);
+  assert.equal(Object.keys(state.tickets).length, 4096 - 256);
+  assert.equal(Object.keys(state.createTombstones).length, 0);
+  for (const ticketId of recent) assert.ok(state.tickets[ticketId], "records under an hour old are kept");
 });

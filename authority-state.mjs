@@ -1454,13 +1454,25 @@ function publisherSequenceKey(installationId, provider) {
   return `${installationId}\u0000${provider}`;
 }
 
-function compactRetainedState(state, now, timing) {
+// A busy lane finishes more than MAX_RETAINED_RECORDS tickets inside one retention window. Holding
+// every terminal record for the full window then refused every create with persistence_unavailable
+// until the oldest record aged out, so sessions on that lane stalled. When the ledger is full, the
+// oldest terminal records past PRESSURE_RETENTION_MS are compacted early to leave headroom. Lost
+// replies are retried within seconds, so an hour still covers every replay a client can make.
+const PRESSURE_RETENTION_MS = 3_600_000;
+const PRESSURE_HEADROOM = 256;
+
+export function compactRetainedState(state, now, timing) {
   for (const [key, tombstone] of Object.entries(state.createTombstones)) {
     if (!isObject(tombstone) || !isSafeInteger(tombstone.compactedAtEpochMs) || now - tombstone.compactedAtEpochMs > MAX_REQUEST_AGE_MS) delete state.createTombstones[key];
   }
-  const eligible = Object.values(state.tickets)
-    .filter((ticket) => TERMINAL_STATES.has(ticket.state) && ticket.terminalAtEpochMs !== null && now - ticket.terminalAtEpochMs >= timing.terminalRetentionMs)
+  const terminal = Object.values(state.tickets)
+    .filter((ticket) => TERMINAL_STATES.has(ticket.state) && ticket.terminalAtEpochMs !== null)
     .sort((left, right) => left.terminalAtEpochMs - right.terminalAtEpochMs);
+  const expired = terminal.filter((ticket) => now - ticket.terminalAtEpochMs >= timing.terminalRetentionMs);
+  const excess = retainedRecordCount(state) - expired.length - (MAX_RETAINED_RECORDS - PRESSURE_HEADROOM);
+  const pressured = excess > 0 ? terminal.filter((ticket) => now - ticket.terminalAtEpochMs >= PRESSURE_RETENTION_MS && now - ticket.terminalAtEpochMs < timing.terminalRetentionMs).slice(0, excess) : [];
+  const eligible = [...expired, ...pressured];
   for (const ticket of eligible) {
     const key = createKey(ticket.installationId, ticket.provider, ticket.requestId);
     if (now - ticket.createdAtEpochMs <= MAX_REQUEST_AGE_MS) state.createTombstones[key] = { createdAtEpochMs: ticket.createdAtEpochMs, compactedAtEpochMs: now };
