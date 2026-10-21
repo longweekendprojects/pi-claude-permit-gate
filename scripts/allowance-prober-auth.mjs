@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
-const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1", "0.99.2"]);
+const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1", "0.99.2", "1.3.0"]);
 const runtimeFromNode = () => path.resolve(path.dirname(process.execPath), "../lib/node_modules/@earendil-works/pi-coding-agent");
 const loadError = () => new Error("Pi OAuth resolver is unavailable");
 
