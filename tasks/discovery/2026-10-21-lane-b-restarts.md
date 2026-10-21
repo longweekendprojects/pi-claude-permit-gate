@@ -33,3 +33,9 @@ The allowance prober on the authority host has logged `Pi OAuth resolver unavail
 Release `502f65f` (v0.4.15) was installed on the authority host with `scripts/install-authority.sh` at about 20:05 UTC on October 21, after a dry run passed artifact validation. All four lanes came back `ready` within seconds on the new release: A at term 31, B at 22, C at 24, and D at 22. New tickets from clients were released normally within a minute. Roll back one lane with `scripts/install-authority.sh --rollback-lane anthropic-b`.
 
 The package checkout on the authority host is at v0.4.15. The allowance prober published for lanes A and B at 20:06:19 UTC. Lanes C and D report `OAuth credential resolution failed`, and neither lane has had traffic since October 11.
+
+## Lane A ledger full (v0.4.16)
+
+- At 21:48 UTC lane A held 4,096 terminal tickets, the protocol bound. Every create failed with `503 persistence_unavailable`. Server sessions still ran v0.4.13 client code and surfaced it as "request rejected" from `createTicket`.
+- Lane A finishes about 4,000 tickets a day, almost all from the server's own installation, and retention was a fixed 24 hours.
+- v0.4.16 compacts the oldest terminal records older than one hour when the ledger is full, leaving 256 free records. Installed on the server at 21:53 UTC. Lane A dropped to 3,841 records and new tickets were created and released.
