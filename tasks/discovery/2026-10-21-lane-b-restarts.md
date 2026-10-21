@@ -27,3 +27,9 @@ A fence wait that times out now refuses only that request with a retryable `503 
 ## Allowance prober
 
 The allowance prober on the authority host has logged `Pi OAuth resolver unavailable` for every lane since September 29. Its last successful publish was on October 1. The host's Pi is 1.3.0, and the prober accepted only reviewed Pi releases up to 0.99.2. A review of the 0.99.2 to 1.3.0 changes found the same locked refresh-and-persist sequence, so 1.3.0 is now accepted.
+
+## Deployment
+
+Release `502f65f` (v0.4.15) was installed on the authority host with `scripts/install-authority.sh` at about 20:05 UTC on October 21, after a dry run passed artifact validation. All four lanes came back `ready` within seconds on the new release: A at term 31, B at 22, C at 24, and D at 22. New tickets from clients were released normally within a minute. Roll back one lane with `scripts/install-authority.sh --rollback-lane anthropic-b`.
+
+The package checkout on the authority host is at v0.4.15. The allowance prober published for lanes A and B at 20:06:19 UTC. Lanes C and D report `OAuth credential resolution failed`, and neither lane has had traffic since October 11.
