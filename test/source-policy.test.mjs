@@ -486,3 +486,29 @@ test("authority-client retries a completion through a proxy error that carries n
   await client.complete(record);
   assert.equal(completes, 2); assert.deepEqual(ledger.tickets, {});
 });
+
+test("authority-client finishes a completion across a lane that degrades and restarts mid-request", async () => {
+  const config = { mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json", keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false, lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } } };
+  const lease = { leaseId: "44444444-4444-4444-8444-444444444444", generation: 1, claimedAtEpochMs: 1_100, renewSequence: 0, renewByEpochMs: 1_200, serverDeadlineEpochMs: 1_300 };
+  const ticket = (requestId, state, revision) => ({ schemaVersion: 1, ticketId: "22222222-2222-4222-8222-222222222222", requestId, provider: "anthropic-a", state, revision, createdAtEpochMs: 1_000, enqueuedAtEpochMs: 1_001, offeredAtEpochMs: 1_050, offerExpiresAtEpochMs: 1_100, terminalAtEpochMs: ["active", "uncertain"].includes(state) ? null : 2_000, terminalReason: ["active", "uncertain"].includes(state) ? null : "released", queueAhead: 0, lease: ["active", "uncertain"].includes(state) ? lease : null });
+  // The lane degrades while the completion is in flight, answers non-retryable 503, exits, and
+  // launchd restarts it. The restart quarantines the live lease as uncertain at the next revision.
+  const degraded = { status: 503, body: { schemaVersion: 1, error: { code: "authority_degraded", message: "request rejected", retryable: false, retryAfterMs: null } } };
+  let ledger = { schemaVersion: 1, tickets: {} }; let completes = 0; let healthChecks = 0; const requestId = () => Object.values(ledger.tickets)[0].requestId;
+  const client = createAuthorityClient(config, { sessionId: "99999999-9999-4999-8999-999999999999", token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      if (request.pathname === "/v1/health") return ++healthChecks === 1 ? { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } } : degraded;
+      if (request.pathname === "/v1/tickets") return { status: 201, body: ticket(request.body.requestId, "active", 3) };
+      if (request.pathname === "/v1/tickets/22222222-2222-4222-8222-222222222222") return { status: 200, body: ticket(requestId(), "uncertain", 4) };
+      if (request.pathname.endsWith("/complete")) {
+        completes++;
+        if (completes === 1) return degraded;
+        if (request.body.expectedRevision !== 4) return { status: 409, body: { schemaVersion: 1, error: { code: "stale_revision", message: "request rejected", retryable: false, retryAfterMs: null } } };
+        return { status: 200, body: ticket(requestId(), "released", 5) };
+      }
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    } });
+  const record = await client.acquire("anthropic-a");
+  await client.complete(record);
+  assert.equal(completes, 3); assert.deepEqual(ledger.tickets, {});
+});

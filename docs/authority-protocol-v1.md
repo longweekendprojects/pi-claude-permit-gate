@@ -118,7 +118,7 @@ Duplicate operation IDs return the original result. Reusing an operation ID for 
 
 ## Retry and ordering rules
 
-Network loss, `429`, and retryable `503` reuse the same request or operation ID with capped jittered backoff. `400`, `401`, `403`, and identity or binding mismatches fail closed. A stale revision triggers one authenticated GET before selecting the next legal transition.
+Network loss, `429`, and every `503` reuse the same request or operation ID with capped jittered backoff. The client retries a non-retryable `503` too, because a degraded lane exits and launchd restarts it within seconds. `400`, `401`, `403`, and identity or binding mismatches fail closed. A stale revision triggers one authenticated GET before selecting the next legal transition.
 
 A lost create response retries create with the same request ID. For a lost claim, renew, cancel, or complete response, the client GETs the ticket first and retries the same operation ID only when stored state does not already contain that result. No later provider request starts until the preceding ticket completion is acknowledged.
 
