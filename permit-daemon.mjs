@@ -92,7 +92,7 @@ async function authorityPrincipal(req, requiredScope, configuration, authority, 
     try {
       await authority.observeVerifierGeneration(verified.verifierGeneration);
     } catch (error) {
-      if (error instanceof AuthorityError && error.code === "verifier_unavailable") authority.markVerifierUnavailable();
+      if (error instanceof AuthorityError && error.code === "verifier_unavailable" && !error.fenceBusy) authority.markVerifierUnavailable();
       throw error;
     }
   }

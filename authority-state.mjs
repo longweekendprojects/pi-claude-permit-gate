@@ -104,6 +104,12 @@ function verifierFault() {
   return new AuthorityError("verifier_unavailable", { message: "verifier is unavailable" });
 }
 
+// Waiting out the fence proves nothing about the verifier or the lane state: nothing was read or
+// written yet. Only this request fails, and the caller retries it, instead of the lane degrading.
+function verifierFenceBusy() {
+  return Object.assign(new AuthorityError("verifier_unavailable", { message: "verifier fence is busy", retryable: true, retryAfterMs: 1_000 }), { fenceBusy: true });
+}
+
 function verifierUnauthorized() {
   return new AuthorityError("unauthenticated", { message: "bearer is unavailable" });
 }
@@ -565,7 +571,7 @@ export async function withAuthorityVerifierFence(file, operation) {
       if (observed.kind === "valid" && await ownerIsConclusiveDead(fencePath, observed.owner)) await reclaimDeadVerifierFence(fencePath, observed);
       await waitForVerifierFence(retryMs);
     }
-    if (!acquired) throw verifierFault();
+    if (!acquired) throw verifierFenceBusy();
     return await operation();
   } finally {
     if (acquired) {
@@ -1570,6 +1576,7 @@ export class AuthorityState {
         if (!this.configuration.verifierStorePath) throw verifierFault();
         await withAuthorityVerifierFence(this.configuration.verifierStorePath, commit);
       } catch (error) {
+        if (error?.fenceBusy) throw error;
         this.markVerifierUnavailable();
         if (error instanceof AuthorityError) throw error;
         throw verifierFault();
@@ -1647,7 +1654,7 @@ export class AuthorityState {
       if (this.configuration.verifierStorePath) await withAuthorityVerifierFence(this.configuration.verifierStorePath, commit);
       else await commit();
     } catch (error) {
-      if (error instanceof AuthorityError && ["unauthenticated", "forbidden_scope", "forbidden_lane"].includes(error.code)) throw error;
+      if (error instanceof AuthorityError && ["unauthenticated", "forbidden_scope", "forbidden_lane"].includes(error.code) || error?.fenceBusy) throw error;
       this._degrade(error);
     }
     this.state = next;

@@ -884,6 +884,24 @@ test("a degraded lane exits so its supervisor restarts it instead of refusing ev
   assert.notEqual(exited, 0, "the exit must be non-zero so KeepAlive restarts the lane");
 });
 
+test("a lane that waits too long for the shared verifier fence refuses one request and stays up", async (t) => {
+  // Every lane on the host commits under one verifier fence. A neighbor that holds it through a
+  // slow commit made the waiting lane degrade and exit, quarantining every live lease on it.
+  const gate = await authorityDaemon(t, { CLAUDE_PERMIT_GATE_TEST_VERIFIER_FENCE_TIMEOUT_MS: "200" });
+  const headers = authorityHeaders(gate.principal);
+  let refused;
+  await withAuthorityVerifierFence(gate.verifierStore, async () => {
+    refused = await request(gate.port, "POST", "/v1/tickets", ticketCreate(gate.principal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: Date.now() }), headers);
+  });
+  assert.equal(refused.status, 503); assert.equal(refused.body.error.retryable, true);
+  await delay(500);
+  assert.equal(gate.child.exitCode, null, "a busy fence must not terminate the lane");
+  const health = await request(gate.port, "GET", "/v1/health", undefined, headers);
+  assert.equal(health.status, 200); assert.equal(health.body.status, "ready");
+  const created = await request(gate.port, "POST", "/v1/tickets", ticketCreate(gate.principal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: Date.now() }), headers);
+  assert.equal(created.status, 201);
+});
+
 test("authority applies throttle completion exactly once before releasing capacity", async (t) => {
   const gate = await durableAuthority(t, { maximumConcurrency: 2, currentConcurrency: 2 });
   const firstPrincipal = authorityPrincipal(4); const secondPrincipal = authorityPrincipal(5);
