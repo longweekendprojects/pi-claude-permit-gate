@@ -11,6 +11,8 @@
 //
 //   node scripts/bootstrap-client.mjs --prober-only --check   inspect the prober job
 //   node scripts/bootstrap-client.mjs --prober-only           move it when idle
+//   node scripts/bootstrap-client.mjs --jobs-only              repair jobs without stopping local lanes
+//   node scripts/bootstrap-client.mjs --jobs-only --check      inspect only those jobs
 //   node scripts/bootstrap-client.mjs                         apply all client setup
 //   node scripts/bootstrap-client.mjs --check                 inspect all client setup
 //
@@ -26,6 +28,7 @@ import { resolveLaunchdNode } from "./launchd-node.mjs";
 
 const CHECK_ONLY = process.argv.includes("--check");
 const PROBER_ONLY = process.argv.includes("--prober-only");
+const JOBS_ONLY = process.argv.includes("--jobs-only");
 const HOME = os.homedir();
 const USER = os.userInfo().username;
 const NODE = resolveLaunchdNode();
@@ -202,7 +205,7 @@ function checkCredentials() {
 function checkProberCredential(config) {
   const present = spawnSync("/usr/bin/security", ["find-generic-password", "-s", config.keychain.allowancePublish.service, "-a", PROBER_KEYCHAIN_ACCOUNT], { stdio: "ignore" }).status === 0;
   if (present) record("prober publish credential", "ok", `account ${PROBER_KEYCHAIN_ACCOUNT}`);
-  else record("prober publish credential", "missing", `local readings only until allowance:publish is enrolled for installation ${config.proberInstallationId}`);
+  else record("prober publish credential", "ok", `optional; local readings only until allowance:publish is enrolled for installation ${config.proberInstallationId}`);
 }
 
 // A local daemon on an A-D port means this machine is scheduling permits by itself, which spends the
@@ -240,6 +243,13 @@ function verifyAuthority(config) {
 
 const proberLabel = "com.longweekendprojects.claude-allowance-prober";
 const ensureProber = () => ensureAgent(proberLabel, plist(proberLabel, [NODE, path.join(REPO, "scripts/allowance-prober.mjs")], { keepAlive: false, interval: 90 }));
+const ensureClientJobs = () => {
+  ensureExporter();
+  ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweekendprojects.claude-lane-sampler", [NODE, path.join(REPO, "scripts/lane-sampler.mjs")]), { optional: true });
+  // The prober keeps idle lanes' allowance current; the syncer feeds shared readings to this machine.
+  ensureProber();
+  ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }));
+};
 const report = () => {
   const width = Math.max(...results.map((r) => r.step.length));
   for (const { step, state, detail } of results) process.stdout.write(`${state.padEnd(8)} ${step.padEnd(width)}  ${detail}\n`);
@@ -249,17 +259,14 @@ const report = () => {
 if (PROBER_ONLY) {
   ensureProber();
   report();
+} else if (JOBS_ONLY) {
+  ensureClientJobs();
+  report();
 } else {
 const config = ensureConfig();
 ensureShellEnvironment();
-ensureExporter();
 ensureAgent("com.longweekendprojects.claude-permit-env", plist("com.longweekendprojects.claude-permit-env", ["/bin/sh", "-c", `launchctl setenv CLAUDE_PERMIT_GATE_MODE authority-client; launchctl setenv CLAUDE_PERMIT_GATE_ORIGIN ${ORIGIN}; launchctl setenv CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG ${CONFIG_FILE}`], { keepAlive: false }));
-ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweekendprojects.claude-lane-sampler", [NODE, path.join(REPO, "scripts/lane-sampler.mjs")]), { optional: true });
-// Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what
-// discovers a lane whose sign-in has died, and the syncer feeds shared readings back into this
-// machine's usage files. Both are per-machine jobs, so every client runs its own.
-ensureProber();
-ensureAgent("com.longweekendprojects.claude-allowance-syncer", plist("com.longweekendprojects.claude-allowance-syncer", [NODE, path.join(REPO, "scripts/allowance-syncer.mjs")], { keepAlive: false, interval: 60 }));
+ensureClientJobs();
 const monitorApp = path.join(HOME, "Applications/Claude Lane Monitor.app/Contents/MacOS/ClaudeLaneMonitor");
 // The monitor is the one job that must run in the login session: it reads its bearer from the
 // Keychain, which a job bootstrapped from a remote shell can never reach. Leaving it alone here
