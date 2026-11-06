@@ -13,6 +13,7 @@ test("prober-only inspection detects a missing job without provisioning other se
     const scriptDir = path.join(home, ".pi/agent/npm/node_modules/pi-claude-permit-gate/scripts");
     fs.mkdirSync(scriptDir, { recursive: true });
     fs.copyFileSync(new URL("../scripts/bootstrap-client.mjs", import.meta.url), path.join(scriptDir, "bootstrap-client.mjs"));
+    fs.copyFileSync(new URL("../scripts/launchd-node.mjs", import.meta.url), path.join(scriptDir, "launchd-node.mjs"));
     const run = spawnSync(process.execPath, [path.join(scriptDir, "bootstrap-client.mjs"), "--prober-only", "--check"], {
       env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 5000,
     });
@@ -61,6 +62,7 @@ for (const scenario of ["running", "invalid-plist", "bootstrap-failure"]) {
       fs.mkdirSync(agents, { recursive: true });
       const script = path.join(scriptDir, "bootstrap-client.mjs");
       fs.copyFileSync(new URL("../scripts/bootstrap-client.mjs", import.meta.url), script);
+      fs.copyFileSync(new URL("../scripts/launchd-node.mjs", import.meta.url), path.join(scriptDir, "launchd-node.mjs"));
       const plist = path.join(agents, "com.longweekendprojects.claude-allowance-prober.plist");
       fs.writeFileSync(plist, "old prober plist");
       const preload = path.join(home, "mock-launchd.mjs");
@@ -72,6 +74,7 @@ for (const scenario of ["running", "invalid-plist", "bootstrap-failure"]) {
         let bootstrapAttempts = 0;
         childProcess.spawnSync = (command, args) => {
           fs.appendFileSync(process.env.TEST_CALLS, command + " " + args[0] + "\\n");
+          if (args[0] === "-e") return { status: 0 };
           if (command === "/bin/launchctl" && args[0] === "print") return { status: unloaded ? 1 : 0, stdout: process.env.TEST_SCENARIO === "running" ? "pid = 123\\n" : "state = waiting\\n" };
           if (command === "/usr/bin/plutil" && args[0] === "-lint") return { status: process.env.TEST_SCENARIO === "invalid-plist" ? 1 : 0 };
           if (command === "/bin/launchctl" && args[0] === "bootout") { unloaded = true; return { status: 0 }; }
@@ -96,3 +99,61 @@ for (const scenario of ["running", "invalid-plist", "bootstrap-failure"]) {
     } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 }
+
+// The persisted interpreter survives Node upgrades, including an exporter installed outside Pi.
+test("client plists prefer a working stable Node and preserve an existing exporter's settings", () => {
+  for (const node of ["/opt/homebrew/bin/node", "/usr/local/bin/node", process.execPath]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "permit-client-node-"));
+    try {
+      const agents = path.join(home, "Library/LaunchAgents");
+      fs.mkdirSync(agents, { recursive: true });
+      const label = "com.longweekendprojects.claude-authority-exporter";
+      const exporterFile = path.join(agents, `${label}.plist`);
+      const exporter = { Label: label, ProgramArguments: ["/old/node", "/existing/authority-exporter.mjs"], EnvironmentVariables: { CLAUDE_AUTHORITY_EXPORTER_HOST: "100.64.0.1", CLAUDE_AUTHORITY_EXPORTER_PORT: "9714" }, KeepAlive: true, StandardErrorPath: "/existing/exporter.err" };
+      fs.writeFileSync(exporterFile, JSON.stringify(exporter));
+      const preload = path.join(home, "mock-client-install.mjs");
+      fs.writeFileSync(preload, `
+        import childProcess from "node:child_process";
+        import fs from "node:fs";
+        import { syncBuiltinESMExports } from "node:module";
+        const loaded = new Set();
+        childProcess.spawnSync = (command, args) => {
+          if (args[0] === "-e") return { status: command === process.env.TEST_NODE ? 0 : 1 };
+          if (command === "/bin/launchctl") {
+            const label = args[1]?.split("/").pop();
+            if (args[0] === "print") return { status: loaded.has(label) ? 0 : 1, stdout: "state = waiting" };
+            if (args[0] === "bootout") loaded.delete(label);
+            if (args[0] === "bootstrap") loaded.add(args[2].split("/").pop().replace(/\\.plist$/, ""));
+            return { status: 0 };
+          }
+          if (command === "/usr/sbin/lsof") return { status: 1, stdout: "" };
+          if (command === "/usr/bin/curl") return { status: 0, stdout: JSON.stringify({ status: "ready", authorityId: "ce298942-e550-44f2-8566-b45ea813d01c", laneTerm: 1 }) };
+          return { status: 0 };
+        };
+        childProcess.execFileSync = (command, args, options) => {
+          // plutil's representation conversion is irrelevant to the launch definition contract.
+          if (command === "/usr/bin/plutil") return args[1] === "json" ? fs.readFileSync(args.at(-1), "utf8") : options.input;
+          if (command === "/usr/bin/security") return "synthetic-snapshot-token";
+          throw new Error("unexpected command: " + command);
+        };
+        syncBuiltinESMExports();
+      `);
+      const script = new URL("../scripts/bootstrap-client.mjs", import.meta.url).pathname;
+      const run = () => spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, script], {
+        encoding: "utf8", timeout: 5000,
+        env: { ...process.env, HOME: home, TEST_NODE: node, CLAUDE_PERMIT_GATE_ORIGIN: "https://example.test", CLAUDE_PERMIT_AUTHORITY_ID: "ce298942-e550-44f2-8566-b45ea813d01c" },
+      });
+      const installed = run();
+      assert.equal(installed.status, 0, installed.stderr + installed.stdout);
+      for (const job of ["claude-allowance-prober", "claude-allowance-syncer", "claude-lane-sampler"]) {
+        const contents = fs.readFileSync(path.join(agents, `com.longweekendprojects.${job}.plist`), "utf8");
+        assert.ok(contents.includes(`<array>\n    <string>${node}</string>`), contents);
+      }
+      assert.deepEqual(JSON.parse(fs.readFileSync(exporterFile, "utf8")), { ...exporter, ProgramArguments: [node, exporter.ProgramArguments[1]] });
+      fs.rmSync(exporterFile);
+      const absent = run();
+      assert.equal(absent.status, 0, absent.stderr);
+      assert.equal(fs.existsSync(exporterFile), false, "do not install an exporter on a new client");
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+});

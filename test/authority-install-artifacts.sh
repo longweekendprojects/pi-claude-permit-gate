@@ -32,10 +32,13 @@ import path from 'node:path';
 const [out, home, templatePath] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(path.join(out, 'authority-artifacts-v1.json'), 'utf8'));
 const template = fs.readFileSync(templatePath, 'utf8');
+const { resolveLaunchdNode } = await import(path.resolve(path.dirname(templatePath), '../scripts/launchd-node.mjs'));
+const expectedNode = resolveLaunchdNode();
 if (template.includes('CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP') || !template.includes('__ACCOUNT_BINDING_ID__')) throw new Error('template does not declare the expected launch environment');
 for (const lane of manifest.lanes) {
   const raw = fs.readFileSync(lane.plistPath, 'utf8');
   const decoded = JSON.parse(childProcess.execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', lane.plistPath]));
+  if (decoded.ProgramArguments[0] !== expectedNode) throw new Error('authority plist does not use the stable working Node');
   if (/__[A-Z0-9_]+__/.test(raw) || decoded.EnvironmentVariables.CLAUDE_PERMIT_GATE_AUTHORITY_BOOTSTRAP !== undefined || decoded.WorkingDirectory !== manifest.releasePath || decoded.EnvironmentVariables.CLAUDE_PERMIT_GATE_AUTHORITY_STATE_DIR !== path.join(home, 'Library', 'Application Support', 'Claude Permit Authority', 'lanes') || decoded.StandardOutPath !== lane.outLogPath || decoded.StandardErrorPath !== lane.errLogPath) throw new Error('template output did not preserve safe substitutions');
 }
 NODE

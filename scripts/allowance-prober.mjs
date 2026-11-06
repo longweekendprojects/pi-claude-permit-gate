@@ -48,7 +48,10 @@ const PROBER_KEYCHAIN_ACCOUNT = "prober";
 
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
 const PROBER_INSTALLATION_ID = config.proberInstallationId ?? DEFAULT_PROBER_INSTALLATION_ID;
-const resolveToken = await createAllowanceAuth(AUTH_FILE).catch(() => undefined);
+const resolveToken = await createAllowanceAuth(AUTH_FILE).catch(() => {
+  console.error("allowance prober: Pi OAuth resolver is unavailable; install a supported Pi release or set PI_CLI_PATH to its CLI.");
+  process.exit(1);
+});
 // While this machine is bypassed, the authority is unreachable by design, so poll results are
 // written into the lane's local usage file instead of published, and no publish token is needed.
 // Mirrors readBypassState in index.ts.
@@ -180,10 +183,6 @@ function writeLocalUsage(provider, fiveHour, sevenDay, observedAtEpochMs) {
 for (const provider of PROVIDERS) {
   // A resolver load failure is operational, not evidence that this lane's sign-in expired.
   if (credentialFailures[provider]?.reason === RESOLVER_UNAVAILABLE_REASON) clearCredentialFailure(provider);
-  if (!resolveToken) {
-    results.push(`${provider}: ${RESOLVER_UNAVAILABLE_REASON}`);
-    continue;
-  }
   let token;
   try { token = await resolveToken(provider); }
   catch {

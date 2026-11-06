@@ -22,12 +22,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { resolveLaunchdNode } from "./launchd-node.mjs";
 
 const CHECK_ONLY = process.argv.includes("--check");
 const PROBER_ONLY = process.argv.includes("--prober-only");
 const HOME = os.homedir();
 const USER = os.userInfo().username;
-const NODE = process.execPath;
+const NODE = resolveLaunchdNode();
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const GATE_DIR = path.join(HOME, ".pi/agent/claude-permit-gate");
 const CONFIG_FILE = path.join(GATE_DIR, "authority-client.json");
@@ -175,6 +176,21 @@ const plist = (label, args, { env = {}, keepAlive = true, interval } = {}) => `<
 </plist>
 `;
 
+// The exporter was installed separately on some machines. Repair its interpreter without changing
+// its bind address, port, script location, or other settings, and do not opt new machines into it.
+function ensureExporter() {
+  const label = "com.longweekendprojects.claude-authority-exporter";
+  const file = path.join(AGENTS_DIR, `${label}.plist`);
+  if (!fs.existsSync(file)) { record(label, "ok", "not installed, skipped"); return; }
+  try {
+    const definition = JSON.parse(execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", file], { encoding: "utf8" }));
+    if (definition.Label !== label || !Array.isArray(definition.ProgramArguments) || definition.ProgramArguments.length < 2) throw new Error("invalid exporter plist");
+    definition.ProgramArguments[0] = NODE;
+    const contents = execFileSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", "-"], { input: JSON.stringify(definition), encoding: "utf8" });
+    ensureAgent(label, contents, { optional: true });
+  } catch { record(label, "error", "could not repair exporter plist"); }
+}
+
 function checkCredentials() {
   const missing = SCOPES.filter(([, service]) => spawnSync("/usr/bin/security", ["find-generic-password", "-s", service, "-a", KEYCHAIN_ACCOUNT], { stdio: "ignore" }).status !== 0).map(([scope]) => scope);
   if (!missing.length) record("keychain credentials", "ok", `account ${KEYCHAIN_ACCOUNT}`);
@@ -236,6 +252,7 @@ if (PROBER_ONLY) {
 } else {
 const config = ensureConfig();
 ensureShellEnvironment();
+ensureExporter();
 ensureAgent("com.longweekendprojects.claude-permit-env", plist("com.longweekendprojects.claude-permit-env", ["/bin/sh", "-c", `launchctl setenv CLAUDE_PERMIT_GATE_MODE authority-client; launchctl setenv CLAUDE_PERMIT_GATE_ORIGIN ${ORIGIN}; launchctl setenv CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG ${CONFIG_FILE}`], { keepAlive: false }));
 ensureAgent("com.longweekendprojects.claude-lane-sampler", plist("com.longweekendprojects.claude-lane-sampler", [NODE, path.join(REPO, "scripts/lane-sampler.mjs")]), { optional: true });
 // Polling Anthropic's usage endpoint is what keeps an unused lane's allowance current and what

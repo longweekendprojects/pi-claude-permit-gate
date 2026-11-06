@@ -193,7 +193,8 @@ H1_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse --verify "refs/tags/$H1_RELEASE^{co
 git -C "$SOURCE_ROOT" merge-base --is-ancestor "$H1_COMMIT" "$COMMIT" || fail "H1 release is not an ancestor of this build"
 node "$SOURCE_ROOT/scripts/validate-authority-contract.mjs" >/dev/null || fail "authority schema validation failed"
 SCHEMA_SHA256="$(sha256_file "$SOURCE_ROOT/protocol/authority-v1.schema.json")"
-NODE_PATH="$(command -v node)"; absolute_path "$NODE_PATH"
+NODE_PATH="$(node --input-type=module -e 'const { resolveLaunchdNode } = await import(process.argv[1]); console.log(resolveLaunchdNode());' "$SOURCE_ROOT/scripts/launchd-node.mjs")" || fail "no working Node for LaunchAgents"
+absolute_path "$NODE_PATH"
 BUILD_ID="pi-claude-permit-gate-${PACKAGE_VERSION}+git.${COMMIT:0:12}"
 
 safe_output_root() {

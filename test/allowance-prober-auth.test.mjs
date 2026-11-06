@@ -114,7 +114,7 @@ test("missing, invalid, rejected, and incompatible OAuth fail closed without rev
   }
 });
 
-test("standalone prober resolves from its Node installation and continues usage after a rejected lane", { timeout: 30_000 }, () => {
+test("standalone prober finds Pi independently of Node and continues usage after a rejected lane", { timeout: 30_000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "allowance-prober-home-"));
   try {
     const agentDir = path.join(home, ".pi/agent");
@@ -123,6 +123,8 @@ test("standalone prober resolves from its Node installation and continues usage 
     const authPath = path.join(agentDir, "auth.json");
     fs.writeFileSync(authPath, JSON.stringify({ "anthropic-a": expired("a"), "anthropic-c": fresh("c"), "anthropic-d": expired("d") }), { mode: 0o600 });
     fs.writeFileSync(path.join(gateDir, "authority-client.json"), JSON.stringify({}), { mode: 0o600 });
+    const cli = path.join(home, "pi");
+    fs.symlinkSync(path.join(runtime, "dist/cli.js"), cli);
     const preload = path.join(home, "mock-transport.mjs");
     fs.writeFileSync(preload, `
       import assert from "node:assert/strict";
@@ -130,6 +132,7 @@ test("standalone prober resolves from its Node installation and continues usage 
       import childProcess from "node:child_process";
       import { syncBuiltinESMExports } from "node:module";
       assert.equal(os.homedir(), process.env.TEST_FAKE_HOME);
+      Object.defineProperty(process, "execPath", { value: "/different-node/bin/node" });
       childProcess.execFileSync = () => { throw new Error("Keychain access forbidden in test"); };
       syncBuiltinESMExports();
       globalThis.fetch = async (url, options = {}) => {
@@ -148,7 +151,7 @@ test("standalone prober resolves from its Node installation and continues usage 
     const prober = path.resolve("scripts/allowance-prober.mjs");
     const run = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, prober], {
       encoding: "utf8", timeout: 25_000,
-      env: { ...process.env, HOME: home, TEST_FAKE_HOME: home, CLAUDE_PERMIT_GATE_BYPASS: "1" },
+      env: { ...process.env, HOME: home, TEST_FAKE_HOME: home, PI_CLI_PATH: cli, PATH: "", CLAUDE_PERMIT_GATE_BYPASS: "1" },
     });
     assert.equal(run.status, 0, `isolated prober exit: ${run.error?.code ?? run.stderr}`);
     assert.match(run.stdout, /anthropic-a: usage 5h=24\.0% 7d=50\.0% -> local file/);
@@ -173,7 +176,7 @@ test("standalone prober resolves from its Node installation and continues usage 
   }
 });
 
-test("unreviewed Pi leaves real sign-in failures intact without reading auth or using transport", { timeout: 30_000 }, () => {
+test("unavailable Pi fails loudly without changing sign-in failures or reading auth", { timeout: 30_000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "allowance-unreviewed-home-"));
   try {
     const agentDir = path.join(home, ".pi/agent");
@@ -186,10 +189,11 @@ test("unreviewed Pi leaves real sign-in failures intact without reading auth or 
       "anthropic-b": { failedAtEpochMs: 222, reason: "OAuth credential unavailable" },
       "anthropic-d": { failedAtEpochMs: 333, reason: "usage HTTP 401" },
     };
-    fs.writeFileSync(failurePath, JSON.stringify({ schemaVersion: 1, lanes: {
+    const originalFailures = { schemaVersion: 1, lanes: {
       "anthropic-a": { failedAtEpochMs: 111, reason: "Pi OAuth resolver unavailable" },
       ...expectedFailures,
-    } }), { mode: 0o600 });
+    } };
+    fs.writeFileSync(failurePath, JSON.stringify(originalFailures), { mode: 0o600 });
     const preload = path.join(home, "mock-unreviewed.mjs");
     fs.writeFileSync(preload, `
       import assert from "node:assert/strict";
@@ -220,15 +224,41 @@ test("unreviewed Pi leaves real sign-in failures intact without reading auth or 
     const prober = path.resolve("scripts/allowance-prober.mjs");
     const run = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, prober], {
       encoding: "utf8", timeout: 25_000,
-      env: { ...process.env, HOME: home, TEST_FAKE_HOME: home, CLAUDE_PERMIT_GATE_BYPASS: "1" },
+      env: { ...process.env, HOME: home, TEST_FAKE_HOME: home, PI_CLI_PATH: path.join(runtime, "dist/cli.js"), PATH: "", CLAUDE_PERMIT_GATE_BYPASS: "1" },
     });
-    assert.equal(run.status, 0, `isolated prober exit: ${run.error?.code ?? run.stderr}`);
-    assert.match(run.stdout, /anthropic-a: Pi OAuth resolver unavailable/);
-    assert.match(run.stdout, /anthropic-d: Pi OAuth resolver unavailable/);
+    assert.equal(run.status, 1, `isolated prober exit: ${run.error?.code ?? run.stderr}`);
+    assert.match(run.stderr, /Pi OAuth resolver is unavailable.*PI_CLI_PATH/);
     assert.doesNotMatch(run.stderr, /UNEXPECTED_AUTH_ACCESS|UNEXPECTED_KEYCHAIN_ACCESS|UNEXPECTED_TRANSPORT/);
     assert.equal(fs.existsSync(authPath), false);
-    assert.deepEqual(JSON.parse(fs.readFileSync(failurePath, "utf8")), { schemaVersion: 1, lanes: expectedFailures });
+    assert.deepEqual(JSON.parse(fs.readFileSync(failurePath, "utf8")), originalFailures);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+// launchd has no Pi on PATH, and a mise shim is a link to mise rather than to Pi.
+test("the prober discovers Pi through its mise shim without starting the CLI", () => {
+  const temp = temporaryAuth({ "anthropic-a": fresh("a") });
+  try {
+    const tools = path.join(temp.directory, "tools");
+    const shims = path.join(temp.directory, ".local/share/mise/shims");
+    fs.mkdirSync(tools);
+    fs.mkdirSync(shims, { recursive: true });
+    const mise = path.join(tools, "mise");
+    fs.writeFileSync(mise, `#!/bin/sh\n[ "$1" = which ] && [ "$2" = pi ] || exit 1\nprintf '%s\\n' '${path.join(runtime, "dist/cli.js")}'\n`, { mode: 0o755 });
+    fs.symlinkSync(mise, path.join(shims, "pi"));
+    const script = `
+      import assert from "node:assert/strict";
+      import { createAllowanceAuth } from ${JSON.stringify(new URL("../scripts/allowance-prober-auth.mjs", import.meta.url).href)};
+      Object.defineProperty(process, "execPath", { value: "/different-node/bin/node" });
+      globalThis.fetch = async () => { throw new Error("Network access forbidden"); };
+      const resolve = await createAllowanceAuth(${JSON.stringify(temp.authPath)});
+      assert.equal(await resolve("anthropic-a"), "synthetic-a-new-access");
+    `;
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, HOME: temp.directory, PATH: "", PI_CLI_PATH: "" },
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+  } finally { temp.cleanup(); }
 });
