@@ -163,7 +163,28 @@ function windowFrom(raw, windowSeconds) {
   return { utilization, status, resetEpochSeconds };
 }
 
+// Some accounts carry a weekly allowance scoped to Fable models. The usage endpoint reports it only
+// in `limits`, as a `weekly_scoped` entry whose model scope is named Fable, with a whole percent.
+function fableWindowFrom(limits) {
+  if (!Array.isArray(limits)) return null;
+  const limit = limits.find((entry) => entry?.kind === "weekly_scoped" && /^fable$/i.test(entry?.scope?.model?.display_name ?? ""));
+  return limit && typeof limit.percent === "number" ? windowFrom({ utilization: limit.percent, resets_at: limit.resets_at }, 7 * 24 * 60 * 60) : null;
+}
+
 const results = [];
+
+// The Fable window gets its own local file in every mode. The authority protocol carries only the
+// 5-hour and weekly windows, and Pi sessions replace the shared usage file without the Fable window.
+// An account that stops reporting the window loses the file, so the monitor drops the row.
+function writeFableUsage(provider, fable, observedAtEpochMs) {
+  const file = path.join(STORE_DIR, `${provider.replace(/[^a-zA-Z0-9_.-]/g, "_")}.fable.json`);
+  if (!fable) { fs.rmSync(file, { force: true }); return; }
+  const snapshot = { provider, fable: { utilization: fable.utilization, status: fable.status, reset: fable.resetEpochSeconds }, at: observedAtEpochMs };
+  fs.mkdirSync(STORE_DIR, { recursive: true });
+  const temporary = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify(snapshot));
+  fs.renameSync(temporary, file);
+}
 
 function writeLocalUsage(provider, fiveHour, sevenDay, observedAtEpochMs) {
   const file = path.join(STORE_DIR, `${provider.replace(/[^a-zA-Z0-9_.-]/g, "_")}.json`);
@@ -216,6 +237,8 @@ for (const provider of PROVIDERS) {
     const usage = await response.json();
     const fiveHour = windowFrom(usage.five_hour, 5 * 60 * 60);
     const sevenDay = windowFrom(usage.seven_day, 7 * 24 * 60 * 60);
+    const fable = fableWindowFrom(usage.limits);
+    writeFableUsage(provider, fable, Date.now());
     if (!fiveHour && !sevenDay) { results.push(`${provider}: no windows reported`); continue; }
 
     const sequence = (sequences[provider] ?? 0) + 1;
@@ -225,7 +248,7 @@ for (const provider of PROVIDERS) {
       const written = writeLocalUsage(provider, fiveHour, sevenDay, Date.now());
       const asPercent = (window) => window ? `${(window.utilization * 100).toFixed(1)}%` : "-";
       const destination = written ? "local file" : "local file already newer";
-      results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)} -> ${destination}${isBypassed ? "" : " (no prober publish credential)"}`);
+      results.push(`${provider}: usage 5h=${asPercent(fiveHour)} 7d=${asPercent(sevenDay)}${fable ? ` fable=${asPercent(fable)}` : ""} -> ${destination}${isBypassed ? "" : " (no prober publish credential)"}`);
       continue;
     }
     const lane = config.lanes[provider];
