@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"];
-const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1", "0.99.2", "1.3.0", "1.5.0"]);
+const REVIEWED_PI_VERSIONS = new Set(["0.87.1", "0.99.1", "0.99.2", "1.3.0", "1.5.0", "1.5.2"]);
 const loadError = () => new Error("Pi OAuth resolver is unavailable");
 
 // launchd's stable Node need not own the Pi installation. Locate Pi without executing its CLI or
