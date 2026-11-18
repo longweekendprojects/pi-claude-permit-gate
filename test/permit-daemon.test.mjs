@@ -1226,19 +1226,29 @@ test("authority persists allowance scope, skew, replay, and accepted truth acros
   assert.equal(snapshot.allowance.observedAtEpochMs, newest.observedAtEpochMs); assert.equal(snapshot.allowance.fiveHour.status, "warning"); assert.equal("installationId" in snapshot, false);
 });
 
-test("a full lane ledger compacts terminal records older than an hour instead of refusing creates", () => {
+test("a busy lane ledger keeps a small working set plus every terminal record under ten minutes old", () => {
   const now = 10 * AUTHORITY_TIMING.terminalRetentionMs;
-  const tickets = {};
-  for (let index = 0; index < 4096; index += 1) {
+  const build = (count, oldCount) => { const tickets = {}; for (let index = 0; index < count; index += 1) {
     const ticketId = crypto.randomUUID();
-    // Every record is terminal and younger than the 24-hour window; the first half is over an hour old.
-    const terminalAtEpochMs = index < 2048 ? now - 7_200_000 + index : now - 60_000;
+    // Every record is terminal and younger than the 24-hour window; the first ones are over ten minutes old.
+    const terminalAtEpochMs = index < oldCount ? now - 1_200_000 + index : now - 60_000;
     tickets[ticketId] = { ticketId, installationId: crypto.randomUUID(), provider: "anthropic-a", requestId: crypto.randomUUID(), sessionId: crypto.randomUUID(), state: "released", createdAtEpochMs: terminalAtEpochMs - 1_000, terminalAtEpochMs };
-  }
-  const recent = Object.values(tickets).filter((ticket) => now - ticket.terminalAtEpochMs < 3_600_000).map((ticket) => ticket.ticketId);
-  const state = { tickets, createTombstones: {}, fairness: { machineOrder: [], machineCursor: 0, sessionOrder: {}, sessionCursor: {} } };
-  compactRetainedState(state, now, AUTHORITY_TIMING);
-  assert.equal(Object.keys(state.tickets).length, 4096 - 256);
-  assert.equal(Object.keys(state.createTombstones).length, 0);
-  for (const ticketId of recent) assert.ok(state.tickets[ticketId], "records under an hour old are kept");
+  } return { tickets, createTombstones: {}, fairness: { machineOrder: [], machineCursor: 0, sessionOrder: {}, sessionCursor: {} } }; };
+  // Far below the hard bound, old records beyond the working set are still compacted, oldest first.
+  const busy = build(1000, 600);
+  const recent = Object.values(busy.tickets).filter((ticket) => now - ticket.terminalAtEpochMs < 600_000).map((ticket) => ticket.ticketId);
+  const oldest = Object.values(busy.tickets).sort((left, right) => left.terminalAtEpochMs - right.terminalAtEpochMs)[0].ticketId;
+  compactRetainedState(busy, now, AUTHORITY_TIMING);
+  assert.equal(Object.keys(busy.tickets).length, 400);
+  assert.equal(busy.tickets[oldest], undefined);
+  for (const ticketId of recent) assert.ok(busy.tickets[ticketId], "records under ten minutes old are kept");
+  // A quiet lane inside the working set keeps everything.
+  const quiet = build(200, 200);
+  compactRetainedState(quiet, now, AUTHORITY_TIMING);
+  assert.equal(Object.keys(quiet.tickets).length, 200);
+  // A full ledger of old records drops to the working set.
+  const full = build(4096, 4096);
+  compactRetainedState(full, now, AUTHORITY_TIMING);
+  assert.equal(Object.keys(full.tickets).length, 256);
+  assert.equal(Object.keys(full.createTombstones).length, 0);
 });

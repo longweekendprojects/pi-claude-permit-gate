@@ -1454,13 +1454,15 @@ function publisherSequenceKey(installationId, provider) {
   return `${installationId}\u0000${provider}`;
 }
 
-// A busy lane finishes more than MAX_RETAINED_RECORDS tickets inside one retention window. Holding
-// every terminal record for the full window then refused every create with persistence_unavailable
-// until the oldest record aged out, so sessions on that lane stalled. When the ledger is full, the
-// oldest terminal records past PRESSURE_RETENTION_MS are compacted early to leave headroom. Lost
-// replies are retried within seconds, so an hour still covers every replay a client can make.
-const PRESSURE_RETENTION_MS = 3_600_000;
-const PRESSURE_HEADROOM = 256;
+// Every commit clones, validates, and rewrites the whole lane state, so its cost grows with the
+// number of retained records. A busy lane that kept a day of terminal records held about 13 MB,
+// and each mutation then took about 0.35 s against 0.15 s on a small lane. Mutations run one at a
+// time, so claims queued behind them and offered permits sat unused for seconds. Terminal records
+// beyond a small working set are therefore compacted once they are PRESSURE_RETENTION_MS old. Lost
+// replies are retried within seconds, so ten minutes still covers every replay a client can make.
+// Records younger than that are always kept, and the hard bound still refuses a create.
+const PRESSURE_RETENTION_MS = 600_000;
+const SOFT_RETAINED_RECORDS = 256;
 
 export function compactRetainedState(state, now, timing) {
   for (const [key, tombstone] of Object.entries(state.createTombstones)) {
@@ -1470,7 +1472,7 @@ export function compactRetainedState(state, now, timing) {
     .filter((ticket) => TERMINAL_STATES.has(ticket.state) && ticket.terminalAtEpochMs !== null)
     .sort((left, right) => left.terminalAtEpochMs - right.terminalAtEpochMs);
   const expired = terminal.filter((ticket) => now - ticket.terminalAtEpochMs >= timing.terminalRetentionMs);
-  const excess = retainedRecordCount(state) - expired.length - (MAX_RETAINED_RECORDS - PRESSURE_HEADROOM);
+  const excess = retainedRecordCount(state) - expired.length - SOFT_RETAINED_RECORDS;
   const pressured = excess > 0 ? terminal.filter((ticket) => now - ticket.terminalAtEpochMs >= PRESSURE_RETENTION_MS && now - ticket.terminalAtEpochMs < timing.terminalRetentionMs).slice(0, excess) : [];
   const eligible = [...expired, ...pressured];
   for (const ticket of eligible) {
