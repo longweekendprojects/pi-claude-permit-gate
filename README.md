@@ -198,6 +198,8 @@ Compatibility is fail closed at the acquire boundary:
 
 For current health, the client sends the expected instance identity, provider, and protocol with `/acquire`. The daemon rejects a different expectation, and the client accepts a permit only when the response matches its preflight. For legacy health, the client re-probes after a grant and accepts it only when the stable `startedAt` is unchanged; otherwise it releases the permit and retries.
 
+To see where a shared-authority acquisition spends its time, create the flag file `~/.pi/agent/claude-permit-gate/acquire-timing.on`. Each acquisition then appends one line to `acquire-timing.jsonl` beside it. The line gives the time spent in Keychain lookups, authority requests, ledger writes, and poll waits, plus how late timers fired and how long the offer waited for the claim. The flag is read per acquisition, so it needs no reload. Delete the flag file to stop; the log stops growing at 20 MB.
+
 The daemon writes its log under:
 
 ```text
