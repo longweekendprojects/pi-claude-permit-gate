@@ -360,6 +360,32 @@ test("authority-client completes cleanly when its lease was already reclaimed", 
   assert.equal(Object.keys(ledger.tickets).length, 0);
 });
 
+test("authority-client completes cleanly when the authority already compacted its ticket", async () => {
+  const config = {
+    mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath: "/unused/authority-client-tickets-v1.json",
+    keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
+    lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
+  };
+  let ledger = { schemaVersion: 1, tickets: {} }; let completes = 0;
+  const client = createAuthorityClient(config, {
+    sessionId: "cccc4444-2222-4222-8222-222222222222",
+    token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readLedger: async () => structuredClone(ledger), writeLedger: async (next) => { ledger = structuredClone(next); }, wait: async () => {},
+    request: async (request) => {
+      if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
+      if (request.pathname === "/v1/tickets") return { status: 201, body: { schemaVersion: 1, ticketId: "7777bbbb-1111-4111-8111-111111111111", requestId: request.body.requestId, provider: "anthropic-a", state: "active", revision: 2, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: 2_050, offerExpiresAtEpochMs: 2_100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
+      if (request.pathname.endsWith("/complete")) { completes++; return { status: 404, body: { schemaVersion: 1, error: { code: "not_found", message: "request rejected", retryable: false, retryAfterMs: null } } }; }
+      throw new Error(`unexpected authority request ${request.pathname}`);
+    },
+  });
+  const record = await client.acquire("anthropic-a");
+  // The lease is still active locally, but the authority finished and compacted the ticket.
+  await client.complete(record);
+  assert.equal(completes, 1); assert.equal(Object.keys(ledger.tickets).length, 0);
+  // The next acquire starts clean.
+  assert.equal((await client.acquire("anthropic-a")).ticket.state, "active");
+});
+
 test("remote bypass is an explicit owner-only toggle that fails closed on invalid or expired state", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "claude-permit-bypass-"));
   try {
