@@ -164,6 +164,7 @@ The daemon reads its settings when it first starts. Each pool defaults to two co
 | `CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS` | `20000` | Cooldown requested after a rate-limit response. |
 | `CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS` | `60000` | Cooldown requested after an overload response. |
 | `CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS` | `500` | Delay between failed acquire attempts. |
+| `CLAUDE_PERMIT_GATE_TOKEN_CACHE_MS` | `60000` | How long the shared-authority client keeps the Keychain token in memory. A token the authority refuses is read again once. `0`, or a value that is not a number, reads the Keychain before every request. |
 | `CLAUDE_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS` | `600` | Failed attempts before the blocked request reports a diagnostic. |
 | `CLAUDE_PERMIT_GATE_SPAWN_BACKOFF_MS` | `1000` | Initial delay before retrying a failed daemon launch. |
 | `CLAUDE_PERMIT_GATE_MAX_SPAWN_BACKOFF_MS` | `30000` | Maximum retry delay for a failed daemon launch. |

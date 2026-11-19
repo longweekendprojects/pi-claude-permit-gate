@@ -40,7 +40,7 @@ test("acquire timing writes one line per acquisition only while the flag file ex
     const [line] = lines;
     assert.equal(line.provider, "anthropic-a"); assert.equal(line.outcome, "acquired"); assert.equal(line.polls, 2); assert.equal(line.offerToClaimMs, 2_500);
     assert.equal(line.spans["GET /v1/tickets/*"].n, 2); assert.equal(line.spans["POST /v1/tickets/*/claim"].n, 1); assert.equal(line.spans["POST /v1/tickets"].n, 1); assert.equal(line.spans["GET /v1/health"].n, 1);
-    assert.equal(line.spans.wait.n, 2); assert.equal(line.spans.token.n, 5); assert.ok(line.spans.ledger.n >= 5);
+    assert.equal(line.spans.wait.n, 2); assert.equal(line.spans.token.n, 1); assert.ok(line.spans.ledger.n >= 5);
     assert.equal(typeof line.seenToDoneMs, "number"); assert.equal(typeof line.timerLateMaxMs, "number");
     // No token or ticket identifier reaches the log.
     const raw = await fs.readFile(paths.log, "utf8"); assert.equal(raw.includes(ticketId), false); assert.equal(raw.includes("token-id"), false);
