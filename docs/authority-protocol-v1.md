@@ -97,12 +97,13 @@ All ticket endpoints require `permit:mutate`. The canonical endpoint/body contra
 
 | Endpoint | Request body | Result |
 | --- | --- | --- |
-| `POST /v1/tickets` | `TicketCreateRequestV1` | First create returns `201 TicketV1`; a matching retry returns its original `200 TicketV1` with both `Location` and `Idempotency-Replayed`. |
+| `POST /v1/tickets` | `TicketCreateRequestV1` | First create returns `201 TicketV1`; a matching retry returns its original `200 TicketV1` with both `Location` and `Idempotency-Replayed`. With the request header `x-permit-claim-on-offer: 1`, a ticket offered by the create is claimed in the same commit and returned `active`; an older lane ignores the header. |
 | `GET /v1/tickets/:ticketId` | None | Returns the owner/lane ticket or owner-hidden `404`. |
 | `POST /v1/tickets/:ticketId/claim` | `TicketClaimOrCancelRequestV1` | One revision compare-and-set changes `offered` to `active`; provider traffic may start only after this response. |
 | `POST /v1/tickets/:ticketId/cancel` | `TicketClaimOrCancelRequestV1` | Changes only `queued|offered` to `cancelled`. `active|uncertain` returns `409 invalid_transition` and keeps capacity. |
 | `POST /v1/tickets/:ticketId/renew` | `TicketRenewRequestV1` | Acknowledges the matching lease generation and sequence; it may restore `uncertain` to `active` without allocating another slot. |
 | `POST /v1/tickets/:ticketId/complete` | `TicketCompleteRequestV1` | Frees capacity once. A throttle outcome changes adaptive concurrency and cooldown once. |
+| `POST /v1/tickets/:ticketId/await` | `TicketAwaitRequestV1` | Advertised by the `ticket-await` health capability. Held open outside the mutation queue until the ticket revision differs from `afterRevision` or `waitMs` (at most 25000) passes, then returns `200 TicketV1`. With `claim: true`, an offer already waiting is claimed at once, and an offer made while the call is open is claimed in the same commit. The queue position belongs to the ticket, so a dropped call loses only its notification. A shutdown answers every open call with the current ticket. |
 
 A create body contains exactly schema version, provider, account-binding UUID, installation UUID, opaque session UUID, opaque request UUID, and `createdAtEpochMs`. A new create timestamp must be within 30 seconds of server time. The idempotency key is `(authenticated installation, provider, requestId)`. A known retry remains readable; terminal records remain 24 hours on a quiet lane, or at least ten minutes once a lane retains more than 256 records, and through the create retry horizon, and a compacted old timestamp cannot recreate work.
 

@@ -595,13 +595,14 @@
         "capabilities": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 3,
+          "maxItems": 4,
           "uniqueItems": true,
           "items": {
             "enum": [
               "tickets",
               "snapshot",
-              "allowance"
+              "allowance",
+              "ticket-await"
             ]
           }
         },
@@ -1356,6 +1357,45 @@
         },
         "createdAtEpochMs": {
           "$ref": "#/$defs/EpochMilliseconds"
+        }
+      }
+    },
+    "TicketAwaitRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "POST /v1/tickets/{ticketId}/await. Held open until the ticket revision differs from afterRevision or waitMs passes (at most 25000). With claim true, an offer made to the ticket while the call is open, or already waiting, is claimed in the same commit. Advertised by the ticket-await capability.",
+      "required": [
+        "schemaVersion",
+        "installationId",
+        "provider",
+        "accountBindingId",
+        "afterRevision",
+        "waitMs",
+        "claim"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "afterRevision": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 25000
+        },
+        "claim": {
+          "type": "boolean"
         }
       }
     },

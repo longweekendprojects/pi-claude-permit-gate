@@ -884,6 +884,41 @@ test("a degraded lane exits so its supervisor restarts it instead of refusing ev
   assert.notEqual(exited, 0, "the exit must be non-zero so KeepAlive restarts the lane");
 });
 
+test("a lane holds an await call open, answers it with the claimed lease, and releases open calls on shutdown", async (t) => {
+  const gate = await authorityDaemon(t);
+  const headers = authorityHeaders(gate.principal);
+  const health = await request(gate.port, "GET", "/v1/health", undefined, headers);
+  assert.ok(health.body.capabilities.includes("ticket-await"));
+  const createFor = () => ticketCreate(gate.principal, { session: crypto.randomUUID(), request: crypto.randomUUID(), now: Date.now() });
+  const holder = await request(gate.port, "POST", "/v1/tickets", createFor(), { ...headers, "x-permit-claim-on-offer": "1" });
+  assert.equal(holder.status, 201); assert.equal(holder.body.state, "active");
+  const waiter = await request(gate.port, "POST", "/v1/tickets", createFor(), headers);
+  assert.equal(waiter.body.state, "queued");
+  const awaitBody = (ticket, waitMs) => ({ schemaVersion: 1, installationId: gate.principal.installationId, provider: "anthropic-a", accountBindingId: gate.principal.accountBindingId, afterRevision: ticket.revision, waitMs, claim: true });
+  const started = Date.now();
+  const held = request(gate.port, "POST", `/v1/tickets/${waiter.body.ticketId}/await`, awaitBody(waiter.body, 4_000), headers);
+  await delay(300);
+  const completed = await request(gate.port, "POST", `/v1/tickets/${holder.body.ticketId}/complete`, ticketMutation(gate.principal, { operation: crypto.randomUUID(), revision: holder.body.revision, lease: holder.body.lease, outcome: "released" }), headers);
+  assert.equal(completed.status, 200);
+  const answered = await held;
+  assert.equal(answered.status, 200); assert.equal(answered.body.state, "active"); assert.ok(Date.now() - started < 3_000);
+  // A shutdown answers an open await call at once instead of waiting out its window.
+  const third = await request(gate.port, "POST", "/v1/tickets", createFor(), headers);
+  const open = new Promise((resolve) => {
+    const payload = JSON.stringify(awaitBody(third.body, 25_000));
+    const req = http.request({ host: "127.0.0.1", port: gate.port, method: "POST", path: `/v1/tickets/${third.body.ticketId}/await`, headers: { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => { let text = ""; res.on("data", (chunk) => { text += chunk; }); res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text || "{}") })); });
+    req.on("error", (error) => resolve({ error })); req.end(payload);
+  });
+  await delay(300);
+  const stopping = Date.now();
+  const exited = new Promise((resolve) => gate.child.once("exit", (code) => resolve(code)));
+  gate.child.kill("SIGTERM");
+  const reply = await open;
+  assert.equal(reply.status, 200); assert.equal(reply.body.state, "queued");
+  assert.equal(await Promise.race([exited, delay(8_000).then(() => "timeout")]), 0);
+  assert.ok(Date.now() - stopping < 5_000);
+});
+
 test("a lane that waits too long for the shared verifier fence refuses one request and stays up", async (t) => {
   // Every lane on the host commits under one verifier fence. A neighbor that holds it through a
   // slow commit made the waiting lane degrade and exit, quarantining every live lease on it.

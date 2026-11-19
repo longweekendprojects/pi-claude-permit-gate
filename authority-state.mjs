@@ -1294,6 +1294,38 @@ function scheduleOffers(state, now, timing) {
   return offered;
 }
 
+// Turns an offer into a held lease. A claim request and a claim made on the client's behalf, while
+// it is attached to the lane by a create or an await call, produce the same lease.
+function claimOffered(ticket, now, timing) {
+  ticket.state = "active";
+  ticket.revision += 1;
+  ticket.lease = {
+    leaseId: crypto.randomUUID(),
+    generation: 1,
+    claimedAtEpochMs: now,
+    renewSequence: 0,
+    renewByEpochMs: now + timing.renewIntervalMs,
+    serverDeadlineEpochMs: now + timing.renewDeadlineMs,
+  };
+}
+
+// An await call holds the request open until the ticket's revision moves past the one the client
+// holds, or this long passes. The client's own request timeout is 30 seconds.
+const MAX_AWAIT_MS = 25_000;
+const MAX_AWAITERS = 512;
+
+function validateAwaitRequest(request) {
+  assertExactObject(request, ["schemaVersion", "installationId", "provider", "accountBindingId", "afterRevision", "waitMs", "claim"]);
+  assertSchemaVersion(request.schemaVersion);
+  assertUuid(request.installationId);
+  assertProvider(request.provider);
+  assertUuid(request.accountBindingId);
+  assertSafeInteger(request.afterRevision, 1);
+  assertSafeInteger(request.waitMs);
+  if (request.waitMs > MAX_AWAIT_MS) fail("invalid_request", "await window is too long");
+  if (typeof request.claim !== "boolean") fail("invalid_request", "await claim flag is invalid");
+}
+
 function expireAndQuarantine(state, now, timing) {
   let changed = false;
   for (const ticket of Object.values(state.tickets)) {
@@ -1561,6 +1593,10 @@ export class AuthorityState {
     this.configuration = configuration;
     this.degraded = false;
     this._tail = Promise.resolve();
+    // Await calls waiting for their ticket to change, and the tickets whose client asked for its
+    // offer to be claimed on its behalf. Neither is persisted: a restart drops the open requests.
+    this._awaiters = new Set();
+    this._claimIntents = new Map();
   }
 
   get status() {
@@ -1700,6 +1736,82 @@ export class AuthorityState {
     // The commit validated `next` and nothing changes it afterwards, so the next request skips a
     // second whole-state validation of the same object.
     this._validatedState = next;
+    this._notifyAwaiters();
+  }
+
+  // Claims, in the same commit, every offer made to a ticket whose client is attached with a claim
+  // request, so a granted slot never sits offered while the client travels back to claim it.
+  _claimAttached(next, now) {
+    if (next.lifecycleState !== "ready") return;
+    for (const ticketId of this._claimIntents.keys()) {
+      const ticket = next.tickets[ticketId];
+      if (ticket?.state === "offered") claimOffered(ticket, now, this.configuration.timing);
+    }
+  }
+
+  _notifyAwaiters() {
+    for (const awaiter of [...this._awaiters]) {
+      const ticket = this.state.tickets[awaiter.ticketId];
+      if (!ticket || ticket.revision !== awaiter.afterRevision) awaiter.finish();
+    }
+  }
+
+  // Answers every open await call with the ticket as it stands, so a shutdown never waits on them.
+  releaseAwaiters() {
+    for (const awaiter of [...this._awaiters]) awaiter.finish();
+  }
+
+  get awaiterCount() {
+    return this._awaiters.size;
+  }
+
+  // Holds the caller until its ticket changes revision, or waitMs passes, then returns the ticket.
+  // With claim set, an offer made to the ticket meanwhile is claimed in the same commit, and an
+  // offer already waiting is claimed at once. The queue position belongs to the ticket, not to this
+  // request: a dropped connection loses only the notification, never the place in line.
+  awaitTicket(principal, ticketId, request, { signal, verifyGeneration } = {}) {
+    validateAwaitRequest(request);
+    const checkedPrincipal = assertPrincipalMatches(principal, request);
+    if (!checkedPrincipal.providers.has(this.state.provider)) fail("forbidden_lane", "lane is not allowed");
+    if (!isUuid(ticketId)) fail("not_found", "ticket is unavailable");
+    this._validateCurrent();
+    const current = ticketForOwner(this.state, checkedPrincipal, ticketId);
+    if (current.provider !== request.provider) fail("provider_mismatch", "ticket provider does not match");
+    if (current.accountBindingId !== request.accountBindingId) fail("account_binding_mismatch", "ticket account binding does not match");
+    if (request.claim && current.state === "offered" && this.state.lifecycleState === "ready") {
+      return this._transition((next, now) => {
+        const ticket = ticketForOwner(next, checkedPrincipal, ticketId);
+        if (ticket.state === "offered") claimOffered(ticket, now, this.configuration.timing);
+        return ticketPublic(next, ticket);
+      }, { verifyGeneration });
+    }
+    if (current.revision !== request.afterRevision || current.state !== "queued" || request.waitMs === 0 || this._awaiters.size >= MAX_AWAITERS) return Promise.resolve(ticketPublic(this.state, current));
+    return new Promise((resolve, reject) => {
+      let timer;
+      const awaiter = {
+        ticketId,
+        afterRevision: request.afterRevision,
+        finish: () => {
+          if (!this._awaiters.delete(awaiter)) return;
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          if (request.claim) {
+            const count = (this._claimIntents.get(ticketId) ?? 1) - 1;
+            if (count > 0) this._claimIntents.set(ticketId, count); else this._claimIntents.delete(ticketId);
+          }
+          const ticket = this.state.tickets[ticketId];
+          if (ticket) resolve(ticketPublic(this.state, ticket));
+          else reject(new AuthorityError("not_found", { message: "ticket is unavailable" }));
+        },
+      };
+      const onAbort = () => awaiter.finish();
+      this._awaiters.add(awaiter);
+      if (request.claim) this._claimIntents.set(ticketId, (this._claimIntents.get(ticketId) ?? 0) + 1);
+      timer = setTimeout(awaiter.finish, request.waitMs);
+      timer.unref?.();
+      if (signal?.aborted) awaiter.finish();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   _transition(mutate, { allowDraining = false, verifyGeneration } = {}) {
@@ -1710,6 +1822,7 @@ export class AuthorityState {
       const next = clone(this.state);
       const now = this._now();
       const result = mutate(next, now);
+      this._claimAttached(next, now);
       await this._commit(next, verifyGeneration);
       return result;
     });
@@ -1725,12 +1838,14 @@ export class AuthorityState {
       const changed = expireAndQuarantine(next, now, this.configuration.timing);
       const offered = next.lifecycleState === "ready" ? scheduleOffers(next, now, this.configuration.timing) : [];
       if (!changed && offered.length === 0) return false;
+      this._claimAttached(next, now);
       await this._commit(next);
       return true;
     });
   }
 
-  createTicket(principal, request, { verifyGeneration } = {}) {
+  // claimOnOffer comes from a request header, so an older lane ignores it and answers as before.
+  createTicket(principal, request, { verifyGeneration, claimOnOffer = false } = {}) {
     return this._transition((next, transitionNow) => {
       validateCreateRequest(request);
       const checkedPrincipal = assertPrincipalMatches(principal, request);
@@ -1778,6 +1893,7 @@ export class AuthorityState {
       next.tickets[ticket.ticketId] = ticket;
       addFairnessIdentity(next, checkedPrincipal.installationId, request.sessionId);
       scheduleOffers(next, transitionNow, this.configuration.timing);
+      if (claimOnOffer && ticket.state === "offered") claimOffered(ticket, transitionNow, this.configuration.timing);
       ticket.createResponse = ticketPublic(next, ticket);
       return { ticket: clone(ticket.createResponse), replayed: false, created: true };
     }, { verifyGeneration });
@@ -1808,16 +1924,7 @@ export class AuthorityState {
       if (ticket.revision !== request.expectedRevision) fail("stale_revision", "ticket revision is stale");
       if (action === "claim") {
         if (ticket.state !== "offered") fail("invalid_transition", "ticket cannot be claimed");
-        ticket.state = "active";
-        ticket.revision += 1;
-        ticket.lease = {
-          leaseId: crypto.randomUUID(),
-          generation: 1,
-          claimedAtEpochMs: now,
-          renewSequence: 0,
-          renewByEpochMs: now + this.configuration.timing.renewIntervalMs,
-          serverDeadlineEpochMs: now + this.configuration.timing.renewDeadlineMs,
-        };
+        claimOffered(ticket, now, this.configuration.timing);
       } else if (action === "cancel") {
         if (!["queued", "offered"].includes(ticket.state)) fail("invalid_transition", "ticket cannot be cancelled");
         ticket.state = "cancelled";
@@ -1988,7 +2095,7 @@ export class AuthorityState {
       status: this.status,
       provider: this.state.provider,
       port: this.state.port,
-      capabilities: ["tickets", "snapshot", "allowance"],
+      capabilities: ["tickets", "snapshot", "allowance", "ticket-await"],
       active: counts.active,
       offered: counts.offered,
       uncertain: counts.uncertain,

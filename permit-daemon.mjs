@@ -234,6 +234,22 @@ function startAuthorityDaemon() {
         authorityReply(res, 200, authority.snapshot({ instanceId, buildId }));
         return;
       }
+      // An await call is held open outside the serialized mutation queue; only an immediate claim it
+      // makes joins the queue, after its body has been read in full.
+      const awaited = pathname.match(/^\/v1\/tickets\/([0-9a-f-]{36})\/await$/i);
+      if (req.method === "POST" && awaited) {
+        const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
+        const requestBody = await authorityRequestBody(req);
+        const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
+        const closed = new AbortController();
+        res.once("close", () => closed.abort());
+        // The authority serializes the immediate claim with every other write; shutdown waits for it
+        // through awaitIdle and answers open await calls through releaseAwaiters.
+        const result = await authority.awaitTicket(authenticated.principal, awaited[1], requestBody, { signal: closed.signal, verifyGeneration });
+        if (closed.signal.aborted || res.writableEnded) return;
+        authorityReply(res, 200, result, { etag: `"revision-${result.revision}"` });
+        return;
+      }
       const ticket = pathname.match(/^\/v1\/tickets\/([0-9a-f-]{36})(?:\/(claim|cancel|renew|complete))?$/i);
       if (req.method === "GET" && ticket && !ticket[2]) {
         const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
@@ -245,7 +261,8 @@ function startAuthorityDaemon() {
         const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
         const requestBody = await authorityRequestBody(req);
         const verifyGeneration = authorityPrecommitVerifier(req, "permit:mutate", configuration, authority, authenticated);
-        const result = await serializeAuthorityMutation(() => authority.createTicket(authenticated.principal, requestBody, { verifyGeneration }));
+        const claimOnOffer = req.headers["x-permit-claim-on-offer"] === "1";
+        const result = await serializeAuthorityMutation(() => authority.createTicket(authenticated.principal, requestBody, { verifyGeneration, claimOnOffer }));
         const headers = { etag: `"revision-${result.ticket.revision}"`, location: `/v1/tickets/${result.ticket.ticketId}` };
         if (result.replayed) headers["idempotency-replayed"] = "true";
         authorityReply(res, result.created ? 201 : 200, result.ticket, headers);
@@ -327,6 +344,7 @@ function startAuthorityDaemon() {
     if (shuttingDown) return;
     shuttingDown = true;
     if (reconcileTimer) clearInterval(reconcileTimer);
+    authority?.releaseAwaiters();
     const listenerClosed = closeAuthorityServer();
     let deadline;
     try {
