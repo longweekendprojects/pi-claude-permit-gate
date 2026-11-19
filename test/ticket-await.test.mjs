@@ -102,6 +102,10 @@ test("open await calls are answered when the lane releases them, and malformed o
   const pending = gate.authority.awaitTicket(principal, waiter.ticketId, awaitBody(waiter.revision, { waitMs: 25_000 }));
   gate.authority.releaseAwaiters();
   assert.equal((await pending).state, "queued");
+  // Once released for shutdown, a late call is answered at once instead of holding the shutdown up.
+  const started = Date.now();
+  assert.equal((await gate.authority.awaitTicket(principal, waiter.ticketId, awaitBody(waiter.revision, { waitMs: 25_000 }))).state, "queued");
+  assert.ok(Date.now() - started < 1_000);
   assert.throws(() => gate.authority.awaitTicket(principal, waiter.ticketId, awaitBody(waiter.revision, { waitMs: 25_001 })), (error) => error instanceof AuthorityError && error.code === "invalid_request");
   const stranger = { installationId: uuid(77), accountBindingId: BINDING, providers: ["anthropic-a"] };
   assert.throws(() => gate.authority.awaitTicket(stranger, waiter.ticketId, { ...awaitBody(waiter.revision), installationId: uuid(77) }), (error) => error instanceof AuthorityError && error.code === "not_found");
@@ -211,6 +215,44 @@ test("an acquisition aborted while its create is in flight releases the lease th
   const lost = client(gate, { request: slowRequest }, 1);
   await assert.rejects(lost.acquire("anthropic-a", controller.signal), { name: "AbortError" });
   assert.equal(link.calls.filter((call) => call === "POST /v1/tickets").length, 2);
+  const health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
+  assert.equal(health.active + health.offered, 0);
+});
+
+test("an await call answered at once with nothing new does not make the client spin", async (t) => {
+  const gate = await lane(t);
+  const link = transport(gate);
+  const first = client(gate, link, 1); const second = client(gate, link, 2, { awaitMs: 0 });
+  const stop = stopper(t); const held = await first.acquire("anthropic-a");
+  const waiting = second.acquire("anthropic-a", stop);
+  await delay(300);
+  const awaits = link.calls.filter((call) => call === "POST /v1/tickets/*/await").length;
+  assert.ok(awaits > 2 && awaits < 40, `saw ${awaits} await calls in 300 ms`);
+  await first.complete(held);
+  await second.complete(await waiting);
+});
+
+test("an acquisition aborted after its slot was claimed releases the lease, even when the cancel finds it claimed", async (t) => {
+  const gate = await lane(t);
+  const link = transport(gate);
+  const first = client(gate, link, 1);
+  const held = await first.acquire("anthropic-a");
+  const controller = new AbortController();
+  let queuedSnapshot; let staleGets = 0;
+  // The await reply that carries the claimed lease is lost to the abort, and the first read in the
+  // cleanup still sees the queued ticket, so the cleanup tries to cancel a ticket that now holds a lease.
+  const lossy = async (input) => {
+    if (input.pathname.endsWith("/await")) { const reply = await link.request({ ...input, signal: undefined }); controller.abort(); const error = new Error("aborted"); error.name = "AbortError"; void reply; throw error; }
+    if (input.method === "GET" && /\/v1\/tickets\/[0-9a-f-]{36}$/.test(input.pathname) && controller.signal.aborted && staleGets++ === 0) return { status: 200, body: queuedSnapshot };
+    const reply = await link.request(input);
+    if (input.method === "POST" && input.pathname === "/v1/tickets" && reply.body.state === "queued") queuedSnapshot = reply.body;
+    return reply;
+  };
+  const second = client(gate, { request: lossy }, 2);
+  const waiting = second.acquire("anthropic-a", controller.signal);
+  await delay(50);
+  await first.complete(held);
+  await assert.rejects(waiting, { name: "AbortError" });
   const health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
   assert.equal(health.active + health.offered, 0);
 });

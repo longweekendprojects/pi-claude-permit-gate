@@ -1758,6 +1758,7 @@ export class AuthorityState {
 
   // Answers every open await call with the ticket as it stands, so a shutdown never waits on them.
   releaseAwaiters() {
+    this._awaitersClosed = true;
     for (const awaiter of [...this._awaiters]) awaiter.finish();
   }
 
@@ -1785,7 +1786,7 @@ export class AuthorityState {
         return ticketPublic(next, ticket);
       }, { verifyGeneration });
     }
-    if (current.revision !== request.afterRevision || current.state !== "queued" || request.waitMs === 0 || this._awaiters.size >= MAX_AWAITERS) return Promise.resolve(ticketPublic(this.state, current));
+    if (current.revision !== request.afterRevision || current.state !== "queued" || request.waitMs === 0 || this._awaitersClosed || this._awaiters.size >= MAX_AWAITERS) return Promise.resolve(ticketPublic(this.state, current));
     return new Promise((resolve, reject) => {
       let timer;
       const awaiter = {
