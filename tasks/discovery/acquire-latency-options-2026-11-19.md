@@ -187,3 +187,9 @@ This was not on your list.
 - Whether the Pi runtime reuses TLS connections. `defaultAuthorityRequest` uses the default agent (index.ts:271); if every request does a new handshake, an explicit keep-alive agent could save a round trip or more per request. Measure before changing.
 - The production timing values; taken from scripts/cutover-ruminaider.sh.
 - Why lane C holds about 1,400 replays. I assume three live probers plus retired installation ids; the state file was not read.
+## Deployed (v0.4.25, 2026-11-19 14:53 UTC)
+- Options 2 and 3 shipped together, plus a clone of the accepted allowance in the publish result (the only object that shared windows with committed state). Independent review: safe to deploy.
+- Offline on copies of the four live lane states, on the authority host, without the fence: one mutation about 60 ms to 22 ms; GET after a mutation 16 ms to 0; replays about 1,420 to 48 per lane; v0.4.23 reopened and kept working on the trimmed copies.
+- Live: all four lanes restarted once in 4 s (terms A38, B31, C38, D27), limits kept (20/20/20/4). After the first publishes, lanes A, B, C hold 48 replays and 0.8 MB each; prober publishes return HTTP 200. Lane D trims on its next publish.
+- Harness on idle lane D (2 clients, 6 cycles, 300 ms hold, client v0.4.24): acquire median 424 ms to 280 ms, p90 650 to 393; complete median 211 to 148.
+- Pre-install copies: path in /tmp/permit-backup-path on the server. Roll back one lane with `scripts/install-authority.sh --rollback-lane anthropic-<x>`.
