@@ -1883,7 +1883,9 @@ export class AuthorityState {
       next.publisherSequences[sequenceKey] = request.publisherSequence;
       next.allowancePublishes[key] = { fingerprint, allowance: clone(allowance), receivedAtEpochMs: transitionNow };
       trimAllowanceReplays(next);
-      return { accepted: allowance, publishId: request.publishId, replayed: false };
+      // A clone, because `allowance` shares its windows with the committed state and nothing
+      // revalidates committed state between commits.
+      return { accepted: clone(allowance), publishId: request.publishId, replayed: false };
     }, { verifyGeneration });
   }
 
