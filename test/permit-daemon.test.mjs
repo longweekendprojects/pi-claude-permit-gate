@@ -1226,6 +1226,65 @@ test("authority persists allowance scope, skew, replay, and accepted truth acros
   assert.equal(snapshot.allowance.observedAtEpochMs, newest.observedAtEpochMs); assert.equal(snapshot.allowance.fiveHour.status, "warning"); assert.equal("installationId" in snapshot, false);
 });
 
+test("allowance replays keep each installation's newest eight publications, including installations that stopped publishing", async (t) => {
+  const gate = await durableAuthority(t);
+  const active = authorityPrincipal(41);
+  const retired = authorityPrincipal(42);
+  const publication = (principal, sequence, id) => ({ schemaVersion: 1, installationId: principal.installationId, provider: "anthropic-a", accountBindingId: principal.accountBindingId, publishId: authorityUuid(id), publisherSequence: sequence, observedAtEpochMs: gate.time.now, fiveHour: null, sevenDay: null });
+  const replaysOf = (state, principal) => Object.keys(state.allowancePublishes).filter((key) => key.startsWith(`${principal.installationId}\u0000`));
+  const sequencesOf = (state, principal) => replaysOf(state, principal).map((key) => JSON.parse(state.allowancePublishes[key].fingerprint).publisherSequence).sort((left, right) => left - right);
+
+  // An installation that published once holds one record; build the ledger an older release left
+  // behind for it: twenty records it will never extend.
+  await gate.authority.publishAllowance(retired, publication(retired, 1, 1001));
+  const legacy = JSON.parse(await fs.readFile(gate.statePath, "utf8"));
+  const [firstKey] = replaysOf(legacy, retired);
+  for (let sequence = 2; sequence <= 20; sequence += 1) {
+    const request = publication(retired, sequence, 1000 + sequence);
+    const fingerprint = JSON.stringify(Object.fromEntries(Object.entries(request).sort(([left], [right]) => (left < right ? -1 : 1))));
+    legacy.allowancePublishes[`${retired.installationId}\u0000anthropic-a\u0000${request.publishId}`] = { ...legacy.allowancePublishes[firstKey], fingerprint };
+  }
+  legacy.publisherSequences[`${retired.installationId}\u0000anthropic-a`] = 20;
+  await fs.writeFile(gate.statePath, `${JSON.stringify(legacy)}\n`); await fs.chmod(gate.statePath, 0o600);
+  gate.restart();
+  assert.equal(replaysOf(gate.authority.state, retired).length, 20, "a state left by an older release still opens");
+
+  // Another installation's publications trim the retired ledger and cap its own.
+  for (let sequence = 1; sequence <= 12; sequence += 1) await gate.authority.publishAllowance(active, publication(active, sequence, 2000 + sequence));
+  const persisted = JSON.parse(await fs.readFile(gate.statePath, "utf8"));
+  assert.deepEqual(sequencesOf(persisted, active), [5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.deepEqual(sequencesOf(persisted, retired), [13, 14, 15, 16, 17, 18, 19, 20], "the newest sequence is kept");
+
+  // A third installation below the limit keeps everything.
+  const small = authorityPrincipal(43);
+  for (let sequence = 1; sequence <= 3; sequence += 1) await gate.authority.publishAllowance(small, publication(small, sequence, 3000 + sequence));
+  assert.deepEqual(sequencesOf(gate.authority.state, small), [1, 2, 3]);
+
+  // The trimmed state reopens, a recent publish still replays, and a trimmed one is stale.
+  gate.restart();
+  const recent = await gate.authority.publishAllowance(active, publication(active, 12, 2012));
+  assert.equal(recent.replayed, true);
+  await assert.rejects(() => gate.authority.publishAllowance(active, publication(active, 4, 2004)), (error) => error instanceof AuthorityError && error.code === "stale_revision");
+  await assert.rejects(() => gate.authority.publishAllowance(retired, publication(retired, 5, 1005)), (error) => error instanceof AuthorityError && error.code === "stale_revision");
+  const retiredLatest = await gate.authority.publishAllowance(retired, publication(retired, 20, 1020));
+  assert.equal(retiredLatest.replayed, true);
+});
+
+test("a committed state is validated once, not again by the next request", async (t) => {
+  const gate = await durableAuthority(t);
+  const principal = authorityPrincipal(44);
+  const created = await gate.authority.createTicket(principal, ticketCreate(principal, { session: authorityUuid(240), request: authorityUuid(340), now: gate.time.now }));
+  assert.equal(gate.authority._validatedState, gate.authority.state, "the commit marks the state it validated");
+  const committed = gate.authority.state;
+  assert.equal(gate.authority.getTicket(principal, created.ticket.ticketId).ticketId, created.ticket.ticketId);
+  assert.equal(gate.authority.state, committed);
+  await gate.authority.publishAllowance(principal, { schemaVersion: 1, installationId: principal.installationId, provider: "anthropic-a", accountBindingId: principal.accountBindingId, publishId: authorityUuid(640), publisherSequence: 1, observedAtEpochMs: gate.time.now, fiveHour: null, sevenDay: null });
+  assert.equal(gate.authority._validatedState, gate.authority.state);
+  // A restart still validates the stored state in full.
+  gate.restart();
+  assert.equal(gate.authority.getTicket(principal, created.ticket.ticketId).ticketId, created.ticket.ticketId);
+});
+
 test("a busy lane ledger keeps a small working set plus every terminal record under ten minutes old", () => {
   const now = 10 * AUTHORITY_TIMING.terminalRetentionMs;
   const build = (count, oldCount) => { const tickets = {}; for (let index = 0; index < count; index += 1) {

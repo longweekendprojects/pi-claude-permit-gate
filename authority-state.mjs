@@ -19,7 +19,10 @@ const MAX_NONTERMINAL_PER_INSTALLATION = 128;
 const MAX_NONTERMINAL_PER_LANE = 256;
 const MAX_RETAINED_RECORDS = 4096;
 const MAX_OPERATION_RESULTS = 32;
+// The validation bound stays at 256 so states written before the trim below still open, and so a
+// rollback to an older release reads a trimmed state.
 const MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION = 256;
+const RETAINED_ALLOWANCE_REPLAYS_PER_INSTALLATION = 8;
 const MAX_ALLOWANCE_REPLAY_RECORDS = MAX_INSTALLATIONS * MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION;
 const MAX_FINGERPRINT_LENGTH = 16_384;
 const MAX_REQUEST_AGE_MS = 30_000;
@@ -1454,6 +1457,26 @@ function publisherSequenceKey(installationId, provider) {
   return `${installationId}\u0000${provider}`;
 }
 
+// Publishers send a fresh publish ID on every publication, so only a retry of a recent one can
+// replay. Each installation keeps its newest few records, ordered by its publisher sequence. That
+// keeps the record holding the stored sequence and the one matching the current allowance, both of
+// which validation requires. An installation that stopped publishing is trimmed too; before, it kept
+// a full replay ledger for good, and every commit validated and rewrote it.
+function trimAllowanceReplays(state) {
+  const byInstallation = new Map();
+  for (const [key, replay] of Object.entries(state.allowancePublishes)) {
+    const { installationId } = parsePublisherKey(key, true);
+    const records = byInstallation.get(installationId) ?? [];
+    records.push({ key, sequence: JSON.parse(replay.fingerprint).publisherSequence });
+    byInstallation.set(installationId, records);
+  }
+  for (const records of byInstallation.values()) {
+    if (records.length <= RETAINED_ALLOWANCE_REPLAYS_PER_INSTALLATION) continue;
+    records.sort((left, right) => right.sequence - left.sequence);
+    for (const { key } of records.slice(RETAINED_ALLOWANCE_REPLAYS_PER_INSTALLATION)) delete state.allowancePublishes[key];
+  }
+}
+
 // Every commit clones, validates, and rewrites the whole lane state, so its cost grows with the
 // number of retained records. A busy lane that kept a day of terminal records held about 13 MB,
 // and each mutation then took about 0.35 s against 0.15 s on a small lane. Mutations run one at a
@@ -1596,6 +1619,8 @@ export class AuthorityState {
         throw verifierFault();
       }
       this.state = next;
+      // The commit validated `next` and nothing changes it afterwards.
+      this._validatedState = next;
     });
   }
 
@@ -1672,6 +1697,9 @@ export class AuthorityState {
       this._degrade(error);
     }
     this.state = next;
+    // The commit validated `next` and nothing changes it afterwards, so the next request skips a
+    // second whole-state validation of the same object.
+    this._validatedState = next;
   }
 
   _transition(mutate, { allowDraining = false, verifyGeneration } = {}) {
@@ -1854,13 +1882,7 @@ export class AuthorityState {
       next.allowance = { ...allowance, receivedAtEpochMs: transitionNow };
       next.publisherSequences[sequenceKey] = request.publisherSequence;
       next.allowancePublishes[key] = { fingerprint, allowance: clone(allowance), receivedAtEpochMs: transitionNow };
-      const principalKeys = Object.entries(next.allowancePublishes)
-        .filter(([entry]) => entry.startsWith(`${checkedPrincipal.installationId}\u0000`))
-        .sort(([, left], [, right]) => left.receivedAtEpochMs - right.receivedAtEpochMs);
-      while (principalKeys.length > MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION) {
-        const [oldest] = principalKeys.shift();
-        delete next.allowancePublishes[oldest];
-      }
+      trimAllowanceReplays(next);
       return { accepted: allowance, publishId: request.publishId, replayed: false };
     }, { verifyGeneration });
   }
