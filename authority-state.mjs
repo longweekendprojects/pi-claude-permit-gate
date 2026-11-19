@@ -1808,8 +1808,8 @@ export class AuthorityState {
       const onAbort = () => awaiter.finish();
       this._awaiters.add(awaiter);
       if (request.claim) this._claimIntents.set(ticketId, (this._claimIntents.get(ticketId) ?? 0) + 1);
+      // Kept referenced: the caller is waiting on this timer, and it never outlives 25 seconds or a shutdown.
       timer = setTimeout(awaiter.finish, request.waitMs);
-      timer.unref?.();
       if (signal?.aborted) awaiter.finish();
       else signal?.addEventListener("abort", onAbort, { once: true });
     });
