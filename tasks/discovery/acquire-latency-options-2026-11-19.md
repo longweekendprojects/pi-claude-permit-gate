@@ -193,3 +193,12 @@ This was not on your list.
 - Live: all four lanes restarted once in 4 s (terms A38, B31, C38, D27), limits kept (20/20/20/4). After the first publishes, lanes A, B, C hold 48 replays and 0.8 MB each; prober publishes return HTTP 200. Lane D trims on its next publish.
 - Harness on idle lane D (2 clients, 6 cycles, 300 ms hold, client v0.4.24): acquire median 424 ms to 280 ms, p90 650 to 393; complete median 211 to 148.
 - Pre-install copies: path in /tmp/permit-backup-path on the server. Roll back one lane with `scripts/install-authority.sh --rollback-lane anthropic-<x>`.
+
+## Deployed (v0.4.26 client, v0.4.27 server, 2026-11-19 23:16 UTC)
+- Held await with claim-on-offer, claim on create through `x-permit-claim-on-offer`, and ledger writes only when the ticket changes. The earlier "do not build long-poll" concerns are handled: the queue position belongs to the ticket, shutdown answers open awaits first (`releaseAwaiters`), and held awaits never enter the mutation queue.
+- v0.4.26 left the await timer unref'd; under Node 22 a test with only that timer pending lost its promise. v0.4.27 keeps it referenced. The full suite passes on the authority host's Node 22.19.
+- Offline on copies of the four live lane states: the new code opened each, claimed on create, ran an await and a reconcile; the d328821 release then reopened every copy.
+- Live: all four lanes restarted once within 3 s (terms A43, B34, C41, D28), limits kept (A28, B24, C24, D4). Release watch started for 60 min.
+- Lane D canary from aviary: a free slot takes 163 ms p50 (277 ms on v0.4.26 against the old server, 342 ms on v0.4.25). With 8 clients on 4 slots and a 400 ms hold, the new client acquires in 541 ms p50 and 930 ms p90, using 26 await calls and no claim or poll; the v0.4.25 client on the same server took 2,164 ms p50 and 2,864 ms p90, with 32 claims and 68 polls.
+- Albot's first 449 review acquisitions after the deploy: all acquired, 202 ms p50 and 742 ms p90, two ledger writes each and no claim calls. Load was lighter than the pre-deploy sample, so the before and after totals are not like for like.
+- Pre-install copies: path in /tmp/permit-backup-path on the server.
