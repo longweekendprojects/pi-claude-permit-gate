@@ -256,3 +256,135 @@ test("an acquisition aborted after its slot was claimed releases the lease, even
   const health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
   assert.equal(health.active + health.offered, 0);
 });
+
+// The health answer is kept per lane, so only the first acquisition in a window pays its round trip.
+const healthCalls = (link) => link.calls.filter((call) => call === "GET /v1/health").length;
+const cycle = async (instance) => { const held = await instance.acquire("anthropic-a"); assert.equal(held.ticket.state, "active"); await instance.complete(held); };
+// Moves Date.now for the client and the lane together, so a test covers minutes of outage or cache age without waiting.
+const clock = (t) => { const real = Date.now; let skew = 0; Date.now = () => real() + skew; t.after(() => { Date.now = real; }); return { advance: (ms) => { skew += ms; } }; };
+
+test("a client asks a lane for its health once across acquisitions, again after healthCacheMs, and every time when it is 0", async (t) => {
+  const kept = await lane(t); const keptLink = transport(kept); const keeping = client(kept, keptLink, 1);
+  await cycle(keeping); await cycle(keeping); await cycle(keeping);
+  assert.equal(healthCalls(keptLink), 1);
+  assert.equal(keptLink.calls.filter((call) => call === "POST /v1/tickets").length, 3);
+  const time = clock(t); const brief = await lane(t); const briefLink = transport(brief); const expiring = client(brief, briefLink, 2, { healthCacheMs: 60_000 });
+  await cycle(expiring); time.advance(59_000); await cycle(expiring);
+  assert.equal(healthCalls(briefLink), 1);
+  time.advance(1_100); await cycle(expiring);
+  assert.equal(healthCalls(briefLink), 2);
+  const off = await lane(t); const offLink = transport(off); const asking = client(off, offLink, 3, { healthCacheMs: 0 });
+  await cycle(asking); await cycle(asking);
+  assert.equal(healthCalls(offLink), 2);
+});
+
+test("an acquisition that fails drops the kept health answer, and an invalid answer is never kept", async (t) => {
+  const gate = await lane(t); const link = transport(gate);
+  let refuseCreate = false; let wrongAuthority = false;
+  const request = async (input) => {
+    if (refuseCreate && input.method === "POST" && input.pathname === "/v1/tickets") { link.calls.push("POST /v1/tickets"); return { status: 400, body: { error: { code: "invalid_request", message: "create refused" } } }; }
+    const reply = await link.request(input);
+    return wrongAuthority && input.pathname === "/v1/health" ? { ...reply, body: { ...reply.body, authorityId: uuid(99) } } : reply;
+  };
+  const instance = client(gate, link, 1, { request });
+  await cycle(instance);
+  assert.equal(healthCalls(link), 1);
+  refuseCreate = true;
+  await assert.rejects(instance.acquire("anthropic-a"), /create refused/);
+  assert.equal(healthCalls(link), 1);
+  refuseCreate = false; wrongAuthority = true;
+  await assert.rejects(instance.acquire("anthropic-a"), /authority health identity is invalid/);
+  assert.equal(healthCalls(link), 2);
+  wrongAuthority = false;
+  await cycle(instance);
+  assert.equal(healthCalls(link), 3);
+  await cycle(instance);
+  assert.equal(healthCalls(link), 3);
+});
+
+test("a kept health answer that names ticket-await still polls and claims once the lane has lost the await route", async (t) => {
+  const gate = await lane(t); const link = transport(gate);
+  let awaitGone = false;
+  const request = async (input) => {
+    if (awaitGone && input.method === "POST" && input.pathname.endsWith("/await")) { link.calls.push("POST /v1/tickets/*/await"); return { status: 404, body: { error: { code: "not_found", message: "authority route is unavailable" } } }; }
+    return link.request(input);
+  };
+  const first = client(gate, link, 1); const second = client(gate, link, 2, { request });
+  await cycle(second);
+  assert.equal(healthCalls(link), 1);
+  const stop = stopper(t); const held = await first.acquire("anthropic-a");
+  awaitGone = true; link.calls.length = 0;
+  const waiting = second.acquire("anthropic-a", stop);
+  await delay(50);
+  await first.complete(held);
+  const acquired = await waiting;
+  assert.equal(acquired.ticket.state, "active");
+  assert.equal(healthCalls(link), 0, "the waiting client used its kept answer");
+  assert.equal(link.calls.filter((call) => call === "POST /v1/tickets/*/await").length, 1);
+  assert.ok(link.calls.includes("GET /v1/tickets/*"));
+  await second.complete(acquired);
+});
+
+test("a create left unanswered through an outage longer than the authority's request window is sent again with a fresh identity", async (t) => {
+  const time = clock(t); const gate = await lane(t); const link = transport(gate);
+  let down = false; let waited = 0;
+  const request = async (input) => { if (down) { link.calls.push(`${input.method} unreachable`); throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }); } return link.request(input); };
+  const wait = async (ms) => { time.advance(ms); waited += ms; if (waited >= 32_000) down = false; };
+  const instance = client(gate, link, 1, { request, wait });
+  await cycle(instance);
+  assert.equal(healthCalls(link), 1);
+  const firstId = Object.values(instance.ledger().tickets).map((record) => record.requestId);
+  down = true; link.calls.length = 0;
+  const held = await instance.acquire("anthropic-a");
+  assert.equal(held.ticket.state, "active");
+  assert.ok(waited >= 32_000, "the acquisition waited through the outage");
+  assert.equal(link.calls[0], "POST unreachable", "the create went out first, under the kept answer");
+  assert.equal(healthCalls(link), 1, "the lane was asked again once it answered");
+  assert.equal(link.calls.filter((call) => call === "POST /v1/tickets").length, 2, "the aged create was refused, then sent with a fresh identity");
+  assert.ok(!firstId.includes(held.requestId));
+  await instance.complete(held);
+  const health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
+  assert.equal(health.active + health.offered + health.queued, 0);
+});
+
+test("a create the authority refuses as invalid is not sent again when no earlier attempt went unanswered", async (t) => {
+  const time = clock(t); const gate = await lane(t); const link = transport(gate);
+  let waited = 0;
+  // 503 replies without an error body keep the identity, as a lost reply does, until the timestamp is past the window.
+  const request = async (input) => { if (waited < 32_000 && input.method === "POST" && input.pathname === "/v1/tickets") { link.calls.push("POST refused"); return { status: 503, headers: {}, body: {} }; } return link.request(input); };
+  const wait = async (ms) => { time.advance(ms); waited += ms; };
+  const instance = client(gate, link, 1, { request, wait, healthCacheMs: 0 });
+  await assert.rejects(instance.acquire("anthropic-a"), /request rejected/);
+  assert.equal(link.calls.filter((call) => call === "POST /v1/tickets").length, 1);
+  assert.equal(healthCalls(link), 1, "a health answer asked for by this acquisition is not asked for again");
+});
+
+test("a lane that starts draining under a kept health answer fails the acquisition at once, as it did when every acquisition asked first", async (t) => {
+  const gate = await lane(t); const link = transport(gate);
+  const instance = client(gate, link, 1);
+  await cycle(instance);
+  assert.equal(healthCalls(link), 1);
+  await gate.authority.drain();
+  await assert.rejects(instance.acquire("anthropic-a"), /authority health identity is invalid/);
+  assert.equal(healthCalls(link), 2);
+  assert.equal(link.calls.filter((call) => call === "POST /v1/tickets").length, 2, "one refused create, then the health answer decided");
+  assert.deepEqual(instance.ledger().tickets, {});
+});
+
+test("a kept health answer is asked for again after a failed create, but not after a refusal by a ready lane", async (t) => {
+  const gate = await lane(t); const link = transport(gate);
+  let reply; let times = 1;
+  const request = async (input) => { if (reply && input.method === "POST" && input.pathname === "/v1/tickets") { const sent = reply; if (--times <= 0) reply = undefined; link.calls.push(`POST ${sent.status}`); return sent; } return link.request(input); };
+  const instance = client(gate, link, 1, { request });
+  await cycle(instance);
+  assert.equal(healthCalls(link), 1);
+  reply = { status: 429, body: { error: { code: "principal_limit", message: "principal ticket limit reached" } } };
+  await cycle(instance);
+  assert.equal(healthCalls(link), 1, "a 429 comes from a ready lane");
+  reply = { status: 503, body: { error: { code: "authority_starting", message: "authority is starting" } } }; times = 3;
+  await cycle(instance);
+  assert.equal(link.calls.filter((call) => call === "POST 503").length, 3);
+  assert.equal(healthCalls(link), 2, "the first 503 asks the lane again, and later ones do not");
+  await cycle(instance);
+  assert.equal(healthCalls(link), 2, "and the new answer is kept");
+});
