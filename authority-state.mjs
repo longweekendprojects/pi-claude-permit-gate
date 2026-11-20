@@ -1514,9 +1514,12 @@ function trimAllowanceReplays(state) {
 // and each mutation then took about 0.35 s against 0.15 s on a small lane. Mutations run one at a
 // time, so claims queued behind them and offered permits sat unused for seconds. Terminal records
 // beyond a small working set are therefore compacted once they are PRESSURE_RETENTION_MS old. Lost
-// replies are retried within seconds, so ten minutes still covers every replay a client can make.
+// replies are retried within seconds, so two minutes still covers every replay a client can make.
+// It was ten minutes until v0.4.29: a lane at 24 requests at once finishes about 1,600 tickets in
+// ten minutes and about 320 in two, and the busy lane is where each commit costs most. A client
+// that completes a compacted ticket gets 404 and treats it as already complete.
 // Records younger than that are always kept, and the hard bound still refuses a create.
-const PRESSURE_RETENTION_MS = 600_000;
+const PRESSURE_RETENTION_MS = 120_000;
 const SOFT_RETAINED_RECORDS = 256;
 
 export function compactRetainedState(state, now, timing) {

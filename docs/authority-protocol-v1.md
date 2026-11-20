@@ -147,7 +147,7 @@ The fixed v1 limits are:
 - finite allowance utilization from 0 through 1,000, reset seconds from 1 through 253402300799, and observed timestamps no more than 30 seconds in the future; and
 - publisher queues capped at 64 pending snapshots per provider and 256 per installation. Newer unsent same-provider observations supersede older unsent observations but never remove an in-flight ID.
 
-A principal/session limit returns `429 principal_limit`. A full lane queue returns `429 lane_limit`. A lane that retains more than 256 records compacts its oldest terminal records that are more than ten minutes old, because every commit rewrites the whole lane state. Only a ledger that is still full returns `503 persistence_unavailable` and stops creates. A completion for a compacted ticket returns `404 not_found`, which the client treats as already complete.
+A principal/session limit returns `429 principal_limit`. A full lane queue returns `429 lane_limit`. A lane that retains more than 256 records compacts its oldest terminal records that are more than two minutes old, because every commit rewrites the whole lane state. Only a ledger that is still full returns `503 persistence_unavailable` and stops creates. A completion for a compacted ticket returns `404 not_found`, which the client treats as already complete.
 
 ## Timing and durable authority state
 
