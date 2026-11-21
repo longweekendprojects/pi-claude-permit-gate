@@ -243,8 +243,9 @@ test("authority-client acquires afresh, once, when the authority forgot a ticket
     keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
     lanes: { "anthropic-a": { port: 8791, accountBindingId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "anthropic-b": { port: 8792, accountBindingId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "anthropic-c": { port: 8793, accountBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, "anthropic-d": { port: 8794, accountBindingId: "ffffffff-ffff-4fff-8fff-ffffffffffff" } },
   };
-  const ticketIds = ["11111111-2222-4222-8222-222222222222", "11111111-3333-4333-8333-333333333333", "11111111-4444-4444-8444-444444444444"];
-  const run = async (forgets) => {
+  const ticketIds = ["11111111-2222-4222-8222-222222222222", "11111111-3333-4333-8333-333333333333", "11111111-4444-4444-8444-444444444444", "11111111-5555-4555-8555-555555555555", "11111111-6666-4666-8666-666666666666", "11111111-7777-4777-8777-777777777777"];
+  const forgotten = { schemaVersion: 1, error: { code: "not_found", message: "ticket is unknown", retryable: false, retryAfterMs: null } };
+  const run = async (states, notFoundBody = forgotten) => {
     let ledger = { schemaVersion: 1, tickets: {} }; let creates = 0; let lookups = 0;
     const client = createAuthorityClient(config, {
       sessionId, token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -252,25 +253,35 @@ test("authority-client acquires afresh, once, when the authority forgot a ticket
       request: async (request) => {
         if (request.pathname === "/v1/health") return { status: 200, body: { schemaVersion: 1, protocolVersion: 2, authorityId: config.expectedAuthorityId, instanceId: "33333333-3333-4333-8333-333333333333", provider: "anthropic-a", port: 8791, stateSchemaVersion: 2, status: "ready" } };
         if (request.pathname === "/v1/tickets") {
-          const ticketId = ticketIds[creates++]; const queued = creates <= forgets;
-          return { status: 201, body: { schemaVersion: 1, ticketId, requestId: request.body.requestId, provider: "anthropic-a", state: queued ? "queued" : "active", revision: 1, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: queued ? null : 2_050, offerExpiresAtEpochMs: queued ? null : 2_100, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: queued ? null : { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
+          const state = states[creates] ?? "active"; const ticketId = ticketIds[creates++]; const queued = state === "queued"; const terminal = state === "cancelled";
+          return { status: 201, body: { schemaVersion: 1, ticketId, requestId: request.body.requestId, provider: "anthropic-a", state, revision: 1, createdAtEpochMs: 2_000, enqueuedAtEpochMs: 2_001, offeredAtEpochMs: queued || terminal ? null : 2_050, offerExpiresAtEpochMs: queued || terminal ? null : 2_100, terminalAtEpochMs: terminal ? 2_050 : null, terminalReason: terminal ? "client_cancelled" : null, queueAhead: 0, lease: queued || terminal ? null : { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 2_100, renewSequence: 0, renewByEpochMs: 2_200, serverDeadlineEpochMs: 2_300 } } };
         }
         // The machine slept: the queued ticket expired and the authority has since forgotten it.
-        if (ticketIds.some((id) => request.pathname.includes(id))) { lookups++; return { status: 404, body: { schemaVersion: 1, error: { code: "not_found", message: "ticket is unknown", retryable: false, retryAfterMs: null } } }; }
+        if (ticketIds.some((id) => request.pathname.includes(id))) { lookups++; return { status: 404, body: notFoundBody }; }
         throw new Error(`unexpected authority request ${request.pathname}`);
       },
     });
     return { result: await client.acquire("anthropic-a").then((record) => record, (error) => error), creates: () => creates, lookups: () => lookups, ledger: () => ledger };
   };
-  const once = await run(1);
+  const once = await run(["queued"]);
   assert.equal(once.result.ticket?.ticketId, ticketIds[1]);
   assert.equal(once.result.ticket.state, "active");
   assert.deepEqual([once.creates(), once.lookups()], [2, 1]);
   assert.equal(Object.keys(once.ledger().tickets).length, 1);
   // A second forgotten ticket in the same acquisition is a fault, not a loop.
-  const twice = await run(2);
-  assert.ok(twice.result instanceof Error, "the second 404 must surface");
+  const twice = await run(["queued", "queued"]);
+  assert.equal(twice.result?.response?.status, 404, "the second 404 must surface");
   assert.deepEqual([twice.creates(), twice.lookups()], [2, 2]);
+  // A terminal ticket between two forgotten ones does not renew the single retry.
+  const alternating = await run(["queued", "cancelled", "queued", "cancelled", "queued"]);
+  assert.equal(alternating.result?.response?.status, 404, "the bound must hold across a terminal ticket");
+  assert.deepEqual([alternating.creates(), alternating.lookups()], [3, 2]);
+  // Only the authority's own not_found answer means the ticket is forgotten.
+  for (const body of [{ ok: false, error: "not found" }, {}]) {
+    const other = await run(["queued"], body);
+    assert.equal(other.result?.response?.status, 404, "a 404 without not_found must surface");
+    assert.deepEqual([other.creates(), other.lookups()], [1, 1]);
+  }
 });
 
 test("authority-client discards a persisted record whose reused request id yields an unusable create response", async () => {
