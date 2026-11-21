@@ -406,7 +406,13 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
       // A persisted record can be unusable in ways that only surface on the create path, where it
       // holds no ticket and no pending operation: a reused request id whose original ticket the
       // authority has since compacted still fails validation against the response it returns.
-      const unusableRecord = !staleRecordDiscarded && !!record && recordWasPersisted && (error instanceof AuthorityResponseError ? !error.retryable : error instanceof Error && ["authority create response is invalid", "authority ticket identity is invalid", "authority retry state is invalid"].includes(error.message));
+      // A ticket this acquisition created can also become unknown to the authority while it waits:
+      // a machine that sleeps with a queued ticket loses it to expiry, and the authority forgets a
+      // finished ticket two minutes later. A 404 for the ticket means the authority holds nothing
+      // under it, so the record is dropped and one fresh acquisition is made instead of failing
+      // the request with "request rejected".
+      const forgottenTicket = !!record?.ticket && error instanceof AuthorityResponseError && error.response?.status === 404 && error.response.body?.error?.code === "not_found";
+      const unusableRecord = !staleRecordDiscarded && !!record && (forgottenTicket || recordWasPersisted && (error instanceof AuthorityResponseError ? !error.retryable : error instanceof Error && ["authority create response is invalid", "authority ticket identity is invalid", "authority retry state is invalid"].includes(error.message)));
       if (unusableRecord) { await remove(record!); return acquireOne(provider, signal, true); }
       // A record that never received a ticket holds no authority state, so leaving it would only grow the ledger.
       if (record && !record.ticket) await remove(record).catch(() => {});
