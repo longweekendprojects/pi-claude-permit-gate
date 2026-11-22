@@ -33,7 +33,8 @@ function clientLedgerScan() {
   const files = [CLIENT_LEDGER]; const locks = [`${CLIENT_LEDGER}.lock`];
   try { for (const name of fs.readdirSync(CLIENT_LEDGER_V2)) { if (/^[0-9a-f]{32}\.json$/.test(name)) files.push(path.join(CLIENT_LEDGER_V2, name)); else if (/^[0-9a-f]{32}\.json\.lock$/.test(name)) locks.push(path.join(CLIENT_LEDGER_V2, name)); } } catch {}
   let records = 0; let oldestAgeS = 0; let lockAgeS = 0;
-  for (const file of files) { try { const entries = Object.values(JSON.parse(fs.readFileSync(file, "utf8")).tickets ?? {}); records += entries.length; for (const entry of entries) { const age = (Date.now() - (entry.createdAtEpochMs ?? Date.now())) / 1000; if (age > oldestAgeS) oldestAgeS = age; } } catch {} }
+  // The v1 file is no longer pruned once its sessions move to v2, so its records older than a day are dead and not counted.
+  for (const file of files) { try { for (const entry of Object.values(JSON.parse(fs.readFileSync(file, "utf8")).tickets ?? {})) { const age = (Date.now() - (entry.createdAtEpochMs ?? Date.now())) / 1000; if (file === CLIENT_LEDGER && age > 86_400) continue; records++; if (age > oldestAgeS) oldestAgeS = age; } } catch {} }
   for (const lock of locks) { try { lockAgeS = Math.max(lockAgeS, (Date.now() - fs.statSync(lock).mtimeMs) / 1000); } catch {} }
   return { records, oldestAgeS, lockAgeS };
 }

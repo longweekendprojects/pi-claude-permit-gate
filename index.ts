@@ -322,15 +322,18 @@ export function sessionLedgerMutator(statePath: string, options: { flush?: (file
       try { fs.mkdirSync(lock, { mode: 0o700 }); break; } catch (error: any) {
         if (error?.code === "ENOENT") { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); continue; }
         if (error?.code !== "EEXIST") throw error;
-        let age: number; try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
-        if (age > LEDGER_LOCK_STALE_MS) { try { fs.rmdirSync(lock); } catch {} continue; }
         if (performance.now() - started > lockWaitMs) throw new Error("authority retry state is locked");
+        let age: number | undefined; try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
+        // A lock that vanished, or an orphan that could be removed, is retried at once. Anything else waits, so a lock path
+        // that cannot be removed (a file, a non-empty directory) never becomes a busy loop.
+        if (age === undefined) continue;
+        if (age > LEDGER_LOCK_STALE_MS) { try { fs.rmdirSync(lock); continue; } catch {} }
         waited = true; await sleep(pause);
       }
     }
-    if (waited) options.onWait?.(performance.now() - started);
     let wrote = false;
     try {
+      if (waited) options.onWait?.(performance.now() - started);
       const ledger = readSessionLedgerSync(file);
       const result: unknown = mutation(ledger); if (result && typeof (result as any).then === "function") throw new Error("authority retry state mutation must be synchronous");
       if (Object.keys(ledger.tickets).length === 0) { try { fs.unlinkSync(file); } catch (error: any) { if (error?.code !== "ENOENT") throw error; } }
@@ -347,7 +350,10 @@ export function sessionLedgerMutator(statePath: string, options: { flush?: (file
 export async function pruneSessionLedgers(statePath: string, now = Date.now()): Promise<number> {
   const directory = sessionLedgerDirectory(statePath); let removed = 0; let names: string[];
   try { names = await fsp.readdir(directory); } catch { return 0; }
-  for (const name of names) { if (!/^[0-9a-f]{32}\.json(\.lock|\..+\.tmp)?$/.test(name)) continue; const target = path.join(directory, name); try { const stat = await fsp.stat(target); const limit = name.endsWith(".json") ? SESSION_LEDGER_PRUNE_MS : name.endsWith(".lock") ? LEDGER_LOCK_STALE_MS * 4 : 60 * 60_000; if (now - stat.mtimeMs <= limit) continue; if (stat.isDirectory()) await fsp.rmdir(target); else await fsp.unlink(target); removed++; } catch {} }
+  for (const name of names) { if (!/^[0-9a-f]{32}\.json(\.lock|\..+\.tmp)?$/.test(name)) continue; const target = path.join(directory, name); try { const stat = await fsp.stat(target); const limit = name.endsWith(".json") ? SESSION_LEDGER_PRUNE_MS : name.endsWith(".lock") ? LEDGER_LOCK_STALE_MS * 4 : 60 * 60_000; if (now - stat.mtimeMs <= limit) continue; if (stat.isDirectory()) { await fsp.rmdir(target); removed++; continue; } if (!name.endsWith(".json")) { await fsp.unlink(target); removed++; continue; }
+      // A session file is removed under its own lock, after a second look, so a write landing meanwhile is never deleted.
+      const lock = `${target}.lock`; try { fs.mkdirSync(lock, { mode: 0o700 }); } catch { continue; }
+      try { if (now - fs.statSync(target).mtimeMs > limit) { fs.unlinkSync(target); removed++; } } finally { try { fs.rmdirSync(lock); } catch {} } } catch {} }
   return removed;
 }
 export function defaultAuthorityRequest(origin: string): AuthorityRequest { return async ({ method, port, pathname, body, authorization, signal, headers: extraHeaders }) => new Promise((resolve, reject) => { const base = new URL(origin); const payload = body === undefined ? undefined : JSON.stringify(body); const request = https.request({ protocol: "https:", hostname: base.hostname, servername: base.hostname, port, method, path: pathname, headers: { ...(extraHeaders ?? {}), accept: "application/json", authorization, "cache-control": "no-store", "content-type": "application/json", ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (response) => { let text = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { text += chunk; if (Buffer.byteLength(text) > 65_536) request.destroy(new Error("authority response exceeds limit")); }); response.on("end", () => { let parsed: any = {}; try { parsed = text ? JSON.parse(text) : {}; } catch { reject(new Error("authority response is invalid")); return; } resolve({ status: response.statusCode ?? 0, body: parsed, headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value[0] : value])) }); }); }); request.on("error", reject); const abort = () => { reject(abortError()); request.destroy(); }; if (signal?.aborted) { abort(); return; } signal?.addEventListener("abort", abort, { once: true }); request.on("close", () => signal?.removeEventListener("abort", abort)); request.setTimeout(30_000, () => request.destroy(new Error("authority request timed out"))); if (payload !== undefined) request.write(payload); request.end(); }); }
@@ -372,7 +378,7 @@ function validTicket(value: unknown, record: UnresolvedTicket): value is Ticket 
 // each acquisition then appends one line to `acquire-timing.jsonl` there, saying where its time went:
 // Keychain lookups, authority requests, ledger writes, poll waits, and timers that fired late. The
 // flag is read once per acquisition, so it needs no reload, and a failed append is ignored.
-type AcquireTrace = { startedAt: number; spans: Record<string, { n: number; ms: number; max: number }>; polls: number; timerLateMaxMs: number; sawOfferAt?: number };
+type AcquireTrace = { ledger?: "v1" | "v2"; startedAt: number; spans: Record<string, { n: number; ms: number; max: number }>; polls: number; timerLateMaxMs: number; sawOfferAt?: number };
 const TIMING_LOG_MAX_BYTES = 20 * 1024 * 1024;
 function spanAdd(trace: AcquireTrace | undefined, kind: string, started: number) { if (!trace) return; const ms = performance.now() - started; const span = (trace.spans[kind] ??= { n: 0, ms: 0, max: 0 }); span.n++; span.ms += ms; if (ms > span.max) span.max = ms; }
 function spanTook(trace: AcquireTrace | undefined, kind: string, ms: number) { if (!trace) return; const span = (trace.spans[kind] ??= { n: 0, ms: 0, max: 0 }); span.n++; span.ms += ms; if (ms > span.max) span.max = ms; }
@@ -380,7 +386,7 @@ async function spanned<T>(trace: AcquireTrace | undefined, kind: string, work: (
 export function acquireTimingPaths(statePath: string) { const directory = path.dirname(statePath); return { flag: path.join(directory, "acquire-timing.on"), log: path.join(directory, "acquire-timing.jsonl") }; }
 function writeAcquireTrace(log: string, trace: AcquireTrace, provider: string, record: UnresolvedTicket | undefined, outcome: string) {
   const round = (value: number) => Math.round(value * 10) / 10; const ticket = record?.ticket; const lease = ticket?.lease;
-  const line = JSON.stringify({ at: new Date().toISOString(), pid: process.pid, provider, outcome, totalMs: Date.now() - trace.startedAt, polls: trace.polls, timerLateMaxMs: round(trace.timerLateMaxMs),
+  const line = JSON.stringify({ at: new Date().toISOString(), pid: process.pid, provider, outcome, ledger: trace.ledger, totalMs: Date.now() - trace.startedAt, polls: trace.polls, timerLateMaxMs: round(trace.timerLateMaxMs),
     // Authority clock: how long the offer waited for this client's claim.
     offerToClaimMs: ticket?.offeredAtEpochMs != null && lease ? lease.claimedAtEpochMs - ticket.offeredAtEpochMs : null,
     // Mixed clocks, so clock skew is included: authority offer time to the moment this client first read the offer.
@@ -404,9 +410,12 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // memory for a minute. When the authority refuses it (401), send() drops it and reads the Keychain once more, so a
   // rotated token costs one extra request. A read that fails is never kept.
   // One read per reference is in flight at a time, so concurrent requests and a background refresh share it.
-  const tokens = new Map<string, { value: string; at: number }>(); const tokenReads = new Map<string, Promise<string>>();
-  const readToken = (reference: KeychainReference, key: string, background: boolean) => { let pending = tokenReads.get(key); if (!pending) { const read = background ? baseToken(reference) : spanned(trace, "token", () => baseToken(reference)); pending = read.then((value) => { tokens.set(key, { value, at: Date.now() }); return value; }).finally(() => { tokenReads.delete(key); }); tokenReads.set(key, pending); } return pending; };
-  const token = async (reference: KeychainReference) => { const key = `${reference.service}\n${reference.account}`; const kept = tokens.get(key); const age = kept ? Date.now() - kept.at : Infinity; if (kept && age < TOKEN_CACHE_MS) { if (age > TOKEN_CACHE_MS / 2) void readToken(reference, key, true).catch(() => {}); return kept.value; } return readToken(reference, key, false); };
+  // A refused token starts a new generation: reads begun before it neither answer the retry nor refill the cache.
+  const tokens = new Map<string, { value: string; at: number }>(); const tokenReads = new Map<string, Promise<string>>(); let tokenGeneration = 0;
+  const tokenKey = (reference: KeychainReference) => `${reference.service}\n${reference.account}`;
+  const readToken = (reference: KeychainReference, key: string, background: boolean) => { const existing = tokenReads.get(key); if (existing) return existing; const generation = tokenGeneration; const read = background ? baseToken(reference) : spanned(trace, "token", () => baseToken(reference)); const pending: Promise<string> = read.then((value) => { if (generation === tokenGeneration) tokens.set(key, { value, at: Date.now() }); return value; }).finally(() => { if (tokenReads.get(key) === pending) tokenReads.delete(key); }); tokenReads.set(key, pending); return pending; };
+  const freshToken = (reference: KeychainReference) => { tokens.clear(); tokenReads.clear(); tokenGeneration++; return readToken(reference, tokenKey(reference), false); };
+  const token = async (reference: KeychainReference) => { const key = tokenKey(reference); const kept = tokens.get(key); const age = kept ? Date.now() - kept.at : Infinity; if (kept && age < TOKEN_CACHE_MS) { if (age > TOKEN_CACHE_MS / 2) void readToken(reference, key, true).catch(() => {}); return kept.value; } return readToken(reference, key, false); };
   const mutateLedger = (sessionKey: string, mutation: (ledger: AuthorityLedger) => void) => spanned(trace, "ledger", () => baseMutateLedger(sessionKey, mutation));
   const wait = async (ms: number, signal?: AbortSignal) => { const active = trace; const started = performance.now(); try { await baseWait(ms, signal); } finally { if (active) { spanAdd(active, "wait", started); active.timerLateMaxMs = Math.max(active.timerLateMaxMs, performance.now() - started - ms); } } }; const completions = new Map<string, Promise<void>>(); const unboundSessionId = crypto.randomUUID();
   // A renewal still in flight when its lease completes used to save the record back after
@@ -420,7 +429,7 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // Whether the record came from disk decides if it can be discarded on failure: a freshly minted
   // record cannot be the cause, so only a persisted one is ever thrown away.
   const loadOrCreate = async (provider: string): Promise<{ record: UnresolvedTicket; persisted: boolean }> => { const ownerSessionId = options.sessionId ?? (isUuid(sessionId) ? sessionId : unboundSessionId); let record!: UnresolvedTicket; let persisted = false; await mutateLedger(ownerSessionId, (ledger) => { const existing = Object.values(ledger.tickets).find((candidate) => candidate.provider === provider && candidate.sessionId === ownerSessionId); persisted = !!existing; record = existing ?? { provider, requestId: crypto.randomUUID(), sessionId: ownerSessionId, createdAtEpochMs: Date.now() }; ledger.tickets[recordKey(record)] = record; }); return { record, persisted }; };
-  const send = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal, headers?: Record<string, string>): Promise<any> => { for (let reread = false; ; reread = true) { const authorization = `Bearer ${await token(config.keychain.permitMutate)}`; const response = await request({ method, provider, port: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].port, pathname, body, authorization, signal, ...(headers ? { headers } : {}) }); if (response.status >= 200 && response.status < 300) return response.body; if (response.status === 401 && !reread && TOKEN_CACHE_MS > 0) { tokens.clear(); const again = await token(config.keychain.permitMutate).catch(() => undefined); if (again !== undefined && `Bearer ${again}` !== authorization) continue; } throw new AuthorityResponseError(response); } };
+  const send = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal, headers?: Record<string, string>): Promise<any> => { for (let reread = false; ; reread = true) { const authorization = `Bearer ${await token(config.keychain.permitMutate)}`; const response = await request({ method, provider, port: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].port, pathname, body, authorization, signal, ...(headers ? { headers } : {}) }); if (response.status >= 200 && response.status < 300) return response.body; if (response.status === 401 && !reread && TOKEN_CACHE_MS > 0) { const again = await freshToken(config.keychain.permitMutate).catch(() => undefined); if (again !== undefined && `Bearer ${again}` !== authorization) continue; } throw new AuthorityResponseError(response); } };
   const sendRetry = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); try { return await send(method, provider, pathname, body, signal); } catch (error) { if (isAborted(signal) || (error as Error).name === "AbortError") throw abortError(); const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
   const sendOperation = async (provider: string, pathname: string, body: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); try { return await send("POST", provider, pathname, body, signal); } catch (error) { if (isAborted(signal) || (error as Error).name === "AbortError") throw abortError(); const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.response || !failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
   // The health answer proves the lane is this authority and names what it supports. Neither changes between lane
@@ -492,7 +501,7 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
       // A record that never received a ticket holds no authority state, so leaving it would only grow the ledger.
       if (record && !record.ticket) await remove(record).catch(() => {});
       throw error; } };
-  const tracedAcquire = async (provider: string, signal?: AbortSignal): Promise<UnresolvedTicket> => { if (!fs.existsSync(timing.flag)) return acquireOne(provider, signal); const active: AcquireTrace = { startedAt: Date.now(), spans: {}, polls: 0, timerLateMaxMs: 0 }; trace = active; let record: UnresolvedTicket | undefined; let outcome = "acquired"; try { record = await acquireOne(provider, signal); return record; } catch (error) { outcome = isAborted(signal) || (error as Error)?.name === "AbortError" ? "aborted" : "failed"; throw error; } finally { if (trace === active) trace = undefined; writeAcquireTrace(timing.log, active, provider, record, outcome); } };
+  const tracedAcquire = async (provider: string, signal?: AbortSignal): Promise<UnresolvedTicket> => { if (!fs.existsSync(timing.flag)) return acquireOne(provider, signal); const active: AcquireTrace = { ledger: injected ? "v1" : "v2", startedAt: Date.now(), spans: {}, polls: 0, timerLateMaxMs: 0 }; trace = active; let record: UnresolvedTicket | undefined; let outcome = "acquired"; try { record = await acquireOne(provider, signal); return record; } catch (error) { outcome = isAborted(signal) || (error as Error)?.name === "AbortError" ? "aborted" : "failed"; throw error; } finally { if (trace === active) trace = undefined; writeAcquireTrace(timing.log, active, provider, record, outcome); } };
   const acquire = async (provider: string, signal?: AbortSignal): Promise<UnresolvedTicket> => { if (!(AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) throw new Error("provider is not configured for authority mode"); const completion = completions.get(provider); if (completion) { await completion; if (completions.get(provider) === completion) completions.delete(provider); return acquire(provider, signal); } const existing = acquisitions.get(provider); if (existing) return existing; const pending = tracedAcquire(provider, signal); acquisitions.set(provider, pending); void pending.catch(() => { if (acquisitions.get(provider) === pending) acquisitions.delete(provider); }); return pending; };
   const renew = async (record: UnresolvedTicket) => { const lease = record.ticket?.lease; if (!lease || !isUuid(lease.leaseId)) throw new Error("authority lease is invalid"); return operation(record.provider, record, "renew", { leaseId: lease.leaseId, generation: lease.generation, renewSequence: lease.renewSequence + 1 }); };
   // A lease can be retired by the authority while a slow request is still finishing: the client
@@ -510,7 +519,7 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   const abandon = async (record: UnresolvedTicket) => { acquisitions.delete(record.provider); completions.delete(record.provider); await remove(record).catch(() => {}); };
   const cancel = async (record: UnresolvedTicket) => { const cancelled = await operation(record.provider, record, "cancel", {}); if (cancelled.state === "cancelled") { await remove(record); acquisitions.delete(record.provider); } return cancelled; };
   // Reads the token in the background when a session starts, so its first request does not wait on the Keychain.
-  const prefetch = () => { void token(config.keychain.permitMutate).catch(() => {}); };
+  const prefetch = () => { if (TOKEN_CACHE_MS > 0) void token(config.keychain.permitMutate).catch(() => {}); };
   return { abandon, acquire, renew, complete, cancel, health, prefetch };
 }
 let authorityLifecycle: Promise<void> | undefined;
@@ -549,7 +558,7 @@ export default function (pi: ExtensionAPI) {
   const mode = resolveClientMode(); // Configuration is complete before the first hook is registered.
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const authorityClient = mode.mode === "authority-client" ? createAuthorityClient(mode) : undefined;
-  authorityClient?.prefetch();
+  if (authorityClient && !readBypassState(bypassStatePath(process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string)).enabled) authorityClient.prefetch();
   const bypassFile = mode.mode === "authority-client" ? bypassStatePath(process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : undefined;
   const bypassState = (): BypassState => bypassFile ? readBypassState(bypassFile) : { enabled: false, source: "none" };
   const detached = bypassFile ? () => bypassState().enabled : undefined;

@@ -135,3 +135,41 @@ test("CLAUDE_PERMIT_GATE_SESSION_LEDGER=0 keeps the shared v1 file", async (t) =
   assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(statePath, "utf8")).tickets), [`${key}:${record.requestId}`]);
   await assert.rejects(fs.stat(sessionLedgerPath(statePath, key)), { code: "ENOENT" });
 });
+
+test("a lock path that cannot be removed waits out the budget instead of spinning", async (t) => {
+  const statePath = await scratch(t); const key = uuid(); const lock = `${sessionLedgerPath(statePath, key)}.lock`;
+  await fs.mkdir(path.dirname(lock), { recursive: true, mode: 0o700 }); await fs.writeFile(lock, "not a directory"); const old = new Date(Date.now() - 120_000); await fs.utimes(lock, old, old);
+  let ticks = 0; const ticker = setInterval(() => { ticks++; }, 10);
+  await assert.rejects(sessionLedgerMutator(statePath, { flush: () => {}, lockWaitMs: 200 })(key, () => {}), { message: "authority retry state is locked" });
+  clearInterval(ticker); assert.ok(ticks >= 5, `event loop ran ${ticks} timer ticks`);
+});
+
+test("a refused token is read afresh even while an older background read is still running", async (t) => {
+  const statePath = await scratch(t); const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset; t.after(() => { Date.now = realNow; });
+  let reads = 0; let releaseStale; const stale = new Promise((resolve) => { releaseStale = resolve; }); let accepted = tokenValue("t1");
+  const token = async () => { reads++; if (reads === 1) return tokenValue("t1"); if (reads === 2) { await stale; return tokenValue("t1"); } return tokenValue("t2"); };
+  const seen = { authorizations: [] }; const base = authority(seen);
+  const request = async (input) => input.authorization === `Bearer ${accepted}` ? base.request(input) : { status: 401, body: { error: { code: "unauthenticated", message: "bearer is unavailable" } } };
+  const client = createAuthorityClient(config(statePath), { sessionId: uuid(), token, request });
+  await client.complete(await client.acquire("anthropic-a"));
+  offset = 8 * 60_000; await client.complete(await client.acquire("anthropic-a")); assert.equal(reads, 2);
+  // The token rotates while the background read that began before the rotation is still running.
+  accepted = tokenValue("t2");
+  await client.complete(await client.acquire("anthropic-a")); assert.equal(reads, 3);
+  releaseStale(); await new Promise((resolve) => setTimeout(resolve, 10));
+  const before = seen.authorizations.length; await client.complete(await client.acquire("anthropic-a"));
+  assert.ok(seen.authorizations.slice(before).every((value) => value === `Bearer ${tokenValue("t2")}`));
+});
+
+test("pruning leaves a day-old session file alone while its session holds the lock", async (t) => {
+  const statePath = await scratch(t); await fs.mkdir(sessionLedgerDirectory(statePath), { recursive: true, mode: 0o700 });
+  const file = sessionLedgerPath(statePath, uuid()); await fs.writeFile(file, "{}", { mode: 0o600 }); const dayAgo = new Date(Date.now() - 25 * 60 * 60_000); await fs.utimes(file, dayAgo, dayAgo); await fs.mkdir(`${file}.lock`);
+  assert.equal(await pruneSessionLedgers(statePath), 0); assert.ok(fsSync.existsSync(file));
+});
+
+test("an acquisition trace names the ledger it used", async (t) => {
+  const statePath = await scratch(t); const { request } = authority(); await fs.writeFile(path.join(path.dirname(statePath), "acquire-timing.on"), "");
+  await createAuthorityClient(config(statePath), { sessionId: uuid(), token: async () => tokenValue("t"), request }).acquire("anthropic-a");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(JSON.parse((await fs.readFile(path.join(path.dirname(statePath), "acquire-timing.jsonl"), "utf8")).trim()).ledger, "v2");
+});
