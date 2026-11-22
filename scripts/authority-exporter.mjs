@@ -39,17 +39,19 @@ const writeInstances = () => { try { fs.mkdirSync(path.dirname(RESTART_STATE), {
 // a lock directory orphaned by a killed session, is exactly what makes an agent wait forever while
 // every lane metric reads healthy.
 const CLIENT_LEDGER = path.join(os.homedir(), ".pi/agent/claude-permit-gate/authority-client-tickets-v1.json");
+// Clients through v0.4.30 share the v1 file; later clients keep one file per session in the v2 directory.
+const CLIENT_LEDGER_V2 = path.join(path.dirname(CLIENT_LEDGER), "authority-client-tickets-v2");
+function clientLedgerScan() {
+  const files = [CLIENT_LEDGER]; const locks = [`${CLIENT_LEDGER}.lock`];
+  try { for (const name of fs.readdirSync(CLIENT_LEDGER_V2)) { if (/^[0-9a-f]{32}\.json$/.test(name)) files.push(path.join(CLIENT_LEDGER_V2, name)); else if (/^[0-9a-f]{32}\.json\.lock$/.test(name)) locks.push(path.join(CLIENT_LEDGER_V2, name)); } } catch {}
+  let records = 0; let oldestAgeS = 0; let lockAgeS = 0;
+  for (const file of files) { try { const entries = Object.values(JSON.parse(fs.readFileSync(file, "utf8")).tickets ?? {}); records += entries.length; for (const entry of entries) { const age = (Date.now() - (entry.createdAtEpochMs ?? Date.now())) / 1000; if (age > oldestAgeS) oldestAgeS = age; } } catch {} }
+  for (const lock of locks) { try { lockAgeS = Math.max(lockAgeS, (Date.now() - fs.statSync(lock).mtimeMs) / 1000); } catch {} }
+  return { records, oldestAgeS, lockAgeS };
+}
 function clientLedgerMetrics() {
   const lines = [];
-  let records = 0; let oldest = 0;
-  try {
-    const ledger = JSON.parse(fs.readFileSync(CLIENT_LEDGER, "utf8"));
-    const entries = Object.values(ledger.tickets ?? {});
-    records = entries.length;
-    for (const entry of entries) { const age = (Date.now() - (entry.createdAtEpochMs ?? Date.now())) / 1000; if (age > oldest) oldest = age; }
-  } catch {}
-  let lockAge = 0;
-  try { lockAge = (Date.now() - fs.statSync(`${CLIENT_LEDGER}.lock`).mtimeMs) / 1000; } catch {}
+  const { records, oldestAgeS: oldest, lockAgeS: lockAge } = clientLedgerScan();
   lines.push("# HELP claude_client_ledger_records Unresolved permit records held by this machine's Pi sessions.", "# TYPE claude_client_ledger_records gauge", `claude_client_ledger_records ${records}`);
   lines.push("# HELP claude_client_ledger_oldest_age_seconds Age of the oldest unresolved client record. A session stuck waiting shows here while lane metrics look healthy.", "# TYPE claude_client_ledger_oldest_age_seconds gauge", `claude_client_ledger_oldest_age_seconds ${Math.round(oldest)}`);
   lines.push("# HELP claude_client_ledger_lock_age_seconds Age of an orphaned ledger lock. Above zero for long means every acquire on this machine is failing.", "# TYPE claude_client_ledger_lock_age_seconds gauge", `claude_client_ledger_lock_age_seconds ${Math.round(lockAge)}`);

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireAuthority, acquirePermitResponse, bypassStatePath, classifyDaemonHealth, clearBypassState, createAuthorityClient, defaultLedgerWriter, providerPorts, readBypassState, resolveClientMode, writeBypassState } from "../index.ts";
+import { acquireAuthority, acquirePermitResponse, bypassStatePath, classifyDaemonHealth, clearBypassState, createAuthorityClient, defaultLedgerWriter, providerPorts, sessionLedgerDirectory, sessionLedgerPath, readBypassState, resolveClientMode, writeBypassState } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = await fs.readFile(path.join(root, "index.ts"), "utf8");
@@ -158,7 +158,7 @@ test("authority-client rejects mixed configuration and resumes one acknowledged 
   await assert.rejects(activeAbort.acquire("anthropic-a", activeAbortController.signal), { name: "AbortError" }); assert.equal(activeAbortCalls.filter((request) => request.pathname.endsWith("/complete")).length, 1); assert.equal(activeAbortCalls.filter((request) => request.pathname.endsWith("/cancel")).length, 0); assert.deepEqual(activeAbortLedger.tickets, {});
 
   const sharedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "permit-shared-ledger-")); const sharedConfig = { ...config, statePath: path.join(sharedDirectory, "authority-client-tickets-v1.json") }; let sharedCreates = 0;
-  try { const sharedRequest = async (request) => { if (request.pathname === "/v1/health") return { status: 200, body: healthBody }; if (request.pathname === "/v1/tickets") { sharedCreates++; return { status: 201, body: ticketFor(`11111111-0000-4000-8000-00000000000${sharedCreates}`, request.body.requestId, "active", 1) }; } throw new Error(`unexpected shared request ${request.pathname}`); }; const firstProcess = createAuthorityClient(sharedConfig, { token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", request: sharedRequest }); const secondProcess = createAuthorityClient(sharedConfig, { token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", request: sharedRequest }); await Promise.all([firstProcess.acquire("anthropic-a"), secondProcess.acquire("anthropic-a")]); const persisted = JSON.parse(await fs.readFile(sharedConfig.statePath, "utf8")); assert.equal(sharedCreates, 2); assert.equal(Object.keys(persisted.tickets).length, 2); assert.equal(new Set(Object.keys(persisted.tickets)).size, 2); assert.ok(Object.keys(persisted.tickets).every((key) => key.includes(":"))); } finally { await fs.rm(sharedDirectory, { recursive: true, force: true }); }
+  try { const sharedRequest = async (request) => { if (request.pathname === "/v1/health") return { status: 200, body: healthBody }; if (request.pathname === "/v1/tickets") { sharedCreates++; return { status: 201, body: ticketFor(`11111111-0000-4000-8000-00000000000${sharedCreates}`, request.body.requestId, "active", 1) }; } throw new Error(`unexpected shared request ${request.pathname}`); }; const firstProcess = createAuthorityClient(sharedConfig, { token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", request: sharedRequest }); const secondProcess = createAuthorityClient(sharedConfig, { token: async () => "token-id.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", request: sharedRequest }); await Promise.all([firstProcess.acquire("anthropic-a"), secondProcess.acquire("anthropic-a")]); const sessionFiles = (await fs.readdir(sessionLedgerDirectory(sharedConfig.statePath))).filter((name) => name.endsWith(".json")); const persisted = { tickets: Object.assign({}, ...await Promise.all(sessionFiles.map(async (name) => JSON.parse(await fs.readFile(path.join(sessionLedgerDirectory(sharedConfig.statePath), name), "utf8")).tickets))) }; assert.equal(sharedCreates, 2); assert.equal(sessionFiles.length, 2); assert.equal(Object.keys(persisted.tickets).length, 2); assert.equal(new Set(Object.keys(persisted.tickets)).size, 2); assert.ok(Object.keys(persisted.tickets).every((key) => key.includes(":"))); await assert.rejects(fs.stat(sharedConfig.statePath), { code: "ENOENT" }); } finally { await fs.rm(sharedDirectory, { recursive: true, force: true }); }
   const authorityClientSource = source.slice(source.indexOf("export function createAuthorityClient"), source.indexOf("async function acquireAuthority"));
   assert.doesNotMatch(authorityClientSource, /127\.0\.0\.1|spawn|fallback|ctx\.cwd/);
 });
@@ -361,8 +361,10 @@ test("authority-client breaks a ledger lock left behind by a killed session", as
   const statePath = path.join(directory, "authority-client-tickets-v1.json");
   try {
     // A session killed mid-write leaves this directory behind and nothing else removes it.
-    await fs.mkdir(`${statePath}.lock`, { mode: 0o700 });
-    await fs.utimes(`${statePath}.lock`, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    const sessionFile = sessionLedgerPath(statePath, "bbbb2222-7777-4777-8777-777777777777");
+    await fs.mkdir(path.dirname(sessionFile), { recursive: true, mode: 0o700 });
+    await fs.mkdir(`${sessionFile}.lock`, { mode: 0o700 });
+    await fs.utimes(`${sessionFile}.lock`, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
     const config = {
       mode: "authority-client", origin: "https://authority.example", expectedAuthorityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", installationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", statePath,
       keychain: { permitMutate: { service: "test", account: "permit" }, snapshotRead: { service: "test", account: "snapshot" }, allowancePublish: { service: "test", account: "allowance" } }, monitorSource: "authority", publisherEnabled: false,
@@ -380,7 +382,7 @@ test("authority-client breaks a ledger lock left behind by a killed session", as
     });
     const record = await client.acquire("anthropic-a");
     assert.equal(record.ticket.state, "active");
-    assert.equal(JSON.parse(await fs.readFile(statePath, "utf8")).schemaVersion, 1);
+    assert.equal(JSON.parse(await fs.readFile(sessionFile, "utf8")).schemaVersion, 1);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

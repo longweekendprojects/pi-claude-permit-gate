@@ -18,8 +18,10 @@ const DISABLED = process.env.CLAUDE_PERMIT_GATE_DISABLE === "1" || process.env.A
 const VERBOSE = process.env.CLAUDE_PERMIT_GATE_VERBOSE === "1" || process.env.ANTHROPIC_PERMIT_GATE_VERBOSE === "1";
 const RETRY_MS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_RETRY_MS", 500, 10);
 // How long the authority token read from the Keychain is kept in memory. 0, or a value that is not a number, reads it
-// before every request and never sends a refused request again, as before v0.4.24.
-const TOKEN_CACHE_MS = Math.max(0, Number(process.env.CLAUDE_PERMIT_GATE_TOKEN_CACHE_MS ?? 60_000) || 0);
+// before every request and never sends a refused request again, as before v0.4.24. A kept token past half this age is
+// read again in the background, so a request never waits on the Keychain once the process has a token. Reading it runs
+// /usr/bin/security, a process start that took up to 6.3 s on albot under memory pressure on 2026-11-21.
+const TOKEN_CACHE_MS = Math.max(0, Number(process.env.CLAUDE_PERMIT_GATE_TOKEN_CACHE_MS ?? 900_000) || 0);
 // How long a lane's validated health answer is kept in memory. Every acquisition used to ask for it first, one round
 // trip before the create: a median of 17 ms on the authority's own network and 32 ms from a remote machine, measured
 // 2026-11-20 on 17,000 acquisitions. 0, or a value that is not a number, asks before every acquisition, as before v0.4.28.
@@ -29,6 +31,8 @@ const HEALTH_CACHE_MS = Math.max(0, Number(process.env.CLAUDE_PERMIT_GATE_HEALTH
 // without a new release. A lane that does not advertise ticket-await is polled as before, and an older lane ignores the
 // claim header and answers offered, which the client then claims itself.
 const TICKET_AWAIT = process.env.CLAUDE_PERMIT_GATE_TICKET_AWAIT !== "0";
+// Retry state is one file per session; 0 returns to the one shared file of v0.4.30 without a new release.
+const SESSION_LEDGER = process.env.CLAUDE_PERMIT_GATE_SESSION_LEDGER !== "0";
 const CLAIM_ON_OFFER = process.env.CLAUDE_PERMIT_GATE_CLAIM_ON_OFFER !== "0";
 const AWAIT_MS = 20_000;
 const WARNING_ATTEMPTS = positiveEnvInt("CLAUDE_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", "ANTHROPIC_PERMIT_GATE_ACQUIRE_WARNING_ATTEMPTS", 600, 1);
@@ -240,7 +244,9 @@ type AuthorityLedger = { schemaVersion: 1; tickets: Record<string, UnresolvedTic
 type AuthorityResponse = { status: number; body: any; headers?: Record<string, string | undefined> };
 type AuthorityRequest = (request: { method: string; provider: string; port: number; pathname: string; body?: any; authorization: string; signal?: AbortSignal; headers?: Record<string, string> }) => Promise<AuthorityResponse>;
 type LedgerMutation = (mutation: (ledger: AuthorityLedger) => void | Promise<void>) => Promise<void>;
-type AuthorityClientOptions = { request?: AuthorityRequest; token?: (reference: KeychainReference) => Promise<string>; readLedger?: () => Promise<AuthorityLedger>; writeLedger?: (ledger: AuthorityLedger) => Promise<void>; mutateLedger?: LedgerMutation; sessionId?: string; wait?: (ms: number, signal?: AbortSignal) => Promise<void>; ticketAwait?: boolean; claimOnOffer?: boolean; awaitMs?: number; healthCacheMs?: number };
+// The client's own ledger is one file per session, so the session key picks the file.
+type SessionLedgerMutation = (sessionKey: string, mutation: (ledger: AuthorityLedger) => void) => Promise<void>;
+type AuthorityClientOptions = { request?: AuthorityRequest; token?: (reference: KeychainReference) => Promise<string>; readLedger?: () => Promise<AuthorityLedger>; writeLedger?: (ledger: AuthorityLedger) => Promise<void>; mutateLedger?: LedgerMutation; flushLedger?: (file: string) => void; sessionLedger?: boolean; sessionId?: string; wait?: (ms: number, signal?: AbortSignal) => Promise<void>; ticketAwait?: boolean; claimOnOffer?: boolean; awaitMs?: number; healthCacheMs?: number };
 
 function configError(message: string): never { throw new Error(`Claude permit authority configuration is invalid: ${message}`); }
 function hasOnlyKeys(value: Record<string, any>, keys: readonly string[]) { return Object.keys(value).every((key) => keys.includes(key)); }
@@ -275,13 +281,75 @@ function keychainToken(reference: KeychainReference): Promise<string> { return n
 function defaultLedgerReader(file: string): () => Promise<AuthorityLedger> { return async () => { try { const stat = await fsp.stat(file); if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error(); const parsed = JSON.parse(await fsp.readFile(file, "utf8")); if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isRecord(parsed.tickets)) throw new Error(); return parsed as AuthorityLedger; } catch (error: any) { if (error?.code === "ENOENT") return { schemaVersion: 1, tickets: {} }; throw new Error("authority retry state is unavailable"); } }; }
 export function defaultLedgerWriter(file: string): (ledger: AuthorityLedger) => Promise<void> { return async (ledger) => { const directory = path.dirname(file); const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`; const payload = JSON.stringify(ledger); let handle: fs.promises.FileHandle | undefined; try { await fsp.mkdir(directory, { recursive: true, mode: 0o700 }); handle = await fsp.open(temporary, "wx", 0o600); await handle.writeFile(payload, "utf8"); await handle.sync(); await handle.close(); handle = undefined; await fsp.rename(temporary, file); const directoryHandle = await fsp.open(directory, "r"); try { await directoryHandle.sync(); } finally { await directoryHandle.close(); } } catch (error) { await handle?.close().catch(() => {}); await fsp.unlink(temporary).catch(() => {}); throw error; } }; }
 // A session killed mid-write leaves its lock directory behind, and nothing else ever removes it, so
-// every later acquire on that machine fails with "authority retry state is locked" until an operator
-// deletes it by hand. No holder can outlive this window by legitimate means: the lock is held only
-// across one read, mutate, and write of a small local file. A lock older than the window is
-// therefore an orphan and is broken so the process can proceed.
+// every later acquire in that session would fail with "authority retry state is locked". No holder can
+// outlive this window by legitimate means: the lock is held only across one synchronous read, mutate,
+// and write of a small local file. A lock older than the window is therefore an orphan and is broken.
 const LEDGER_LOCK_STALE_MS = 30_000;
 const CREATE_REFRESH_MS = 15_000;
+// The shared v1 ledger of v0.4.30 and earlier, kept only as the CLAUDE_PERMIT_GATE_SESSION_LEDGER=0 fallback.
 function defaultLedgerMutator(file: string): LedgerMutation { const read = defaultLedgerReader(file); const write = defaultLedgerWriter(file); const lock = `${file}.lock`; return async (mutation) => { await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 }); for (let attempt = 0; attempt < 500; attempt++) { try { await fsp.mkdir(lock, { mode: 0o700 }); break; } catch (error: any) { if (error?.code !== "EEXIST") throw error; const orphaned = await fsp.stat(lock).then((stat) => Date.now() - stat.mtimeMs > LEDGER_LOCK_STALE_MS).catch(() => false); if (orphaned) { await fsp.rmdir(lock).catch(() => {}); continue; } if (attempt === 499) throw new Error("authority retry state is locked"); await sleep(10); } } try { const ledger = await read(); await mutation(ledger); await write(ledger); } finally { await fsp.rmdir(lock).catch(() => {}); } }; }
+// Retry state v2: one small file per session. Through v0.4.30 every session on a machine shared one file under one lock,
+// and the holder kept the lock across about a dozen awaits, two of them fsync. A holder slowed by memory pressure (paging,
+// a busy event loop, fsync behind swap writes) therefore stalled every other session's permit: 28.5 s and five failed
+// acquisitions on albot on 2026-11-21. Records were never shared between sessions, so splitting the file by session takes
+// the lock out of the cross-session path. The critical section is synchronous, so it holds the lock for a few system calls
+// and never across an event-loop turn. Durability is unchanged in kind: the write is an atomic rename at once, and the
+// file and directory are fsynced right after in the background, off the permit path. An OS crash inside that flush can
+// lose the newest record, which costs at most one lease the authority reclaims or an operator reconciles.
+const SESSION_LEDGER_DIRECTORY = "authority-client-tickets-v2";
+const SESSION_LEDGER_PRUNE_MS = 24 * 60 * 60_000;
+export function sessionLedgerDirectory(statePath: string): string { return path.join(path.dirname(statePath), SESSION_LEDGER_DIRECTORY); }
+export function sessionLedgerPath(statePath: string, sessionKey: string): string { return path.join(sessionLedgerDirectory(statePath), `${crypto.createHash("sha256").update(sessionKey).digest("hex").slice(0, 32)}.json`); }
+const emptyLedger = (): AuthorityLedger => ({ schemaVersion: 1, tickets: {} });
+function readSessionLedgerSync(file: string): AuthorityLedger {
+  let raw: string; try { const stat = fs.statSync(file); if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw Object.assign(new Error(), { code: "EPERM" }); raw = fs.readFileSync(file, "utf8"); } catch (error: any) { if (error?.code === "ENOENT") return emptyLedger(); throw new Error("authority retry state is unavailable"); }
+  // A file torn by an OS crash during the background flush holds nothing usable, and failing on it would fail every
+  // later acquire in the session. It is treated as empty; the authority reclaims whatever lease it named.
+  try { const parsed = JSON.parse(raw); if (isRecord(parsed) && parsed.schemaVersion === 1 && isRecord(parsed.tickets)) return parsed as AuthorityLedger; } catch {}
+  return emptyLedger();
+}
+async function syncPath(target: string) { let handle: fs.promises.FileHandle | undefined; try { handle = await fsp.open(target, "r"); await handle.sync(); } catch {} finally { await handle?.close().catch(() => {}); } }
+function backgroundLedgerFlush(directory: string): (file: string) => void { const pending = new Set<string>(); let running = false; const run = async () => { running = true; try { while (pending.size) { const files = [...pending]; pending.clear(); for (const file of files) await syncPath(file); await syncPath(directory); } } finally { running = false; } }; return (file) => { pending.add(file); if (!running) void run(); }; }
+export function sessionLedgerMutator(statePath: string, options: { flush?: (file: string) => void; onWait?: (ms: number) => void; lockWaitMs?: number } = {}): SessionLedgerMutation {
+  const directory = sessionLedgerDirectory(statePath); const flush = options.flush ?? backgroundLedgerFlush(directory); const lockWaitMs = options.lockWaitMs ?? LEDGER_LOCK_STALE_MS + 5_000; let directoryReady = false;
+  const queues = new Map<string, Promise<void>>();
+  const run = async (sessionKey: string, mutation: (ledger: AuthorityLedger) => void) => {
+    const file = sessionLedgerPath(statePath, sessionKey); const lock = `${file}.lock`;
+    if (!directoryReady) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); directoryReady = true; }
+    // Only a second process on the same session contends for this lock, so the first attempt nearly always wins.
+    const started = performance.now(); let waited = false;
+    for (let pause = 1; ; pause = Math.min(pause * 2, 50)) {
+      try { fs.mkdirSync(lock, { mode: 0o700 }); break; } catch (error: any) {
+        if (error?.code === "ENOENT") { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); continue; }
+        if (error?.code !== "EEXIST") throw error;
+        let age: number; try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
+        if (age > LEDGER_LOCK_STALE_MS) { try { fs.rmdirSync(lock); } catch {} continue; }
+        if (performance.now() - started > lockWaitMs) throw new Error("authority retry state is locked");
+        waited = true; await sleep(pause);
+      }
+    }
+    if (waited) options.onWait?.(performance.now() - started);
+    let wrote = false;
+    try {
+      const ledger = readSessionLedgerSync(file);
+      const result: unknown = mutation(ledger); if (result && typeof (result as any).then === "function") throw new Error("authority retry state mutation must be synchronous");
+      if (Object.keys(ledger.tickets).length === 0) { try { fs.unlinkSync(file); } catch (error: any) { if (error?.code !== "ENOENT") throw error; } }
+      else { const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`; fs.writeFileSync(temporary, JSON.stringify(ledger), { mode: 0o600, flag: "wx" }); try { fs.renameSync(temporary, file); } catch (error) { try { fs.unlinkSync(temporary); } catch {} throw error; } }
+      wrote = true;
+    } finally { try { fs.rmdirSync(lock); } catch {} }
+    if (wrote) flush(file);
+  };
+  // Mutations of one session run in call order, so a removal is never overtaken by an earlier save still waiting.
+  return (sessionKey, mutation) => { const prior = queues.get(sessionKey); const next = prior ? prior.then(() => run(sessionKey, mutation)) : run(sessionKey, mutation); const tail = next.catch(() => {}); queues.set(sessionKey, tail); void tail.then(() => { if (queues.get(sessionKey) === tail) queues.delete(sessionKey); }); return next; };
+}
+// A session that ended without completing its record (killed, crashed) leaves its file behind. Live records are rewritten
+// on every renewal and ticket change, so a file untouched for a day is dead. Runs once per process, off the permit path.
+export async function pruneSessionLedgers(statePath: string, now = Date.now()): Promise<number> {
+  const directory = sessionLedgerDirectory(statePath); let removed = 0; let names: string[];
+  try { names = await fsp.readdir(directory); } catch { return 0; }
+  for (const name of names) { if (!/^[0-9a-f]{32}\.json(\.lock|\..+\.tmp)?$/.test(name)) continue; const target = path.join(directory, name); try { const stat = await fsp.stat(target); const limit = name.endsWith(".json") ? SESSION_LEDGER_PRUNE_MS : name.endsWith(".lock") ? LEDGER_LOCK_STALE_MS * 4 : 60 * 60_000; if (now - stat.mtimeMs <= limit) continue; if (stat.isDirectory()) await fsp.rmdir(target); else await fsp.unlink(target); removed++; } catch {} }
+  return removed;
+}
 export function defaultAuthorityRequest(origin: string): AuthorityRequest { return async ({ method, port, pathname, body, authorization, signal, headers: extraHeaders }) => new Promise((resolve, reject) => { const base = new URL(origin); const payload = body === undefined ? undefined : JSON.stringify(body); const request = https.request({ protocol: "https:", hostname: base.hostname, servername: base.hostname, port, method, path: pathname, headers: { ...(extraHeaders ?? {}), accept: "application/json", authorization, "cache-control": "no-store", "content-type": "application/json", ...(payload === undefined ? {} : { "content-length": Buffer.byteLength(payload) }) } }, (response) => { let text = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { text += chunk; if (Buffer.byteLength(text) > 65_536) request.destroy(new Error("authority response exceeds limit")); }); response.on("end", () => { let parsed: any = {}; try { parsed = text ? JSON.parse(text) : {}; } catch { reject(new Error("authority response is invalid")); return; } resolve({ status: response.statusCode ?? 0, body: parsed, headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value[0] : value])) }); }); }); request.on("error", reject); const abort = () => { reject(abortError()); request.destroy(); }; if (signal?.aborted) { abort(); return; } signal?.addEventListener("abort", abort, { once: true }); request.on("close", () => signal?.removeEventListener("abort", abort)); request.setTimeout(30_000, () => request.destroy(new Error("authority request timed out"))); if (payload !== undefined) request.write(payload); request.end(); }); }
 // Every 503 is retried. A degraded lane answers a non-retryable 503 and then exits so launchd
 // restarts it within seconds; failing on that answer dropped a held permit with "request rejected".
@@ -307,6 +375,7 @@ function validTicket(value: unknown, record: UnresolvedTicket): value is Ticket 
 type AcquireTrace = { startedAt: number; spans: Record<string, { n: number; ms: number; max: number }>; polls: number; timerLateMaxMs: number; sawOfferAt?: number };
 const TIMING_LOG_MAX_BYTES = 20 * 1024 * 1024;
 function spanAdd(trace: AcquireTrace | undefined, kind: string, started: number) { if (!trace) return; const ms = performance.now() - started; const span = (trace.spans[kind] ??= { n: 0, ms: 0, max: 0 }); span.n++; span.ms += ms; if (ms > span.max) span.max = ms; }
+function spanTook(trace: AcquireTrace | undefined, kind: string, ms: number) { if (!trace) return; const span = (trace.spans[kind] ??= { n: 0, ms: 0, max: 0 }); span.n++; span.ms += ms; if (ms > span.max) span.max = ms; }
 async function spanned<T>(trace: AcquireTrace | undefined, kind: string, work: () => Promise<T>): Promise<T> { if (!trace) return work(); const started = performance.now(); try { return await work(); } finally { spanAdd(trace, kind, started); } }
 export function acquireTimingPaths(statePath: string) { const directory = path.dirname(statePath); return { flag: path.join(directory, "acquire-timing.on"), log: path.join(directory, "acquire-timing.jsonl") }; }
 function writeAcquireTrace(log: string, trace: AcquireTrace, provider: string, record: UnresolvedTicket | undefined, outcome: string) {
@@ -322,7 +391,11 @@ function writeAcquireTrace(log: string, trace: AcquireTrace, provider: string, r
 }
 export type AuthorityPermit = { kind: "authority"; client: ReturnType<typeof createAuthorityClient>; record: UnresolvedTicket; renewTimer?: ReturnType<typeof setInterval>; warm?: boolean };
 export function createAuthorityClient(config: AuthorityClientConfig, options: AuthorityClientOptions = {}) {
-  const baseRequest = options.request ?? defaultAuthorityRequest(config.origin); const baseToken = options.token ?? keychainToken; const readLedger = options.readLedger ?? defaultLedgerReader(config.statePath); const writeLedger = options.writeLedger ?? defaultLedgerWriter(config.statePath); const baseMutateLedger: LedgerMutation = options.mutateLedger ?? (options.readLedger || options.writeLedger ? async (mutation: (ledger: AuthorityLedger) => void | Promise<void>) => { const ledger = await readLedger(); await mutation(ledger); await writeLedger(ledger); } : defaultLedgerMutator(config.statePath)); const baseWait = options.wait ?? waitForRetry; const acquisitions = new Map<string, Promise<UnresolvedTicket>>();
+  const baseRequest = options.request ?? defaultAuthorityRequest(config.origin); const baseToken = options.token ?? keychainToken; const readLedger = options.readLedger ?? defaultLedgerReader(config.statePath); const writeLedger = options.writeLedger ?? defaultLedgerWriter(config.statePath);
+  // Injected ledgers (tests) keep one whole ledger; the default is one file per session.
+  const injected: LedgerMutation | undefined = options.mutateLedger ?? (options.readLedger || options.writeLedger ? async (mutation: (ledger: AuthorityLedger) => void | Promise<void>) => { const ledger = await readLedger(); await mutation(ledger); await writeLedger(ledger); } : (options.sessionLedger ?? SESSION_LEDGER) ? undefined : defaultLedgerMutator(config.statePath));
+  const baseMutateLedger: SessionLedgerMutation = injected ? (_sessionKey, mutation) => injected(mutation) : sessionLedgerMutator(config.statePath, { flush: options.flushLedger, onWait: (ms) => spanTook(trace, "ledgerWait", ms) });
+  if (!injected) { const prune = setTimeout(() => { void pruneSessionLedgers(config.statePath).catch(() => {}); }, 60_000 + Math.floor(Math.random() * 60_000)); prune.unref?.(); } const baseWait = options.wait ?? waitForRetry; const acquisitions = new Map<string, Promise<UnresolvedTicket>>();
   // Timing wrappers do nothing unless an acquisition is being traced.
   let trace: AcquireTrace | undefined; const timing = acquireTimingPaths(config.statePath);
   const request: AuthorityRequest = (input) => spanned(trace, `${input.method} ${input.pathname.split("/").map((part, index) => index === 3 ? "*" : part).join("/")}`, () => baseRequest(input));
@@ -330,9 +403,11 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // acquisitions: 9.4 reads and 687 ms per acquisition, since each poll for a slot read it again. The token is kept in
   // memory for a minute. When the authority refuses it (401), send() drops it and reads the Keychain once more, so a
   // rotated token costs one extra request. A read that fails is never kept.
-  const tokens = new Map<string, { value: string; at: number }>();
-  const token = async (reference: KeychainReference) => { const key = `${reference.service}\n${reference.account}`; const kept = tokens.get(key); if (kept && Date.now() - kept.at < TOKEN_CACHE_MS) return kept.value; const value = await spanned(trace, "token", () => baseToken(reference)); tokens.set(key, { value, at: Date.now() }); return value; };
-  const mutateLedger: LedgerMutation = (mutation) => spanned(trace, "ledger", () => baseMutateLedger(mutation));
+  // One read per reference is in flight at a time, so concurrent requests and a background refresh share it.
+  const tokens = new Map<string, { value: string; at: number }>(); const tokenReads = new Map<string, Promise<string>>();
+  const readToken = (reference: KeychainReference, key: string, background: boolean) => { let pending = tokenReads.get(key); if (!pending) { const read = background ? baseToken(reference) : spanned(trace, "token", () => baseToken(reference)); pending = read.then((value) => { tokens.set(key, { value, at: Date.now() }); return value; }).finally(() => { tokenReads.delete(key); }); tokenReads.set(key, pending); } return pending; };
+  const token = async (reference: KeychainReference) => { const key = `${reference.service}\n${reference.account}`; const kept = tokens.get(key); const age = kept ? Date.now() - kept.at : Infinity; if (kept && age < TOKEN_CACHE_MS) { if (age > TOKEN_CACHE_MS / 2) void readToken(reference, key, true).catch(() => {}); return kept.value; } return readToken(reference, key, false); };
+  const mutateLedger = (sessionKey: string, mutation: (ledger: AuthorityLedger) => void) => spanned(trace, "ledger", () => baseMutateLedger(sessionKey, mutation));
   const wait = async (ms: number, signal?: AbortSignal) => { const active = trace; const started = performance.now(); try { await baseWait(ms, signal); } finally { if (active) { spanAdd(active, "wait", started); active.timerLateMaxMs = Math.max(active.timerLateMaxMs, performance.now() - started - ms); } } }; const completions = new Map<string, Promise<void>>(); const unboundSessionId = crypto.randomUUID();
   // A renewal still in flight when its lease completes used to save the record back after
   // completion removed it, leaving a pending renew against a released ticket. The next acquire in
@@ -340,11 +415,11 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // rejected". A removed record is retired, so no late writer can resurrect it.
   const retired = new WeakSet<UnresolvedTicket>();
   const recordKey = (record: UnresolvedTicket) => `${record.sessionId}:${record.requestId}`;
-  const save = async (record: UnresolvedTicket) => { if (retired.has(record)) return; await mutateLedger((ledger) => { for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === record.requestId) delete ledger.tickets[key]; ledger.tickets[recordKey(record)] = record; }); };
-  const remove = async (record: UnresolvedTicket) => { retired.add(record); await mutateLedger((ledger) => { for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === record.requestId) delete ledger.tickets[key]; }); };
+  const save = async (record: UnresolvedTicket) => { if (retired.has(record)) return; await mutateLedger(record.sessionId, (ledger) => { if (retired.has(record)) return; for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === record.requestId) delete ledger.tickets[key]; ledger.tickets[recordKey(record)] = record; }); };
+  const remove = async (record: UnresolvedTicket) => { retired.add(record); await mutateLedger(record.sessionId, (ledger) => { for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === record.requestId) delete ledger.tickets[key]; }); };
   // Whether the record came from disk decides if it can be discarded on failure: a freshly minted
   // record cannot be the cause, so only a persisted one is ever thrown away.
-  const loadOrCreate = async (provider: string): Promise<{ record: UnresolvedTicket; persisted: boolean }> => { const ownerSessionId = options.sessionId ?? (isUuid(sessionId) ? sessionId : unboundSessionId); let record!: UnresolvedTicket; let persisted = false; await mutateLedger((ledger) => { const existing = Object.values(ledger.tickets).find((candidate) => candidate.provider === provider && candidate.sessionId === ownerSessionId); persisted = !!existing; record = existing ?? { provider, requestId: crypto.randomUUID(), sessionId: ownerSessionId, createdAtEpochMs: Date.now() }; ledger.tickets[recordKey(record)] = record; }); return { record, persisted }; };
+  const loadOrCreate = async (provider: string): Promise<{ record: UnresolvedTicket; persisted: boolean }> => { const ownerSessionId = options.sessionId ?? (isUuid(sessionId) ? sessionId : unboundSessionId); let record!: UnresolvedTicket; let persisted = false; await mutateLedger(ownerSessionId, (ledger) => { const existing = Object.values(ledger.tickets).find((candidate) => candidate.provider === provider && candidate.sessionId === ownerSessionId); persisted = !!existing; record = existing ?? { provider, requestId: crypto.randomUUID(), sessionId: ownerSessionId, createdAtEpochMs: Date.now() }; ledger.tickets[recordKey(record)] = record; }); return { record, persisted }; };
   const send = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal, headers?: Record<string, string>): Promise<any> => { for (let reread = false; ; reread = true) { const authorization = `Bearer ${await token(config.keychain.permitMutate)}`; const response = await request({ method, provider, port: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].port, pathname, body, authorization, signal, ...(headers ? { headers } : {}) }); if (response.status >= 200 && response.status < 300) return response.body; if (response.status === 401 && !reread && TOKEN_CACHE_MS > 0) { tokens.clear(); const again = await token(config.keychain.permitMutate).catch(() => undefined); if (again !== undefined && `Bearer ${again}` !== authorization) continue; } throw new AuthorityResponseError(response); } };
   const sendRetry = async (method: string, provider: string, pathname: string, body?: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); try { return await send(method, provider, pathname, body, signal); } catch (error) { if (isAborted(signal) || (error as Error).name === "AbortError") throw abortError(); const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
   const sendOperation = async (provider: string, pathname: string, body: any, signal?: AbortSignal): Promise<any> => { for (let attempt = 1; ; attempt++) { if (isAborted(signal)) throw abortError(); try { return await send("POST", provider, pathname, body, signal); } catch (error) { if (isAborted(signal) || (error as Error).name === "AbortError") throw abortError(); const failure = error instanceof AuthorityResponseError ? error : new AuthorityResponseError(); if (!failure.response || !failure.retryable) throw failure; await wait(retryDelay(failure, attempt), signal); } } };
@@ -383,7 +458,7 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // only then keeps hundreds of waiting sessions from rewriting the shared ledger every second. A lost reply keeps its identity, because the
   // authority may have created that ticket and replays it for the same id.
   const createBody = (provider: string, record: UnresolvedTicket) => ({ schemaVersion: 1, provider, accountBindingId: config.lanes[provider as keyof AuthorityClientConfig["lanes"]].accountBindingId, installationId: config.installationId, sessionId: record.sessionId, requestId: record.requestId, createdAtEpochMs: record.createdAtEpochMs });
-  const refreshCreate = async (record: UnresolvedTicket) => { const refusedRequestId = record.requestId; record.requestId = crypto.randomUUID(); record.createdAtEpochMs = Date.now(); await mutateLedger((ledger) => { for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === refusedRequestId) delete ledger.tickets[key]; ledger.tickets[recordKey(record)] = record; }); };
+  const refreshCreate = async (record: UnresolvedTicket) => { const refusedRequestId = record.requestId; record.requestId = crypto.randomUUID(); record.createdAtEpochMs = Date.now(); await mutateLedger(record.sessionId, (ledger) => { for (const [key, candidate] of Object.entries(ledger.tickets)) if (candidate.sessionId === record.sessionId && candidate.requestId === refusedRequestId) delete ledger.tickets[key]; ledger.tickets[recordKey(record)] = record; }); };
   // A create that got no answer keeps its identity, so its timestamp ages while the lane is unreachable. When the lane then
   // refuses that create as invalid, no ticket exists under the request id: the authority replays an existing ticket before
   // it checks the timestamp. The create is then sent once more with a fresh id and timestamp instead of failing the request.
@@ -434,7 +509,9 @@ export function createAuthorityClient(config: AuthorityClientConfig, options: Au
   // own renewal deadline. It performs no request and never rejects.
   const abandon = async (record: UnresolvedTicket) => { acquisitions.delete(record.provider); completions.delete(record.provider); await remove(record).catch(() => {}); };
   const cancel = async (record: UnresolvedTicket) => { const cancelled = await operation(record.provider, record, "cancel", {}); if (cancelled.state === "cancelled") { await remove(record); acquisitions.delete(record.provider); } return cancelled; };
-  return { abandon, acquire, renew, complete, cancel, health };
+  // Reads the token in the background when a session starts, so its first request does not wait on the Keychain.
+  const prefetch = () => { void token(config.keychain.permitMutate).catch(() => {}); };
+  return { abandon, acquire, renew, complete, cancel, health, prefetch };
 }
 let authorityLifecycle: Promise<void> | undefined;
 let settleAuthorityLifecycle: (() => void) | undefined;
@@ -472,6 +549,7 @@ export default function (pi: ExtensionAPI) {
   const mode = resolveClientMode(); // Configuration is complete before the first hook is registered.
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const authorityClient = mode.mode === "authority-client" ? createAuthorityClient(mode) : undefined;
+  authorityClient?.prefetch();
   const bypassFile = mode.mode === "authority-client" ? bypassStatePath(process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : undefined;
   const bypassState = (): BypassState => bypassFile ? readBypassState(bypassFile) : { enabled: false, source: "none" };
   const detached = bypassFile ? () => bypassState().enabled : undefined;
