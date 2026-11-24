@@ -1,17 +1,69 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireAuthority, acquirePermitResponse, bypassStatePath, classifyDaemonHealth, clearBypassState, createAuthorityClient, defaultLedgerWriter, providerPorts, sessionLedgerDirectory, sessionLedgerPath, readBypassState, resolveClientMode, writeBypassState } from "../index.ts";
+import { acquireAuthority, acquirePermitResponse, bypassStatePath, classifyDaemonHealth, clearBypassState, createAuthorityClient, defaultLedgerWriter, parseProviderPorts, sessionLedgerDirectory, sessionLedgerPath, readBypassState, resolveClientMode, writeBypassState } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = await fs.readFile(path.join(root, "index.ts"), "utf8");
 
 test("default provider map gates built-in and four lane providers only", () => {
-  assert.deepEqual(providerPorts(), { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 });
-  assert.deepEqual(providerPorts("anthropic-a:19001, custom:19002, invalid:0"), { "anthropic-a": 19001, custom: 19002 });
+  assert.deepEqual(Object.fromEntries(parseProviderPorts(undefined).ports), { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 });
+  assert.deepEqual(Object.fromEntries(parseProviderPorts("anthropic-a:19001, custom:19002").ports), { "anthropic-a": 19001, custom: 19002 });
+});
+
+test("invalid local provider maps block provider dispatch and identify the bad entry", async (t) => {
+  const probe = t.mock.method(http, "get", (_url, _options, onResponse) => {
+    onResponse(Readable.from(['{"ok":true,"provider":"fixture"}']));
+    return new PassThrough();
+  });
+  const post = t.mock.method(http, "request", () => { throw new Error("unexpected local permit POST"); });
+  const cases = [
+    ["anthropic-b:no-port", "anthropic-b", "anthropic-b:no-port"],
+    ["anthropic-a:19001, custom:19002extra", "custom", "custom:19002extra"],
+    ["anthropic-a:19001,anthropic-a:19002", "anthropic-b", "anthropic-a:19002"],
+    ["anthropic-b:65536", "anthropic-b", "anthropic-b:65536"],
+    ["", "anthropic-b", "empty entry"],
+  ];
+  for (const [index, [value, provider, badEntry]] of cases.entries()) {
+    await t.test(value || "empty map", { timeout: 2_000 }, async () => {
+      const previous = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS;
+      const handlers = new Map();
+      process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS = value;
+      try {
+        const { default: gate } = await import(`../index.ts?invalid-local-map=${index}`);
+        gate({ on(name, handler) { handlers.set(name, handler); }, registerCommand() {} });
+      } finally {
+        if (previous === undefined) delete process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS;
+        else process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS = previous;
+      }
+      const controller = new AbortController();
+      const notices = [];
+      const dispatch = t.mock.fn();
+      const ctx = { model: { provider }, signal: controller.signal, hasUI: true, ui: { notify(message) { notices.push(message); } } };
+      const hostRun = (async () => {
+        try { await handlers.get("before_provider_request")({}, ctx); } catch {} // Pi logs and swallows hook exceptions.
+        if (!controller.signal.aborted) dispatch();
+      })();
+      try {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(dispatch.mock.callCount(), 0);
+        assert.equal(probe.mock.callCount(), 0);
+        assert.equal(post.mock.callCount(), 0);
+        assert.ok(notices[0]?.includes(badEntry), `expected a diagnostic naming ${badEntry}`);
+      } finally {
+        controller.abort();
+        await hostRun;
+        probe.mock.resetCalls();
+        post.mock.resetCalls();
+      }
+      assert.equal(dispatch.mock.callCount(), 0);
+    });
+  }
 });
 
 test("failed acquisition remains pending and later recovery returns a permit", async () => {

@@ -120,7 +120,11 @@ Override the complete provider map when your provider names or ports differ:
 export CLAUDE_PERMIT_GATE_PROVIDER_PORTS='anthropic:8790,anthropic-a:8791,work-claude:8900'
 ```
 
-Only providers in this map are gated. Every Pi process that should share a pool must use the same mapping.
+A valid override gates only the providers it lists. Every Pi process that shares a pool must use the same mapping.
+
+Each entry needs a unique provider name and a port from 1 through 65535. A malformed or empty override blocks built-in Claude providers and names in the override. The gate reports the bad entry instead of using part of the map.
+
+Fix or unset the override and restart Pi. To turn off the gate, restart Pi with `CLAUDE_PERMIT_GATE_DISABLE=1`.
 
 ## Configuration
 

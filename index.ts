@@ -1,7 +1,7 @@
 // Shared local concurrency gate and authenticated shared-authority client for direct Anthropic-family providers in Pi.
 // It gates requests before provider transport, never proxies traffic or rewrites payloads.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn, execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -48,17 +48,31 @@ function positiveEnvInt(name: string, legacy: string, fallback: number, minimum:
   const parsed = Number.parseInt(process.env[name] ?? process.env[legacy] ?? "", 10);
   return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback;
 }
-export function providerPorts(value = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS): Record<string, number> {
-  if (!value) return { ...DEFAULT_PORTS };
-  const parsed: Record<string, number> = {};
-  for (const entry of value.split(",")) {
-    const [provider, rawPort] = entry.split(":").map((part) => part.trim());
-    const port = Number.parseInt(rawPort || "", 10);
-    if (provider && Number.isInteger(port) && port > 0 && port < 65536) parsed[provider] = port;
+type ProviderPortConfig =
+  | { kind: "valid"; ports: Map<string, number> }
+  | { kind: "invalid"; blockedProviders: Set<string>; reason: string };
+
+export function parseProviderPorts(value: string | undefined): ProviderPortConfig {
+  if (value === undefined) return { kind: "valid", ports: new Map(Object.entries(DEFAULT_PORTS)) };
+  const entries = value.split(",");
+  const fields = entries.map((entry) => entry.split(":").map((part) => part.trim()));
+  const ports = new Map<string, number>();
+  for (const [index, parts] of fields.entries()) {
+    const [provider, rawPort] = parts;
+    const port = /^\d+$/.test(rawPort ?? "") ? Number(rawPort) : NaN;
+    if (parts.length !== 2 || !provider || !Number.isInteger(port) || port < 1 || port > 65535 || ports.has(provider)) {
+      const blockedProviders = new Set([...Object.keys(DEFAULT_PORTS), ...fields.map(([name]) => name).filter(Boolean)]);
+      const entry = entries[index].trim();
+      return { kind: "invalid", blockedProviders, reason: `Invalid CLAUDE_PERMIT_GATE_PROVIDER_PORTS entry: ${entry ? JSON.stringify(entry) : "(empty entry)"}` };
+    }
+    ports.set(provider, port);
   }
-  return parsed;
+  return { kind: "valid", ports };
 }
-const PROVIDER_PORTS = providerPorts();
+
+function invalidLocalConfigMessage(reason: string): string {
+  return `${reason}. Fix CLAUDE_PERMIT_GATE_PROVIDER_PORTS and restart Pi, or restart Pi with CLAUDE_PERMIT_GATE_DISABLE=1 to bypass the gate.`;
+}
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Remote bypass. A client machine that leaves the authority's network cannot reach the shared
@@ -267,6 +281,18 @@ function authorityConfigFromFile(file: string): Omit<AuthorityClientConfig, "sta
   for (const [index, provider] of AUTHORITY_PROVIDERS.entries()) { const lane = parsed.lanes[provider]; if (!isRecord(lane) || !hasOnlyKeys(lane, ["port", "accountBindingId"]) || lane.port !== 8791 + index || !isUuid(lane.accountBindingId)) configError(`lane ${provider} is invalid`); lanes[provider] = { port: lane.port, accountBindingId: lane.accountBindingId }; }
   return { mode: "authority-client", origin: parsed.origin, expectedAuthorityId: parsed.expectedAuthorityId, installationId: parsed.installationId, keychain: parsed.keychain as AuthorityClientConfig["keychain"], monitorSource: parsed.monitorSource as "local" | "authority", publisherEnabled: parsed.publisherEnabled, lanes };
 }
+// Preserve the authority's existing comparison with its four fixed lanes. Its routing never uses this map.
+function authorityPortOverrides(value: string): Record<string, number> {
+  if (!value) return { ...DEFAULT_PORTS };
+  const parsed: Record<string, number> = {};
+  for (const entry of value.split(",")) {
+    const [provider, rawPort] = entry.split(":").map((part) => part.trim());
+    const port = Number.parseInt(rawPort || "", 10);
+    if (provider && Number.isInteger(port) && port > 0 && port < 65536) parsed[provider] = port;
+  }
+  return parsed;
+}
+
 export function resolveClientMode(environment: NodeJS.ProcessEnv = process.env): { mode: "local" } | AuthorityClientConfig {
   const mode = environment.CLAUDE_PERMIT_GATE_MODE ?? "local";
   if (mode !== "local" && mode !== "authority-client") configError("mode must be local or authority-client");
@@ -276,7 +302,7 @@ export function resolveClientMode(environment: NodeJS.ProcessEnv = process.env):
   if (!validOrigin(origin) || !file || !path.isAbsolute(file) || environment.CLAUDE_PERMIT_GATE_DAEMON_MODE !== undefined) configError("authority mode requires an HTTPS origin, an absolute configuration path, and no daemon mode");
   const config = authorityConfigFromFile(file);
   if (config.origin !== origin) configError("environment and configuration origin differ");
-  if (environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS !== undefined) { const ports = providerPorts(environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS); if (Object.keys(ports).length !== AUTHORITY_PROVIDERS.length || AUTHORITY_PROVIDERS.some((provider) => ports[provider] !== config.lanes[provider].port)) configError("environment and configuration ports differ"); }
+  if (environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS !== undefined) { const ports = authorityPortOverrides(environment.CLAUDE_PERMIT_GATE_PROVIDER_PORTS); if (Object.keys(ports).length !== AUTHORITY_PROVIDERS.length || AUTHORITY_PROVIDERS.some((provider) => ports[provider] !== config.lanes[provider].port)) configError("environment and configuration ports differ"); }
   return { ...config, statePath: path.join(path.dirname(file), "authority-client-tickets-v1.json") };
 }
 function keychainToken(reference: KeychainReference): Promise<string> { return new Promise((resolve, reject) => { execFile("/usr/bin/security", ["find-generic-password", "-s", reference.service, "-a", reference.account, "-w"], { encoding: "utf8", maxBuffer: 1024 }, (error, stdout) => { if (error) { reject(new Error("authority token is unavailable")); return; } const token = stdout.trim(); if (!/^[A-Za-z0-9._:-]{1,64}\.[A-Za-z0-9_-]{43}$/.test(token)) { reject(new Error("authority token is invalid")); return; } resolve(token); }); }); }
@@ -569,7 +595,23 @@ export default function (pi: ExtensionAPI) {
   const bypassFile = mode.mode === "authority-client" ? bypassStatePath(process.env.CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG as string) : undefined;
   const bypassState = (): BypassState => bypassFile ? readBypassState(bypassFile) : { enabled: false, source: "none" };
   const detached = bypassFile ? () => bypassState().enabled : undefined;
-  const gatedPort = (provider: string, bypassed: boolean): number | undefined => mode.mode === "local" ? PROVIDER_PORTS[provider] : bypassed && (AUTHORITY_PROVIDERS as readonly string[]).includes(provider) ? mode.lanes[provider as keyof AuthorityClientConfig["lanes"]].port : undefined;
+  const localConfig = mode.mode === "local" ? parseProviderPorts(process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS) : undefined;
+  const localPorts = localConfig?.kind === "valid" ? localConfig.ports : undefined;
+  const gatedPort = (provider: string | undefined, bypassed: boolean): number | undefined => !provider ? undefined : mode.mode === "local" ? localPorts?.get(provider) : bypassed && (AUTHORITY_PROVIDERS as readonly string[]).includes(provider) ? mode.lanes[provider as keyof AuthorityClientConfig["lanes"]].port : undefined;
+  let invalidConfigReported = false;
+  const blockProviderRequest = async (ctx: ExtensionContext, reason: string) => {
+    try { ctx.ui.setStatus("claude-permit-gate", "Claude gate: blocked; invalid CLAUDE_PERMIT_GATE_PROVIDER_PORTS"); } catch {}
+    if (!invalidConfigReported) {
+      invalidConfigReported = true;
+      const message = invalidLocalConfigMessage(reason);
+      try { if (ctx.hasUI) ctx.ui.notify(message, "error"); else process.stderr.write(`${message}\n`); } catch {}
+    }
+    // Pi logs and swallows provider-hook exceptions. Stay pending until the turn is cancelled.
+    let signal: AbortSignal | undefined;
+    try { signal = ctx.signal; } catch {}
+    if (!signal?.aborted) await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }));
+    try { ctx.ui.setStatus("claude-permit-gate", undefined); } catch {}
+  };
   // Switching to bypass drops the shared lease locally rather than completing it, because the
   // machine reaching for bypass has usually already lost the authority network.
   const abandonAuthorityPermit = async () => { const permit = activePermit; if (permit?.kind !== "authority") return false; activePermit = undefined; if (permit.renewTimer) clearInterval(permit.renewTimer); await permit.client.abandon(permit.record); endAuthorityLifecycle(); return true; };
@@ -584,13 +626,20 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); const provider = ctx.model?.provider; const bypassed = bypassState().enabled; const port = provider ? gatedPort(provider, bypassed) : undefined; if (port) { try { await ensureDaemon(directory, port, provider!); } catch {} } if (ctx.hasUI) { ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : undefined); if (mode.mode === "authority-client" && proberPathNeedsUpdate()) ctx.ui.notify(`Claude allowance prober does not point to this package. Inspect with ${proberInstallCommand}; then run without --check when the job is idle.`, "warn"); } });
-  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const bypassed = bypassState().enabled; const ready = mode.mode === "authority-client" ? (bypassed ? !!gatedPort(provider, true) : !!authorityClient && AUTHORITY_PROVIDERS.includes(provider)) : !!PROVIDER_PORTS[provider]; ctx.ui.setStatus("claude-permit-gate", ready ? (bypassed ? "Claude gate: ready (bypass)" : undefined) : undefined); });
-  pi.on("before_provider_request", async (event: any, ctx) => { const provider = ctx.model?.provider; if (!provider) return undefined; const warm = event?.payload?.max_tokens === 1; let bypassed = bypassState().enabled; if (mode.mode === "authority-client" && !bypassed) { if (!(AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) return undefined; if (await acquireAuthority(ctx, authorityClient!, provider, detached, warm) !== "bypassed") return undefined; bypassed = true; } const port = gatedPort(provider, bypassed); if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider, warm); return undefined; });
+  pi.on("model_select", async (event: any, ctx: any) => { if (!ctx.hasUI) return; const provider = event.model?.provider; const bypassed = bypassState().enabled; ctx.ui.setStatus("claude-permit-gate", bypassed && gatedPort(provider, true) ? "Claude gate: ready (bypass)" : undefined); });
+  pi.on("before_provider_request", async (event: any, ctx) => {
+    const provider = ctx.model?.provider;
+    if (!provider) return undefined;
+    if (localConfig?.kind === "invalid" && localConfig.blockedProviders.has(provider)) {
+      await blockProviderRequest(ctx, localConfig.reason);
+      return undefined;
+    }
+    const warm = event?.payload?.max_tokens === 1; let bypassed = bypassState().enabled; if (mode.mode === "authority-client" && !bypassed) { if (!(AUTHORITY_PROVIDERS as readonly string[]).includes(provider)) return undefined; if (await acquireAuthority(ctx, authorityClient!, provider, detached, warm) !== "bypassed") return undefined; bypassed = true; } const port = gatedPort(provider, bypassed); if (!port) return undefined; try { await ensureDaemon(directory, port, provider); } catch {} await acquire(ctx, directory, port, provider, warm); return undefined; });
   releaseWarmPermit = (reason) => release(false, reason, undefined, detached);
   pi.on("after_provider_response", async (event: any) => { if (!activePermit?.warm) return undefined; const status = Number(event?.status); const failure = status === 429 ? "rate-limit" : status === 529 ? "overloaded" : undefined; await release(!!failure, failure ? `assistant-${failure}` : "cache-warm", failure ? cooldown(failure) : undefined, detached).catch(() => {}); return undefined; });
-  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined, detached); const bypassed = bypassState().enabled; if (ctx.hasUI && (mode.mode === "authority-client" ? (bypassed ? !!gatedPort(ctx.model?.provider, true) : AUTHORITY_PROVIDERS.includes(ctx.model?.provider)) : PROVIDER_PORTS[ctx.model?.provider])) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : undefined); return undefined; });
+  pi.on("message_end", async (event, ctx) => { if (!activePermit || event.message.role !== "assistant") return undefined; const failure = providerFailure(event.message); await release(!!failure, failure ? `assistant-${failure}` : "assistant-end", failure ? cooldown(failure) : undefined, detached); const bypassed = bypassState().enabled; const provider = ctx.model?.provider; if (ctx.hasUI && (mode.mode === "authority-client" ? (bypassed ? !!gatedPort(provider, true) : (AUTHORITY_PROVIDERS as readonly string[]).includes(provider ?? "")) : localPorts?.has(provider ?? ""))) ctx.ui.setStatus("claude-permit-gate", bypassed ? "Claude gate: ready (bypass)" : undefined); return undefined; });
   pi.on("agent_end", async () => { await release(false, "agent-end", undefined, detached); }); pi.on("session_shutdown", async () => { await release(false, "session-shutdown", undefined, detached); });
-  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { const state = bypassState(); if (mode.mode === "authority-client" && !state.enabled) { ctx.ui.notify(`Claude permit authority client is configured. Bypass is ${describeBypass(state)}.`, "info"); return; } const lines = mode.mode === "authority-client" ? [`Claude permit gate doctor (bypass is ${describeBypass(state)}):`] : ["Claude permit gate doctor:"]; const pools = mode.mode === "authority-client" ? AUTHORITY_PROVIDERS.map((provider) => [provider, mode.lanes[provider].port] as const) : Object.entries(PROVIDER_PORTS); for (const [provider, port] of pools) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
+  pi.registerCommand("claude-permit", { description: "Show Claude permit gate status: /claude-permit", handler: async (_args, ctx) => { if (localConfig?.kind === "invalid") { ctx.ui.notify(invalidLocalConfigMessage(localConfig.reason), "error"); return; } const state = bypassState(); if (mode.mode === "authority-client" && !state.enabled) { ctx.ui.notify(`Claude permit authority client is configured. Bypass is ${describeBypass(state)}.`, "info"); return; } const lines = mode.mode === "authority-client" ? [`Claude permit gate doctor (bypass is ${describeBypass(state)}):`] : ["Claude permit gate doctor:"]; const pools = mode.mode === "authority-client" ? AUTHORITY_PROVIDERS.map((provider) => [provider, mode.lanes[provider].port] as const) : localPorts ?? []; for (const [provider, port] of pools) { const health = await getJson<unknown>(port); lines.push(doctorLine(provider, port, health, recoveryMessage(port))); } ctx.ui.notify(lines.join("\n"), "info"); } });
   pi.registerCommand("claude-permit-bypass", { description: "Gate Claude locally while off the authority network: /claude-permit-bypass [on [hours]|off|status]", handler: async (args, ctx) => {
     if (mode.mode !== "authority-client" || !bypassFile) { ctx.ui.notify("Claude permit bypass applies only to an authority client. This session already gates locally.", "warn"); return; }
     const [action = "status", duration] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
