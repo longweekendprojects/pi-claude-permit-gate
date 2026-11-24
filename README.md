@@ -191,6 +191,8 @@ A legacy daemon may remain usable until a separately approved maintenance window
 curl http://127.0.0.1:8791/health
 ```
 
+The local daemon accepts only its own `127.0.0.1:<port>` Host and rejects any `Origin` header. Control POSTs require `Content-Type: application/json`.
+
 New daemons retain `version: 3` and add `protocolVersion: 1`, the provider supplied through `CLAUDE_PERMIT_GATE_PROVIDER`, and a random UUID `instanceId`. Health and successful `/acquire` responses report the same instance identity. `startedAt` is an ISO-8601 timestamp with fractional seconds, such as `2026-01-02T03:04:05.678Z`; the doctor parses it to report daemon age.
 
 Compatibility is fail closed at the acquire boundary:
@@ -210,9 +212,19 @@ The daemon writes its log under:
 ~/.pi/agent/claude-permit-gate/permit-daemon.log
 ```
 
+### Local control authentication
+
+Local daemons share a mode-`0600` `local-token` file under `<agent dir>/claude-permit-gate/`. The agent directory is `PI_CODING_AGENT_DIR` when set, or `~/.pi/agent` by default.
+
+Leave `require-local-token.on` absent while replacing local daemons and reloading sessions. Confirm all local clients and daemons use the same agent directory and the token exists with mode `0600`.
+
+After the reloads, create an empty `require-local-token.on` beside `local-token` to require a token on control POSTs. Remove the switch file to restore old client access without removing the header checks. Neither action requires a restart.
+
+The switch does not affect `GET /health` or the shared authority's `/v1` API. An updated client reads the token before each local control POST.
+
 ## Limitations
 
-The gate coordinates only local Pi processes. It cannot prevent Anthropic-side outages or enforce a limit across machines. A configured daemon port is unauthenticated and reachable by any process on the local machine, so another local user or service can occupy a permit or request a cooldown. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
+Local mode cannot enforce a limit across machines or prevent Anthropic-side outages. Until the switch is enabled, local programs can still send control POSTs. Token enforcement does not protect against other programs running as the same user. Queue fairness is per Pi session in this release; subagent fanout can therefore gain additional scheduling turns.
 
 The gate persists active leases and cooldown state before a graceful daemon restart. A replacement daemon conservatively counts restored leases until clients renew or release them, so it does not grant overlapping permits. An unclean machine crash remains bounded only by the five-minute lease timeout. Legacy compatibility requires a valid, stable `startedAt`; a legacy owner without one remains blocked because a grant cannot be safely tied to its preflight. The gate remains pending while it restores an unavailable daemon, unless the user presses Esc to cancel that waiting request. Failed launches back off per port and report the daemon diagnostic after the configured warning threshold.
 

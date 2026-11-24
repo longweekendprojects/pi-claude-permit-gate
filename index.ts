@@ -11,6 +11,7 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LOCAL_HOST, localAuthorization } from "./local-request-auth.mjs";
 
 const DEFAULT_PORTS: Record<string, number> = { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 };
 const AUTHORITY_PROVIDERS = ["anthropic-a", "anthropic-b", "anthropic-c", "anthropic-d"] as const;
@@ -163,7 +164,7 @@ function getJson<T = any>(port: number, pathname = "/health", timeoutMs = 1000, 
     const abort = () => { req?.destroy(); finish(undefined); };
     if (signal?.aborted) { finish(undefined); return; }
     signal?.addEventListener("abort", abort, { once: true });
-    req = http.get(`http://127.0.0.1:${port}${pathname}`, { timeout: timeoutMs }, (res) => {
+    req = http.get(`http://${LOCAL_HOST}:${port}${pathname}`, { timeout: timeoutMs }, (res) => {
       let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("error", () => finish(undefined)); res.on("end", () => { try { finish(text ? JSON.parse(text) : undefined); } catch { finish(undefined); } });
     });
     req.on("timeout", () => { req?.destroy(); finish(undefined); }); req.on("error", () => finish(undefined));
@@ -173,7 +174,8 @@ function postJson<T = any>(port: number, pathname: string, body: any, timeoutMs 
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(abortError()); return; }
     const payload = JSON.stringify(body ?? {});
-    const req = http.request(`http://127.0.0.1:${port}${pathname}`, { method: "POST", timeout: timeoutMs, headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
+    const authorization = localAuthorization();
+    const req = http.request(`http://${LOCAL_HOST}:${port}${pathname}`, { method: "POST", timeout: timeoutMs, headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...(authorization ? { authorization } : {}) } }, (res) => {
       let text = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } });
     });
     req.on("error", reject); const abort = () => { reject(abortError()); req.destroy(); }; signal?.addEventListener("abort", abort, { once: true });

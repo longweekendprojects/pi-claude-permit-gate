@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { AuthorityError, authenticateAuthorityBearer, compactRetainedState, authorityVerifierFencePath, authorityVerifierPath, openAuthorityState, withAuthorityVerifierFence, writeAuthorityVerifierStore } from "../authority-state.mjs";
-import { ensureDaemon } from "../index.ts";
+import { acquirePermitResponse, classifyDaemonHealth, ensureDaemon } from "../index.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const daemonPath = path.join(root, "permit-daemon.mjs");
@@ -21,12 +21,14 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function unusedPort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const { port } = server.address(); await new Promise((resolve) => server.close(resolve)); return port;
+  const { port } = server.address(); await new Promise((resolve) => server.close(resolve));
+  assert.ok(port < 8790 || port > 8797, "tests must not use a live daemon port");
+  return port;
 }
 function request(port, method, pathname, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    const headers = { ...extraHeaders, ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}) };
+    const headers = { ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}), ...extraHeaders };
     const req = http.request({ host: "127.0.0.1", port, method, path: pathname, timeout: 5000, headers }, (res) => {
       let text = ""; res.on("data", (chunk) => { text += chunk; }); res.on("end", () => { try { resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text || "{}") }); } catch (error) { reject(error); } });
     });
@@ -47,7 +49,7 @@ const acquire = (port, session) => request(port, "POST", "/acquire", { session }
 const release = (port, permitId) => request(port, "POST", "/release", { permitId });
 async function eventually(check, message, timeoutMs = 3000) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { try { const value = await check(); if (value) return value; } catch {} await delay(20); } throw new Error(message); }
 async function startDaemon(port, home, overrides = {}) {
-  const child = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_PORT: String(port), ...overrides }, stdio: "ignore" });
+  const child = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: path.join(home, "agent"), CLAUDE_PERMIT_GATE_PORT: String(port), ...overrides }, stdio: "ignore" });
   await eventually(async () => (await health(port)).ok, "daemon did not start");
   return child;
 }
@@ -242,7 +244,7 @@ test("daemon health reports provenance and EADDRINUSE re-probes a compatible own
   }
   assert.equal((await health(gate.port)).active, 0);
   const contenderHome = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-permit-gate-")); t.after(() => fs.rm(contenderHome, { recursive: true, force: true }));
-  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: contenderHome, CLAUDE_PERMIT_GATE_PORT: String(gate.port), CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }, stdio: "ignore" });
+  const contender = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: contenderHome, PI_CODING_AGENT_DIR: path.join(contenderHome, "agent"), CLAUDE_PERMIT_GATE_PORT: String(gate.port), CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }, stdio: "ignore" });
   const exited = await new Promise((resolve) => contender.once("exit", (code, signal) => resolve({ code, signal })));
   assert.deepEqual(exited, { code: 3, signal: null });
 
@@ -259,6 +261,69 @@ test("daemon health reports provenance and EADDRINUSE re-probes a compatible own
   const retried = await ensureDaemon("/unused", port, "anthropic-a", options);
   assert.equal(retried.spawned, true); assert.equal(spawns, 2, "a compatible occupied-port winner must clear recovery");
   await ensureDaemon("/unused", port, "anthropic-a", { probe: async () => ({ ok: true, protocolVersion: 1, provider: "anthropic-a", instanceId: "11111111-1111-4111-8111-111111111111" }), spawnDaemon: () => second });
+});
+
+test("local admission rejects unsafe headers even without the exact switch file", async (t) => {
+  const gate = await daemon(); t.after(() => gate.stop());
+  const dir = path.join(gate.home, "agent", "claude-permit-gate");
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(dir, "require-local-token.typo"), "", { mode: 0o600 });
+  const held = await acquire(gate.port, "holder");
+  assert.equal(held.status, 200);
+  const payload = { permitId: held.body.permitId, reason: "fixture" };
+  for (const [name, headers, body, status] of [
+    ["foreign Host", { host: "other.example" }, payload, 400],
+    ["wrong Host port", { host: "127.0.0.1:1" }, payload, 400],
+    ["Origin", { origin: "https://site.example" }, payload, 403],
+    ["empty Origin", { origin: "" }, payload, 403],
+    ["non-JSON content type", { "content-type": "text/plain" }, payload, 415],
+    ["missing content type", {}, undefined, 415],
+  ]) {
+    await t.test(name, async () => {
+      const rejected = await request(gate.port, "POST", "/throttle", body, headers);
+      const { active, queued, throttles, cooldownMsRemaining } = await health(gate.port);
+      assert.deepEqual({ status: rejected.status, active, queued, throttles, cooldownMsRemaining },
+        { status, active: 1, queued: 0, throttles: 0, cooldownMsRemaining: 0 });
+    });
+  }
+  await t.test("health still checks Host and Origin", async () => {
+    assert.equal((await request(gate.port, "GET", "/health", undefined, { host: "other.example" })).status, 400);
+    assert.equal((await request(gate.port, "GET", "/health", undefined, { origin: "null" })).status, 403);
+  });
+});
+
+test("local token enforcement stages old clients, admits updated clients, and rolls back live", async (t) => {
+  const gate = await daemon({ CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }); t.after(() => gate.stop());
+  const agent = path.join(gate.home, "agent");
+  const dir = path.join(agent, "claude-permit-gate");
+  const switchFile = path.join(dir, "require-local-token.on");
+  const old = await acquire(gate.port, "old-client");
+  assert.equal(old.status, 200);
+  assert.equal((await release(gate.port, old.body.permitId)).body.ok, true);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(switchFile, "", { mode: 0o600 });
+  const denied = await acquire(gate.port, "old-client");
+  assert.equal(denied.status, 401);
+  assert.equal((await request(gate.port, "POST", "/acquire", { session: "wrong-token" }, { authorization: `Bearer ${"0".repeat(64)}` })).status, 401);
+  const state = await health(gate.port);
+  assert.deepEqual([state.ok, state.active, state.queued, state.granted], [true, 0, 0, 1]);
+  assert.equal((await fs.stat(path.join(dir, "local-token"))).mode & 0o777, 0o600);
+
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  try {
+    const updated = await acquirePermitResponse(gate.port, { session: "updated-client", provider: "anthropic-a" }, root, {
+      ensure: async () => ({ ...classifyDaemonHealth(await health(gate.port), "anthropic-a"), spawned: false }),
+      wait: async () => assert.fail("updated client did not acquire with the token"),
+      signal: AbortSignal.timeout(2_000),
+    });
+    assert.ok(updated.permitId);
+    await fs.unlink(switchFile);
+    assert.equal((await release(gate.port, updated.permitId)).body.ok, true);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  }
 });
 
 test("daemon bounds concurrency and schedules sessions round-robin", async (t) => {
