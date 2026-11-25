@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.35 - 2026-11-25
 
 - Show recent model overloads in the Claude Lane Monitor. Sessions report each overloaded reply to their lane, and the lane counts them per model for five minutes. A report never pauses the lane.
 - The authority no longer pauses a lane when an older client (v0.4.33 or earlier) reports an overload. Deploying the authority ends overload pauses from every Mac, including sessions that have not reloaded.
