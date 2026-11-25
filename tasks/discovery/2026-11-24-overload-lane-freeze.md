@@ -43,3 +43,11 @@ Release the permit normally after an overload, and keep the lane pause for rate 
 - Live probe on lane D: a report for claude-verify-probe-0-1 appeared on health, in lane-samples.jsonl, and on the opted-in snapshot. A snapshot without the header kept its 21 old keys. The new monitor's decoding and presentation code, fed the live snapshots, showed all four lanes current and the alert "Claude Verify Probe 0.1: recent overloads on lane D".
 - Lane monitor aaa20b4 installed; previous app kept at ~/.local/share/claude-lane-monitor-backups/.
 - Pre-install copies: path in /tmp/permit-backup-path. Roll back one lane with scripts/install-authority.sh --rollback-lane anthropic-<x>.
+
+## 2026-11-25 06:13Z onward: lane B rate limits from albot
+
+- From 06:13Z to at least 06:41Z, lane B recorded 33 `assistant_rate_limit` throttles. Every one came from installation `2ebd38b4` (albot). This Mac (`b4cc4ae9`) had 19 released tickets on lane B and no throttles in the same window.
+- All tickets used the same account binding `49c0e5bf`. The 429s are per session: sessions `01a1fae8`, `01a1c8c7`, `01a1faa9`, `01a1fbe1`, and `01a164bc` were throttled on almost every ticket, while `01a20c16` (75 tickets) and `01a20599` (19) were never throttled.
+- Each throttle cut the lane limit. Lane B fell from 24 to 3 by 06:18Z, then recovered, then fell again from 06:33Z.
+- Hypothesis, unverified: a request-class limit such as Anthropic's long-context rate limit, not the account quota. Confirming it needs the error text from albot. SSH to `albot.local` fails host-key verification from ruminaider; the ED25519 fingerprint offered at 100.71.17.91 is `SHA256:QagoHD9xu/yyGBMhrpyNKAEF2ldc0ppYfM7LDGxs+3k`.
+- This likely also explains critique F2, the unexplained lane B cooldowns at 04:53Z to 04:56Z.
