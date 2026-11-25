@@ -35,3 +35,11 @@ Release the permit normally after an overload, and keep the lane pause for rate 
 - `~/Library/Logs/Claude Permit Authority/lane-samples.jsonl`, provider `anthropic-c`, 04:49Z to 04:59Z.
 - Pi session logs under `~/.pi/agent/sessions/--Users-albertgwo-Repositories-albot--/` for the same window.
 - 2026-11-25: Follow-up shipped. Lanes now count overload reports per model, the lane monitor shows them, and the authority ignores the lane pause that older clients request on an overload. Design: tasks/plans/model-overload-alerts.md.
+
+## Deployed v0.4.35 (2026-11-25 05:57 UTC)
+- Client v0.4.35 pinned in pi-dotfiles (9d7586a) and checked out in the live package directory. Lane sampler restarted.
+- Authority installed from b3ecdd7 on ruminaider. All four lanes restarted ready: terms A45, B36, C43, D30, limits kept (28/24/24/4). The install now runs the lanes on Homebrew Node 26.13.1 instead of nvm Node 22.19, because scripts/launchd-node.mjs prefers /opt/homebrew/bin/node; the suite and the offline check pass on both.
+- Offline check before install, on copies of the four live lane states: v0.4.35 opened each, ran create, claim, complete, and an overload report; v0.4.29 then reopened every copy.
+- Live probe on lane D: a report for claude-verify-probe-0-1 appeared on health, in lane-samples.jsonl, and on the opted-in snapshot. A snapshot without the header kept its 21 old keys. The new monitor's decoding and presentation code, fed the live snapshots, showed all four lanes current and the alert "Claude Verify Probe 0.1: recent overloads on lane D".
+- Lane monitor aaa20b4 installed; previous app kept at ~/.local/share/claude-lane-monitor-backups/.
+- Pre-install copies: path in /tmp/permit-backup-path. Roll back one lane with scripts/install-authority.sh --rollback-lane anthropic-<x>.
