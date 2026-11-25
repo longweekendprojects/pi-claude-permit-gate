@@ -1,3 +1,4 @@
+import "./clean-permit-environment.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -14,7 +15,18 @@ test("prober-only inspection detects a missing job without provisioning other se
     fs.mkdirSync(scriptDir, { recursive: true });
     fs.copyFileSync(new URL("../scripts/bootstrap-client.mjs", import.meta.url), path.join(scriptDir, "bootstrap-client.mjs"));
     fs.copyFileSync(new URL("../scripts/launchd-node.mjs", import.meta.url), path.join(scriptDir, "launchd-node.mjs"));
-    const run = spawnSync(process.execPath, [path.join(scriptDir, "bootstrap-client.mjs"), "--prober-only", "--check"], {
+    const preload = path.join(home, "mock-launchd.mjs");
+    fs.writeFileSync(preload, `
+      import childProcess from "node:child_process";
+      import { syncBuiltinESMExports } from "node:module";
+      childProcess.spawnSync = (command, args) => {
+        if (args[0] === "-e") return { status: 0 };
+        if (command === "/bin/launchctl" && args[0] === "print") return { status: 1 };
+        throw new Error("unexpected command: " + command);
+      };
+      syncBuiltinESMExports();
+    `);
+    const run = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, path.join(scriptDir, "bootstrap-client.mjs"), "--prober-only", "--check"], {
       env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 5000,
     });
     assert.equal(run.status, 1, run.stderr);
@@ -44,7 +56,7 @@ test("authority-client session warns about a prober still pointing at another pa
       if (!notices.some((message) => message.includes("--prober-only --check"))) throw new Error("missing migration warning");
     `);
     const run = spawnSync(process.execPath, ["--experimental-strip-types", runner], {
-      env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: "https://example.test", CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: configPath },
+      env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_MODE: "authority-client", CLAUDE_PERMIT_GATE_ORIGIN: "https://example.test", CLAUDE_PERMIT_GATE_AUTHORITY_CONFIG: configPath, CLAUDE_PERMIT_GATE_TOKEN_CACHE_MS: "0" },
       encoding: "utf8", timeout: 5000,
     });
     assert.equal(run.status, 0, run.stderr);

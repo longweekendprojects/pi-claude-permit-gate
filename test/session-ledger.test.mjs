@@ -1,3 +1,4 @@
+import "./clean-permit-environment.mjs";
 // Retry state v2: one file per session, a synchronous critical section, and a token that never makes a request wait.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";

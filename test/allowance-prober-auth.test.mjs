@@ -1,3 +1,4 @@
+import "./clean-permit-environment.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +33,7 @@ test("a canonical Pi write on another account cannot erase the prober's rotated 
   const entered = deferred(); const release = deferred();
   let piWrite;
   try {
-    const resolveToken = await createAllowanceAuth(temp.authPath);
+    const resolveToken = await createAllowanceAuth(temp.authPath, runtime);
     const piStore = AuthStorage.create(temp.authPath);
     piWrite = piStore.modify("anthropic-a", async () => { entered.resolve(); await release.promise; return fresh("a"); });
     await entered.promise;
@@ -66,8 +67,8 @@ test("concurrent stale reads of one account refresh once and return the rotated 
   const entered = deferred(); const release = deferred();
   let first, second;
   try {
-    const resolveFirst = await createAllowanceAuth(temp.authPath);
-    const resolveSecond = await createAllowanceAuth(temp.authPath);
+    const resolveFirst = await createAllowanceAuth(temp.authPath, runtime);
+    const resolveSecond = await createAllowanceAuth(temp.authPath, runtime);
     let refreshes = 0;
     globalThis.fetch = async (url, options) => {
       assert.equal(url, TOKEN_URL);
@@ -97,7 +98,7 @@ test("missing, invalid, rejected, and incompatible OAuth fail closed without rev
   const temp = temporaryAuth({ "anthropic-b": { type: "api_key", key: "synthetic-wrong-type" }, "anthropic-c": expired("c"), "anthropic-d": { type: "oauth", access: "synthetic-d-access", expires: Date.now() + 3_600_000 } });
   const originalFetch = globalThis.fetch;
   try {
-    const resolveToken = await createAllowanceAuth(temp.authPath);
+    const resolveToken = await createAllowanceAuth(temp.authPath, runtime);
     assert.equal(await resolveToken("anthropic-a"), undefined);
     assert.equal(await resolveToken("anthropic-b"), undefined);
     assert.equal(await resolveToken("anthropic-d"), undefined, "a credential without a refresh token cannot authenticate the lane");
@@ -123,8 +124,7 @@ test("standalone prober finds Pi independently of Node and continues usage after
     const authPath = path.join(agentDir, "auth.json");
     fs.writeFileSync(authPath, JSON.stringify({ "anthropic-a": expired("a"), "anthropic-c": fresh("c"), "anthropic-d": expired("d") }), { mode: 0o600 });
     fs.writeFileSync(path.join(gateDir, "authority-client.json"), JSON.stringify({}), { mode: 0o600 });
-    const cli = path.join(home, "pi");
-    fs.symlinkSync(path.join(runtime, "dist/cli.js"), cli);
+    const cli = path.join(runtime, "dist/cli.js");
     const preload = path.join(home, "mock-transport.mjs");
     fs.writeFileSync(preload, `
       import assert from "node:assert/strict";
