@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.34 - 2026-11-25
+
+- Stop pausing a whole lane after an overload. An overload affects one model, so one overloaded model no longer stalls every other model on the account. Rate limits still pause the lane.
+- Remove the `CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS` setting.
+
 ## 0.4.33 - 2026-11-24
 
 - Reject unexpected Host and Origin headers on local requests and require JSON on control POSTs.

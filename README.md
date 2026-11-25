@@ -35,7 +35,7 @@ The extension starts each daemon on demand. It gates only configured Anthropic-f
 - Shares a fair, round-robin queue among local Pi sessions that use the same provider.
 - Releases permits after a response, an agent exit, or session shutdown.
 - Renews live permits and reclaims abandoned permits after the configured lease timeout.
-- Backs off after Anthropic overloads or rate limits, then gradually restores concurrency.
+- Backs off after Anthropic rate limits, then gradually restores concurrency. An overload affects one model, not the account, so it does not pause the pool; Pi's own retry backs off the failed request.
 - Keeps waiting if its daemon is unavailable, rather than sending an ungated request.
 
 It does not proxy provider traffic, read credentials, register providers, select accounts, or modify provider payloads.
@@ -62,7 +62,7 @@ node scripts/authority-admin.mjs capacity \\
   --backup-path ~/lane-8791.backup.json
 ```
 
-Raising the ceiling does not raise live concurrency by itself. The scheduler climbs into the new headroom one step per renew interval, and backs off again after an overload or rate limit.
+Raising the ceiling does not raise live concurrency by itself. The scheduler climbs into the new headroom one step per renew interval, and backs off again after a rate limit.
 
 Authority mode reads the shared owner-only verifier store at `~/Library/Application Support/Claude Permit Authority/verifiers-v1.json`. Each lane also requires its non-secret `CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID`; every request body must match that lane binding.
 
@@ -166,7 +166,6 @@ The daemon reads its settings when it first starts. Each pool defaults to two co
 | `CLAUDE_PERMIT_GATE_INCREASE_AFTER_MS` | `120000` | Quiet period before concurrency rises. |
 | `CLAUDE_PERMIT_GATE_PERMIT_TTL_MS` | `300000` | Time without a renewal before a permit is reclaimed. Set to `0` to disable reclaiming. |
 | `CLAUDE_PERMIT_GATE_RATE_LIMIT_COOLDOWN_MS` | `20000` | Cooldown requested after a rate-limit response. |
-| `CLAUDE_PERMIT_GATE_OVERLOADED_COOLDOWN_MS` | `60000` | Cooldown requested after an overload response. |
 | `CLAUDE_PERMIT_GATE_ACQUIRE_RETRY_MS` | `500` | Delay between failed acquire attempts. |
 | `CLAUDE_PERMIT_GATE_TOKEN_CACHE_MS` | `900000` | How long the shared-authority client keeps the Keychain token in memory. Past half this age it is read again in the background, so a request never waits on the Keychain once the process has a token; the first read starts when the session starts. A token the authority refuses is read again once. `0`, or a value that is not a number, reads the Keychain before every request. |
 | `CLAUDE_PERMIT_GATE_SESSION_LEDGER` | `1` | The shared-authority client keeps its retry state in one small file per session under `authority-client-tickets-v2/`, so a session slowed by memory pressure never holds up another session's permit. Each write is an atomic rename at once, fsynced in the background. `0` returns to the one shared `authority-client-tickets-v1.json` file of v0.4.30. |
