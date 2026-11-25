@@ -391,7 +391,7 @@ const DIR = path.join(os.homedir(), ".pi", "agent", "claude-permit-gate");
 const LOG = path.join(DIR, "permit-daemon.log");
 const STATE = path.join(DIR, `permit-state-${PORT}.json`);
 fs.mkdirSync(DIR, { recursive: true, mode: 0o700 });
-const { rejectLocalRequest, stats: localAuthStats } = localRequestGuard(log);
+const { rejectLocalRequest, stats: localAuthStats, directory: tokenDirectory } = localRequestGuard(log);
 
 const stats = { startedAt: new Date().toISOString(), granted: 0, released: 0, cancelled: 0, expired: 0, throttles: 0, peakActive: 0, peakQueued: 0, peakOldestWaitMs: 0 };
 const active = new Map();
@@ -500,7 +500,7 @@ const server = http.createServer(async (req, res) => {
   reply(res, 404, { ok: false, error: "not found" });
 });
 server.on("error", (error) => { if (error.code === "EADDRINUSE") process.exit(3); log("server error", error.message); process.exit(1); });
-server.listen(PORT, LOCAL_HOST, () => log(`permit daemon listening on ${LOCAL_HOST}:${PORT}; concurrency ${current}/${MAX}; cooldown<=${MAX_COOLDOWN_MS}ms; permitTtl ${PERMIT_TTL_MS}ms`));
+server.listen(PORT, LOCAL_HOST, () => log(`permit daemon listening on ${LOCAL_HOST}:${PORT}; concurrency ${current}/${MAX}; cooldown<=${MAX_COOLDOWN_MS}ms; permitTtl ${PERMIT_TTL_MS}ms; token directory ${JSON.stringify(tokenDirectory)}`));
 const sweepTimer = setInterval(sweepStalePermits, 30000); sweepTimer.unref?.();
 function shutdown() { saveState(); for (const queue of queues.values()) for (const request of queue) { if (!request.done) { request.done = true; request.res.removeListener("close", request.cancel); reply(request.res, 503, { ok: false, retry: true }); } } server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 500).unref?.(); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

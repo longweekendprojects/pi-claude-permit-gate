@@ -305,9 +305,13 @@ test("local admission rejects unsafe headers even without the exact switch file"
 });
 
 test("local token enforcement stages old clients, admits updated clients, and rolls back live", async (t) => {
-  const gate = await daemon({ CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a" }); t.after(() => gate.stop());
+  const gate = await daemon({ CLAUDE_PERMIT_GATE_PROVIDER: "anthropic-a", PI_CODING_AGENT_DIR: "~/agent" }); t.after(() => gate.stop());
   const agent = path.join(gate.home, "agent");
   const dir = path.join(agent, "claude-permit-gate");
+  await t.test("the listening log names the resolved token directory", async () => {
+    const line = await eventually(async () => (await readDaemonLog(gate.home)).split("\n").find((entry) => entry.includes("permit daemon listening on")), "listening log did not appear", 1_000);
+    assert.ok(line.includes(`token directory ${JSON.stringify(dir)}`), "listening log omitted the configured token directory");
+  });
   const switchFile = path.join(dir, "require-local-token.on");
   const tokenFile = path.join(dir, "local-token");
   const token = await fs.readFile(tokenFile, "utf8");

@@ -218,7 +218,7 @@ The daemon writes its log under:
 
 ### Local control authentication
 
-Local daemons share a mode-`0600` `local-token` file under `<agent dir>/claude-permit-gate/`. The agent directory is `PI_CODING_AGENT_DIR` when set, or `~/.pi/agent` by default.
+Local daemons share a mode-`0600` `local-token` file under `<agent dir>/claude-permit-gate/`. The agent directory is `PI_CODING_AGENT_DIR` when set, or `~/.pi/agent` by default. The listening log line names the resolved token directory.
 
 Leave `require-local-token.on` absent while replacing local daemons and reloading sessions. Confirm all local clients and daemons use the same agent directory and the token exists with mode `0600`.
 
