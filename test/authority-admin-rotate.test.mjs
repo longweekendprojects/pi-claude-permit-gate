@@ -50,7 +50,8 @@ test("an expired token rotates to a successor, and Keychain receives the bearer 
 test("a revoked token still cannot be rotated", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "permit-rotate-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const writer = "/usr/bin/true";
+  const writer = path.join(home, "keychain-writer.sh");
+  await fs.writeFile(writer, "#!/bin/sh\ncat > /dev/null\n", { mode: 0o700 });
   const now = Date.now();
   assert.equal(await run(home, writer, ["enroll", "--installation-id", installationId, "--scope", "permit:mutate", "--lanes", lanes, "--token-id", "machine-permit-1", "--keychain-service", "test.authority", "--keychain-account", "machine", "--expires-at-epoch-ms", String(now + 3_600_000)], crypto.randomBytes(32)), 0);
   const revoke = await new Promise((resolve) => { const child = spawn(process.execPath, [admin, "revoke", "--token-id", "machine-permit-1"], { env: { ...process.env, HOME: home, CLAUDE_PERMIT_GATE_TEST_MODE: "1" }, stdio: "ignore" }); child.once("exit", resolve); });
