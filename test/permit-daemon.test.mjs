@@ -804,10 +804,18 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert(mutationFirstState.verifierGeneration < mutationFirstStore.generation);
 
   const expiredToken = crypto.randomBytes(32);
-  const expiredEnrollment = await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", authorityUuid(813), "--scope", "snapshot:read", "--lanes", providers.join(","), "--token-id", "expired-read", "--keychain-service", "test.authority", "--keychain-account", "expired-read.account", "--expires-at-epoch-ms", String(Date.now() + 100)], expiredToken);
-  assert.equal(expiredEnrollment.code, 0); await delay(150);
-  const expired = await request(sharedPorts[1], "GET", "/v1/snapshot", undefined, { authorization: bearer("expired-read", expiredToken) });
-  assert.equal(expired.status, 401); assert.equal(expired.body.error.code, "unauthenticated");
+  const futureToken = crypto.randomBytes(32);
+  const expiryNow = Date.now();
+  for (const [installation, tokenId, secret, expiresAt, status] of [
+    [814, "future-read", futureToken, expiryNow + 3_600_000, 200],
+    [813, "expired-read", expiredToken, expiryNow - 1_000, 401],
+  ]) {
+    const enrollment = await runAuthorityAdmin(sharedHome, ["enroll", "--installation-id", authorityUuid(installation), "--scope", "snapshot:read", "--lanes", providers.join(","), "--token-id", tokenId, "--keychain-service", "test.authority", "--keychain-account", `${tokenId}.account`, "--issued-at-epoch-ms", String(expiryNow - 2_000), "--expires-at-epoch-ms", String(expiresAt)], secret);
+    assert.equal(enrollment.code, 0, `could not enroll ${tokenId}`);
+    const snapshot = await request(sharedPorts[1], "GET", "/v1/snapshot", undefined, { authorization: bearer(tokenId, secret) });
+    assert.equal(snapshot.status, status);
+    if (status === 401) assert.equal(snapshot.body.error.code, "unauthenticated");
+  }
 
   const missingStatePort = await unusedPort();
   const missingStateDirectory = path.join(sharedHome, "missing-daemon-state");
@@ -883,7 +891,7 @@ test("authority authenticates reconnect-stable tickets and manages verifier gene
   assert.equal(JSON.parse(await fs.readFile(adminStatePath, "utf8")).scheduler.maximumConcurrency, 4, "a reduction below committed capacity must not apply");
 
   const persistedText = `${await fs.readFile(verifierStore, "utf8")}\n${await fs.readFile(adminStatePath, "utf8")}\n${await fs.readFile(backupPath, "utf8")}`;
-  const persistedSecrets = [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken, ...concurrentVerifiers.map(({ secret }) => secret), ...rotatedVerifiers.map(({ secret }) => secret)];
+  const persistedSecrets = [tokenOne, tokenRead, tokenPublish, tokenTwo, tokenNarrow, tokenRotated, expiredToken, futureToken, ...concurrentVerifiers.map(({ secret }) => secret), ...rotatedVerifiers.map(({ secret }) => secret)];
   for (const secret of persistedSecrets) assert.equal(persistedText.includes(secret.toString("base64url")), false);
   for (const secret of [...persistedSecrets, timingUnknownSecret, ...timingCredentials.map(({ secret }) => secret)]) secret.fill(0);
 });
