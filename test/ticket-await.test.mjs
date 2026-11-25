@@ -389,3 +389,17 @@ test("a kept health answer is asked for again after a failed create, but not aft
   await cycle(instance);
   assert.equal(healthCalls(link), 2, "and the new answer is kept");
 });
+
+test("an overload reported as a throttle by an old client ends the ticket but never pauses the lane, and a rate limit still does", async (t) => {
+  const gate = await lane(t, { concurrency: 2 });
+  const throttle = (ticket, operation, reason) => gate.authority.mutateTicket(principal, ticket.ticketId, "complete", mutation(operation, ticket.revision, { leaseId: ticket.lease.leaseId, generation: ticket.lease.generation, outcome: "throttled", reason, cooldownMs: 60_000 }));
+  const overloaded = (await gate.authority.createTicket(principal, create(1, 1), { claimOnOffer: true })).ticket;
+  const done = (await throttle(overloaded, 10, "assistant_overloaded")).ticket;
+  assert.equal(done.state, "throttled"); assert.equal(done.terminalReason, "assistant_overloaded");
+  let health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
+  assert.equal(health.cooldownUntilEpochMs, null); assert.equal(health.currentConcurrency, 2);
+  const limited = (await gate.authority.createTicket(principal, create(2, 2), { claimOnOffer: true })).ticket;
+  await throttle(limited, 11, "assistant_rate_limit");
+  health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
+  assert.ok(health.cooldownUntilEpochMs > Date.now()); assert.equal(health.currentConcurrency, 1);
+});

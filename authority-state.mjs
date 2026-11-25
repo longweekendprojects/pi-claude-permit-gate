@@ -1951,7 +1951,9 @@ export class AuthorityState {
         ticket.terminalAtEpochMs = now;
         ticket.terminalReason = request.outcome === "released" ? "released" : request.reason;
         ticket.lease = null;
-        if (request.outcome === "throttled") {
+        // An overload is Anthropic's capacity for one model, not the account's quota. Clients through
+        // v0.4.33 still report it as a throttle; the ticket records it, but the lane is not paused.
+        if (request.outcome === "throttled" && request.reason !== "assistant_overloaded") {
           const requestedCooldown = request.cooldownMs ?? 20_000;
           const cooldown = Math.min(Math.max(1_000, requestedCooldown), 60_000);
           const inUseAfterCompletion = capacityInUse(next);

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The authority no longer pauses a lane when an older client (v0.4.33 or earlier) reports an overload. Deploying the authority ends overload pauses from every Mac, including sessions that have not reloaded.
+
 ## 0.4.34 - 2026-11-25
 
 - Stop pausing a whole lane after an overload. An overload affects one model, so one overloaded model no longer stalls every other model on the account. Rate limits still pause the lane.
