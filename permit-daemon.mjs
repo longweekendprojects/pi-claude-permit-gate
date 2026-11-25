@@ -390,8 +390,8 @@ const PERMIT_TTL_MS = envInt("CLAUDE_PERMIT_GATE_PERMIT_TTL_MS", "ANTHROPIC_PERM
 const DIR = path.join(os.homedir(), ".pi", "agent", "claude-permit-gate");
 const LOG = path.join(DIR, "permit-daemon.log");
 const STATE = path.join(DIR, `permit-state-${PORT}.json`);
-const rejectLocalRequest = localRequestGuard();
-fs.mkdirSync(DIR, { recursive: true });
+fs.mkdirSync(DIR, { recursive: true, mode: 0o700 });
+const { rejectLocalRequest, stats: localAuthStats } = localRequestGuard(log);
 
 const stats = { startedAt: new Date().toISOString(), granted: 0, released: 0, cancelled: 0, expired: 0, throttles: 0, peakActive: 0, peakQueued: 0, peakOldestWaitMs: 0 };
 const active = new Map();
@@ -488,7 +488,7 @@ restoreState();
 const server = http.createServer(async (req, res) => {
   const rejection = rejectLocalRequest(req);
   if (rejection) return reply(res, rejection.status, { ok: false, error: rejection.message });
-  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, ...daemonProvenance(), active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats }); }
+  if (req.method === "GET" && req.url === "/health") { sweepStalePermits(); return reply(res, 200, { ok: true, version: 3, ...daemonProvenance(), active: active.size, min: MIN, current, max: MAX, cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()), ...snapshot(), ...stats, ...localAuthStats }); }
   const body = await readBody(req);
   if (req.method === "POST" && req.url === "/acquire") {
     if (!expectedProvenanceMatches(body)) return reply(res, 409, { ok: false, retry: true, error: "daemon provenance does not match expected values", ...daemonProvenance() });

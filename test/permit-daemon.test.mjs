@@ -48,6 +48,7 @@ function rawAuthorityRequest(port, pathname, payload, extraHeaders = {}) {
 const health = (port) => request(port, "GET", "/health").then((response) => response.body);
 const acquire = (port, session) => request(port, "POST", "/acquire", { session });
 const release = (port, permitId) => request(port, "POST", "/release", { permitId });
+const readDaemonLog = (home) => fs.readFile(path.join(home, ".pi", "agent", "claude-permit-gate", "permit-daemon.log"), "utf8");
 async function eventually(check, message, timeoutMs = 3000) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { try { const value = await check(); if (value) return value; } catch {} await delay(20); } throw new Error(message); }
 async function startDaemon(port, home, overrides = {}) {
   const child = spawn(process.execPath, [daemonPath], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: path.join(home, "agent"), CLAUDE_PERMIT_GATE_PORT: String(port), ...overrides }, stdio: "ignore" });
@@ -291,6 +292,16 @@ test("local admission rejects unsafe headers even without the exact switch file"
     assert.equal((await request(gate.port, "GET", "/health", undefined, { host: "other.example" })).status, 400);
     assert.equal((await request(gate.port, "GET", "/health", undefined, { origin: "null" })).status, 403);
   });
+  await t.test("health counts every admission rejection by status", async () => {
+    assert.deepEqual((await health(gate.port)).localRejectionsByStatus, { 400: 3, 403: 3, 415: 2 });
+  });
+  await t.test("a burst logs one rejection per status", async () => {
+    const logged = await eventually(async () => {
+      const lines = (await readDaemonLog(gate.home)).match(/local request rejected \(\d+\):/g) ?? [];
+      return lines.length >= 3 && lines.sort();
+    }, "daemon did not log a rejection for each status", 1_000);
+    assert.deepEqual(logged, [400, 403, 415].map((status) => `local request rejected (${status}):`));
+  });
 });
 
 test("local token enforcement stages old clients, admits updated clients, and rolls back live", async (t) => {
@@ -298,17 +309,33 @@ test("local token enforcement stages old clients, admits updated clients, and ro
   const agent = path.join(gate.home, "agent");
   const dir = path.join(agent, "claude-permit-gate");
   const switchFile = path.join(dir, "require-local-token.on");
+  const tokenFile = path.join(dir, "local-token");
+  const token = await fs.readFile(tokenFile, "utf8");
+  const auth = { authorization: `Bearer ${token}` };
+  const wrongAuth = { authorization: `Bearer ${token[0] === "0" ? "1" : "0"}${token.slice(1)}` };
+  const initial = await health(gate.port);
   const old = await acquire(gate.port, "old-client");
   assert.equal(old.status, 200);
+  const renewal = { permitId: old.body.permitId };
+  assert.equal((await request(gate.port, "POST", "/renew", renewal, auth)).body.ok, true);
+  assert.equal((await request(gate.port, "POST", "/renew", renewal, wrongAuth)).body.ok, true);
   assert.equal((await release(gate.port, old.body.permitId)).body.ok, true);
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const staged = await health(gate.port);
+  await t.test("health counts missing and wrong tokens with enforcement off", () => {
+    assert.deepEqual([initial.localControlPostsWithoutValidToken, staged.localControlPostsWithoutValidToken], [0, 3]);
+    assert.deepEqual(staged.localRejectionsByStatus, {});
+  });
   await fs.writeFile(switchFile, "", { mode: 0o600 });
   const denied = await acquire(gate.port, "old-client");
   assert.equal(denied.status, 401);
-  assert.equal((await request(gate.port, "POST", "/acquire", { session: "wrong-token" }, { authorization: `Bearer ${"0".repeat(64)}` })).status, 401);
+  assert.equal((await request(gate.port, "POST", "/acquire", { session: "wrong-token" }, wrongAuth)).status, 401);
   const state = await health(gate.port);
   assert.deepEqual([state.ok, state.active, state.queued, state.granted], [true, 0, 0, 1]);
-  assert.equal((await fs.stat(path.join(dir, "local-token"))).mode & 0o777, 0o600);
+  await t.test("health counts rejections and invalid tokens with enforcement on", () => {
+    assert.deepEqual(state.localRejectionsByStatus, { 401: 2 });
+    assert.equal(state.localControlPostsWithoutValidToken, 5);
+  });
+  assert.equal((await fs.stat(tokenFile)).mode & 0o777, 0o600);
 
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agent;
@@ -325,6 +352,15 @@ test("local token enforcement stages old clients, admits updated clients, and ro
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
   }
+});
+
+test("a local token creation failure reaches the daemon log", async (t) => {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "permit-token-failure-"));
+  t.after(() => fs.rm(scratch, { recursive: true, force: true }));
+  const agentFile = path.join(scratch, "not-a-directory");
+  await fs.writeFile(agentFile, "fixture");
+  const gate = await daemon({ PI_CODING_AGENT_DIR: agentFile }); t.after(() => gate.stop());
+  await eventually(async () => (await readDaemonLog(gate.home)).includes("Could not create the local permit token"), "token creation failure did not reach the daemon log", 1_000);
 });
 
 test("daemon bounds concurrency and schedules sessions round-robin", async (t) => {

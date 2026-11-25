@@ -80,6 +80,25 @@ test("failed acquisition remains pending and later recovery returns a permit", a
   assert.equal(recovered.permitId, "recovered"); assert.equal(recoveryAttempts, 4); assert.equal(recoveryEnsures, 4); assert.equal(warnings, 2);
 });
 
+test("a local acquire refusal reports its reason once and still waits for a permit", async () => {
+  const granted = { permitId: "recovered", instanceId: "22222222-2222-4222-8222-222222222222", provider: "anthropic", protocolVersion: 1 };
+  const current = classifyDaemonHealth({ ok: true, ...granted }, "anthropic");
+  const notices = [];
+  const noticesWhileWaiting = [];
+  let attempts = 0;
+  const response = await acquirePermitResponse(19000, { provider: "anthropic" }, "/unused", {
+    warningAfterAttempts: 2,
+    ensure: async () => ({ ...current, spawned: false }),
+    request: async () => ++attempts === 4 ? granted : { ok: false, error: "Local permit token required" },
+    onUnavailable: (message) => notices.push(message),
+    wait: async () => { noticesWhileWaiting.push(notices.length); },
+  });
+  assert.equal(response.permitId, "recovered");
+  assert.match(notices[0] ?? "", /Local permit token required/);
+  assert.deepEqual(noticesWhileWaiting, [1, 1, 1]);
+  assert.equal(notices.length, 1);
+});
+
 test("extension preserves provider payloads and owns one acquire hook", () => {
   assert.match(source, /await acquire\(ctx, directory, port, provider, warm\); return undefined;/);
   assert.equal((source.match(/pi\.on\("before_provider_request"/g) || []).length, 1);
