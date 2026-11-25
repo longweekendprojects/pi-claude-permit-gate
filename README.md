@@ -67,7 +67,9 @@ Raising the ceiling does not raise live concurrency by itself. The scheduler cli
 
 Authority mode reads the shared owner-only verifier store at `~/Library/Application Support/Claude Permit Authority/verifiers-v1.json`. Each lane also requires its non-secret `CLAUDE_PERMIT_GATE_ACCOUNT_BINDING_ID`; every request body must match that lane binding.
 
-Bearer secrets are accepted only from standard input. The tool pipes the value directly to macOS Keychain with `security add-generic-password ... -w` as the final prompted option, writes only SHA-256 verifiers to disk, and emits no secret value. Do not pass a bearer value through an argument, environment variable, file, log, or fixture.
+Bearer secrets are accepted only from standard input. The tool stores the bearer clients read, `<token-id>.<secret>`, in macOS Keychain by sending the `add-generic-password` command to `security -i` on standard input. It reads the item back to confirm the write, writes only SHA-256 verifiers to disk, and emits no secret value. Keychain writes fail in a non-interactive SSH session. Do not pass a bearer value through an argument, environment variable, file, log, or fixture.
+
+A token stops working at its expiry time, and clients then fail with "authority refused this machine's token". Rotate an expired token the same way as a live one. A revoked token cannot be rotated.
 
 ```bash
 # The generator and admin process exchange the bearer only through a pipe.

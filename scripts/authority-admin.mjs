@@ -156,26 +156,56 @@ async function readSecret() {
   }
 }
 
-function writeKeychainSecret(service, account, secret) {
-  const testWriter = isTestMode() ? process.env.CLAUDE_PERMIT_GATE_TEST_KEYCHAIN_WRITER : undefined;
-  const command = testWriter || "/usr/bin/security";
-  const args = testWriter ? [] : ["add-generic-password", "-U", "-a", account, "-s", service, "-w"];
+// Clients read the Keychain item as the bearer `<tokenId>.<base64url secret>`, so that is what is
+// stored. `security add-generic-password -w` fed by a pipe stores an empty value, so the command goes
+// to `security -i` on standard input, which keeps the bearer out of argv. `-U` updates an existing
+// item in place, keeping its access list. The stored value is read back and compared, never printed,
+// because `security -i` can exit 0 after a failed command.
+function keychainBearer(tokenId, secret) {
+  return Buffer.from(`${tokenId}.${secret.toString("base64url")}`);
+}
+
+function runSecurity(command, args, input) {
   return new Promise((resolve, rejectPromise) => {
     let child;
     try {
-      child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+      child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"] });
     } catch {
       rejectPromise(new Error("keychain write failed"));
       return;
     }
+    const chunks = [];
+    child.stdout.on("data", (chunk) => { chunks.push(chunk); });
     child.once("error", () => rejectPromise(new Error("keychain write failed")));
-    child.once("exit", (code, signal) => {
-      if (code === 0 && signal === null) resolve();
-      else rejectPromise(new Error("keychain write failed"));
+    child.once("close", (code, signal) => {
+      const output = Buffer.concat(chunks);
+      if (code === 0 && signal === null) resolve(output);
+      else { output.fill(0); rejectPromise(new Error("keychain write failed")); }
     });
     child.stdin.once("error", () => rejectPromise(new Error("keychain write failed")));
-    child.stdin.end(Buffer.concat([secret, Buffer.from("\n")]));
+    child.stdin.end(input);
   });
+}
+
+async function writeKeychainSecret(service, account, tokenId, secret) {
+  if (/["\\]/.test(service) || /["\\]/.test(account)) reject();
+  const bearer = keychainBearer(tokenId, secret);
+  const testWriter = isTestMode() ? process.env.CLAUDE_PERMIT_GATE_TEST_KEYCHAIN_WRITER : undefined;
+  const command = Buffer.concat([Buffer.from(`add-generic-password -U -a "${account}" -s "${service}" -w "`), bearer, Buffer.from(`"\n`)]);
+  try {
+    if (testWriter) { (await runSecurity(testWriter, [], bearer)).fill(0); return; }
+    (await runSecurity("/usr/bin/security", ["-i"], command)).fill(0);
+    const stored = await runSecurity("/usr/bin/security", ["find-generic-password", "-a", account, "-s", service, "-w"], Buffer.alloc(0));
+    try {
+      const value = stored.subarray(0, stored.length > 0 && stored[stored.length - 1] === 0x0a ? stored.length - 1 : stored.length);
+      if (value.length !== bearer.length || !crypto.timingSafeEqual(value, bearer)) throw new Error("keychain write failed");
+    } finally {
+      stored.fill(0);
+    }
+  } finally {
+    command.fill(0);
+    bearer.fill(0);
+  }
 }
 
 function verifierRecord({ tokenId, secret, installationId, scope, laneAllowlist, generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId }) {
@@ -225,7 +255,7 @@ async function enroll(values) {
   if (existing?.verifiers.some((record) => record.tokenId === tokenId) || existing?.verifiers.some((record) => record.installationId === installationId && record.scope === scope)) reject();
   const secret = await readSecret();
   try {
-    await writeKeychainSecret(service, account, secret);
+    await writeKeychainSecret(service, account, tokenId, secret);
     await updateAuthorityVerifierStore(storePath, (previous) => {
       if (previous?.verifiers.some((record) => record.tokenId === tokenId) || previous?.verifiers.some((record) => record.installationId === installationId && record.scope === scope)) reject();
       const generation = (previous?.generation ?? 0) + 1;
@@ -236,6 +266,9 @@ async function enroll(values) {
   }
 }
 
+// An expired token can be rotated. Refusing it locked the installation out for good once its token
+// lapsed: enroll refuses an installation that already holds a record for the scope, so no command
+// could restore access. A revoked token still cannot be rotated, because revocation is deliberate.
 async function rotate(values) {
   const oldTokenId = assertTokenId(required(values, "--old-token-id"));
   const tokenId = assertTokenId(required(values, "--new-token-id"));
@@ -248,14 +281,14 @@ async function rotate(values) {
   const storePath = verifierStorePath(values);
   const existing = readAuthorityVerifierStore(storePath);
   const existingRecord = existing.verifiers.find((record) => record.tokenId === oldTokenId);
-  if (!existingRecord || existingRecord.revokedAtEpochMs !== null || existingRecord.expiresAtEpochMs <= now || existing.verifiers.some((record) => record.tokenId === tokenId) || existing.verifiers.filter((record) => record.installationId === existingRecord.installationId && record.scope === existingRecord.scope).length >= 2) reject();
+  if (!existingRecord || existingRecord.revokedAtEpochMs !== null || existing.verifiers.some((record) => record.tokenId === tokenId) || existing.verifiers.filter((record) => record.installationId === existingRecord.installationId && record.scope === existingRecord.scope).length >= 2) reject();
   const secret = await readSecret();
   try {
-    await writeKeychainSecret(service, account, secret);
+    await writeKeychainSecret(service, account, tokenId, secret);
     await updateAuthorityVerifierStore(storePath, (previous) => {
       if (!previous) reject();
       const oldRecord = previous.verifiers.find((record) => record.tokenId === oldTokenId);
-      if (!oldRecord || oldRecord.revokedAtEpochMs !== null || oldRecord.expiresAtEpochMs <= now || previous.verifiers.some((record) => record.tokenId === tokenId) || previous.verifiers.filter((record) => record.installationId === oldRecord.installationId && record.scope === oldRecord.scope).length >= 2) reject();
+      if (!oldRecord || oldRecord.revokedAtEpochMs !== null || previous.verifiers.some((record) => record.tokenId === tokenId) || previous.verifiers.filter((record) => record.installationId === oldRecord.installationId && record.scope === oldRecord.scope).length >= 2) reject();
       const generation = previous.generation + 1;
       return nextStore(previous, [...previous.verifiers, verifierRecord({ tokenId, secret, installationId: oldRecord.installationId, scope: oldRecord.scope, laneAllowlist: [...oldRecord.laneAllowlist], generation, issuedAtEpochMs, expiresAtEpochMs, predecessorTokenId: oldRecord.tokenId })]);
     }, { allowCreate: true });

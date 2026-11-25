@@ -7,7 +7,8 @@ const configFor = (statePath) => ({ mode: "authority-client", origin: "https://a
 const lease = { leaseId: "55555555-5555-4555-8555-555555555555", generation: 1, claimedAtEpochMs: 4_000, renewSequence: 0, renewByEpochMs: 5_000, serverDeadlineEpochMs: 6_000 };
 const ticket = (requestId, state, revision) => ({ schemaVersion: 1, ticketId, requestId, provider: "anthropic-a", state, revision, createdAtEpochMs: 1_000, enqueuedAtEpochMs: 1_001, offeredAtEpochMs: state === "queued" ? null : 1_500, offerExpiresAtEpochMs: state === "queued" ? null : 9_000, terminalAtEpochMs: null, terminalReason: null, queueAhead: 0, lease: state === "active" ? lease : null });
 export const tokenOf = (name) => `${name}.${"a".repeat(43)}`;
-const refused = { status: 401, body: { error: { code: "unauthenticated", message: "bearer is unavailable" } } };
+// The authority's own refusal body: every refusal says "request rejected", whatever its cause.
+const refused = { status: 401, body: { schemaVersion: 1, error: { code: "unauthenticated", message: "request rejected", retryable: false, retryAfterMs: null } } };
 
 // A fake authority that accepts one bearer: queued on create, offered on the second poll, active on claim.
 export function harness(directory, { accepts, reads, token, onRequest }) {

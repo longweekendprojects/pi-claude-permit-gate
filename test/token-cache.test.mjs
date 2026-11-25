@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { TOKEN_REFUSED_MESSAGE } from "../index.ts";
 import { harness, tokenOf } from "./token-cache-harness.mjs";
 
 const inTemp = async (run) => { const directory = await fs.mkdtemp(path.join(os.tmpdir(), "permit-token-")); try { return await run(directory); } finally { await fs.rm(directory, { recursive: true, force: true }); } };
@@ -33,7 +34,7 @@ test("a token the authority refuses is read again once, and the same request is 
 
 test("a refusal of the token the Keychain still holds fails the request without another try", () => inTemp(async (directory) => {
   const { client, seen } = harness(directory, { accepts: tokenOf("other"), reads: [tokenOf("old")] });
-  await assert.rejects(client.acquire("anthropic-a"), /bearer is unavailable/);
+  await assert.rejects(client.acquire("anthropic-a"), (error) => error.message === TOKEN_REFUSED_MESSAGE);
   // One request, refused; one more Keychain read to see whether the token changed; no second request.
   assert.equal(seen.requests.length, 1);
   assert.equal(seen.tokenReads, 2);
@@ -41,7 +42,7 @@ test("a refusal of the token the Keychain still holds fails the request without 
 
 test("a new token the authority also refuses is not sent a third time", () => inTemp(async (directory) => {
   const { client, seen } = harness(directory, { accepts: tokenOf("other"), reads: [tokenOf("old"), tokenOf("new"), tokenOf("newer")] });
-  await assert.rejects(client.acquire("anthropic-a"), /bearer is unavailable/);
+  await assert.rejects(client.acquire("anthropic-a"), (error) => error.message === TOKEN_REFUSED_MESSAGE);
   assert.deepEqual(seen.requests, ["GET /v1/health", "GET /v1/health"]);
   assert.equal(seen.tokenReads, 2);
 }));
@@ -49,7 +50,7 @@ test("a new token the authority also refuses is not sent a third time", () => in
 test("a Keychain read that fails after a refusal surfaces the refusal, and the failed read is not kept", () => inTemp(async (directory) => {
   let reads = 0;
   const { client, seen } = harness(directory, { accepts: tokenOf("new"), reads: [tokenOf("old")], token: async () => { reads++; if (reads === 2) throw new Error("authority token is unavailable"); return reads === 1 ? tokenOf("old") : tokenOf("new"); } });
-  await assert.rejects(client.acquire("anthropic-a"), /bearer is unavailable/);
+  await assert.rejects(client.acquire("anthropic-a"), (error) => error.message === TOKEN_REFUSED_MESSAGE);
   assert.equal(seen.requests.length, 1);
   // The next acquisition reads the Keychain again and succeeds with the token it now holds.
   const held = await client.acquire("anthropic-a");
