@@ -232,7 +232,14 @@ function startAuthorityDaemon() {
       }
       if (req.method === "GET" && pathname === "/v1/snapshot") {
         await authorityPrincipal(req, "snapshot:read", configuration, authority);
-        authorityReply(res, 200, authority.snapshot({ instanceId, buildId }));
+        authorityReply(res, 200, authority.snapshot({ instanceId, buildId, includeModelOverloads: req.headers["x-permit-model-overloads"] === "1" }));
+        return;
+      }
+      // An advisory overload report touches only in-memory counts, so it never joins the mutation queue.
+      if (req.method === "POST" && pathname === "/v1/model-overloads") {
+        const authenticated = await authorityPrincipal(req, "permit:mutate", configuration, authority);
+        const requestBody = await authorityRequestBody(req);
+        authorityReply(res, 200, authority.reportModelOverload(authenticated.principal, requestBody));
         return;
       }
       // An await call is held open outside the serialized mutation queue; only an immediate claim it

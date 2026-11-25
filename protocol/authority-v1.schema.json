@@ -118,6 +118,12 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9._:-]{1,64}$"
     },
+    "ModelId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
     "RedactedMessage": {
       "type": "string",
       "minLength": 1,
@@ -595,14 +601,15 @@
         "capabilities": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
               "tickets",
               "snapshot",
               "allowance",
-              "ticket-await"
+              "ticket-await",
+              "model-overloads"
             ]
           }
         },
@@ -643,6 +650,9 @@
           ],
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "modelOverloads": {
+          "$ref": "#/$defs/ModelOverloadsV1"
         }
       },
       "allOf": [
@@ -812,6 +822,55 @@
         }
       ]
     },
+    "ModelOverloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "count",
+        "firstAtEpochMs",
+        "lastAtEpochMs"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/ModelId"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "firstAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        },
+        "lastAtEpochMs": {
+          "$ref": "#/$defs/EpochMilliseconds"
+        }
+      }
+    },
+    "ModelOverloadsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Advisory. Models a client on this lane reported as overloaded (HTTP 529) within the last windowMs, by authority clock, newest first. Kept in memory, reset when the lane restarts, and never used for scheduling.",
+      "required": [
+        "windowMs",
+        "models"
+      ],
+      "properties": {
+        "windowMs": {
+          "type": "integer",
+          "minimum": 60000,
+          "maximum": 3600000
+        },
+        "models": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/ModelOverloadV1"
+          }
+        }
+      }
+    },
     "LaneSnapshotDTOv1": {
       "type": "object",
       "additionalProperties": false,
@@ -915,6 +974,9 @@
         },
         "allowance": {
           "$ref": "#/$defs/AllowanceV1"
+        },
+        "modelOverloads": {
+          "$ref": "#/$defs/ModelOverloadsV1"
         }
       },
       "allOf": [
@@ -1616,6 +1678,58 @@
         },
         "sevenDay": {
           "$ref": "#/$defs/AllowanceWindowOrNullV1"
+        }
+      }
+    },
+    "ModelOverloadReportRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "POST /v1/model-overloads with permit:mutate. Reports that Anthropic answered one request for model on this lane as overloaded. source is message for a reply and warm for a cache keep-alive. Advertised by the model-overloads capability. Sent once without retry; never affects scheduling.",
+      "required": [
+        "schemaVersion",
+        "installationId",
+        "provider",
+        "accountBindingId",
+        "model",
+        "source"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "installationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "accountBindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelId"
+        },
+        "source": {
+          "enum": [
+            "message",
+            "warm"
+          ]
+        }
+      }
+    },
+    "ModelOverloadReportResponseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "accepted"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "accepted": {
+          "const": true
         }
       }
     },

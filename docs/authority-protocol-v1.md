@@ -79,9 +79,9 @@ A matching millisecond value is an exact multiple of 1,000 equal to `Retry-After
 
 ## Health and snapshot DTOs
 
-`GET /v1/health` requires an authenticated token authorized by the verifier and returns `AuthorityHealthV1` when a trusted response is available. A successful health or snapshot response has status `ready`, `draining`, or `degraded`; `starting` uses its required `503 authority_starting` error instead. Health contains only the schema and protocol versions, stable authority ID, lane term, process instance UUID, build ID, state schema version, server time, qualified status, provider, port, capabilities, and aggregate `active`, `offered`, `uncertain`, `queued`, `currentConcurrency`, `maximumConcurrency`, `cooldownUntilEpochMs`, and `oldestWaitEpochMs` fields.
+`GET /v1/health` requires an authenticated token authorized by the verifier and returns `AuthorityHealthV1` when a trusted response is available. A successful health or snapshot response has status `ready`, `draining`, or `degraded`; `starting` uses its required `503 authority_starting` error instead. Health contains only the schema and protocol versions, stable authority ID, lane term, process instance UUID, build ID, state schema version, server time, qualified status, provider, port, capabilities, and aggregate `active`, `offered`, `uncertain`, `queued`, `currentConcurrency`, `maximumConcurrency`, `cooldownUntilEpochMs`, and `oldestWaitEpochMs` fields. A lane with the `model-overloads` capability also returns `modelOverloads`.
 
-`GET /v1/snapshot` requires `snapshot:read` and returns `LaneSnapshotDTOv1`. It carries the same authority provenance, exact lane/provider/port identity, safe aggregate permit fields, and `allowance`. An allowance is either all null before an authority-accepted observation or has an observation time plus nullable 5-hour and 7-day windows. A window is exactly:
+`GET /v1/snapshot` requires `snapshot:read` and returns `LaneSnapshotDTOv1`. It carries the same authority provenance, exact lane/provider/port identity, safe aggregate permit fields, and `allowance`. It includes `modelOverloads` only when the request carries the header `x-permit-model-overloads: 1`, because older monitors reject unknown snapshot keys. An allowance is either all null before an authority-accepted observation or has an observation time plus nullable 5-hour and 7-day windows. A window is exactly:
 
 ```json
 {"utilization":0,"status":null,"resetEpochSeconds":1}
@@ -90,6 +90,16 @@ A matching millisecond value is an exact multiple of 1,000 equal to `Retry-After
 `status` is null or one of `allowed`, `allowed_warning`, `rejected`, `active`, `warning`, or `rate_limited`. Empty local status normalizes to null. Freshness, age, severity, and post-reset display truth remain monitor concerns.
 
 Neither endpoint may expose `bySession`, installation/session/request/ticket/lease IDs, account bindings or fingerprints, token/verifier data, OAuth or profile values, paths, request or response headers/bodies, or raw errors.
+
+## Model overload reports
+
+A lane that lists the `model-overloads` capability accepts `POST /v1/model-overloads` with `permit:mutate`. The body is `ModelOverloadReportRequestV1`: exactly schema version, installation UUID, provider, account-binding UUID, `model`, and `source`. `model` matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. `source` is `message` for a reply and `warm` for a cache keep-alive. The answer is `200 {"schemaVersion":1,"accepted":true}`.
+
+A client sends one report each time Anthropic answers a request on the lane as overloaded (HTTP 529). It sends once with a short timeout, never retries, and ignores every failure. It sends only when the lane's last health answer lists the capability, so an older lane never sees the route.
+
+The lane keeps report times per model in memory, by its own clock. It keeps at most 16 models, evicting the one with the oldest report, and at most 256 times per model. A restart clears the record. Reports never touch lane state or scheduling; an overload is advisory.
+
+Health and opted-in snapshots expose the record as `ModelOverloadsV1`: `windowMs` (60000 to 3600000, currently 300000) and `models`, the models reported within the window, newest first. Each entry has `model`, `count`, `firstAtEpochMs`, and `lastAtEpochMs`. A model id is the only identifying value exposed.
 
 ## Ticket endpoints and DTOs
 

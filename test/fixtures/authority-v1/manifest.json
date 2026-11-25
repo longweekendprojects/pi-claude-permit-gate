@@ -1,5 +1,5 @@
 {
-  "schemaSha256": "81bd8175f667f680142e06c7289937be78d7267e9ca3b3883314b2c8c5113d52",
+  "schemaSha256": "412cedb7a4d0da26694d468c9bd06ada4affe309216687b58d9a46c8fd40aef7",
   "referenceNowEpochMs": 1760000000000,
   "storedAllowanceObservedAtEpochMs": 1759999990000,
   "valid": [
@@ -158,6 +158,28 @@
       "definition": "VerifierStoreV1",
       "semantics": ["verifier-store"],
       "sha256": "27c48f69af42099ea7e434983969f9327a74b6331f3762c1d6eb09f52d04bdbe"
+    },
+    {
+      "file": "valid/health-response-model-overloads.json",
+      "definition": "HealthResponseFixtureV1",
+      "semantics": ["aggregate-capacity"],
+      "sha256": "b1db15031a10b4c8cdc9a2bb280e414697edbf8868758f129c0a7fe27fdf082f"
+    },
+    {
+      "file": "valid/model-overload-report-request.json",
+      "definition": "ModelOverloadReportRequestV1",
+      "sha256": "616415895b234bbfe6324280982014e4a5b301aba7766d247fc2a4216d360f73"
+    },
+    {
+      "file": "valid/model-overload-report-response.json",
+      "definition": "ModelOverloadReportResponseV1",
+      "sha256": "20d2b2ca8bc2828e22eefc5323667ba1e1f035744f379a92a66eb787794aefb8"
+    },
+    {
+      "file": "valid/snapshot-response-model-overloads.json",
+      "definition": "SnapshotResponseFixtureV1",
+      "semantics": ["aggregate-capacity"],
+      "sha256": "f9ed69d481d83a320166997af6c8d6d6119145e69ca5375d5bdfe27a4c01b511"
     }
   ],
   "invalid": [
@@ -301,6 +323,18 @@
       "semantics": ["verifier-store"],
       "expectedError": "at most 192",
       "sha256": "91a24f8ec8271ff24fb6e1665e4d159453971be68b50a4a989eb90f92eb57e36"
+    },
+    {
+      "file": "invalid/health-model-overload-zero-count.json",
+      "definition": "HealthResponseFixtureV1",
+      "expectedError": "must be at least 1",
+      "sha256": "5345df6f358739043e308a48658686b1e75b1b35989db1aa6a8596e0a3a6c353"
+    },
+    {
+      "file": "invalid/model-overload-report-unknown-field.json",
+      "definition": "ModelOverloadReportRequestV1",
+      "expectedError": "is not allowed",
+      "sha256": "848e710f6702148d7ca600b05554380bf0fde753f3e29894cfd25ddb28384b34"
     }
   ]
 }

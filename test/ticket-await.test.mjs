@@ -403,3 +403,45 @@ test("an overload reported as a throttle by an old client ends the ticket but ne
   health = gate.authority.health({ instanceId: uuid(9), buildId: "test" });
   assert.ok(health.cooldownUntilEpochMs > Date.now()); assert.equal(health.currentConcurrency, 1);
 });
+
+test("model overload reports are counted per model in memory and never pause the lane or change its state", async (t) => {
+  const gate = await lane(t, { concurrency: 2 });
+  const report = (model, extra = {}) => ({ schemaVersion: 1, installationId: INSTALLATION, provider: "anthropic-a", accountBindingId: BINDING, model, source: "message", ...extra });
+  const before = await fs.readFile(path.join(gate.directory, "lane.json"), "utf8");
+  const start = Date.now();
+  for (let index = 0; index < 6; index++) assert.deepEqual(gate.authority.reportModelOverload(principal, report("claude-fable-5-2"), start + index * 1_000), { schemaVersion: 1, accepted: true });
+  const health = gate.authority.health({ instanceId: uuid(9), buildId: "test", now: start + 6_000 });
+  assert.deepEqual(health.modelOverloads, { windowMs: 300_000, models: [{ model: "claude-fable-5-2", count: 6, firstAtEpochMs: start, lastAtEpochMs: start + 5_000 }] });
+  assert.equal(health.cooldownUntilEpochMs, null); assert.equal(health.currentConcurrency, 2);
+  assert.equal(await fs.readFile(path.join(gate.directory, "lane.json"), "utf8"), before);
+  for (let index = 0; index < 17; index++) gate.authority.reportModelOverload(principal, report(`model-${index}`), start + 10_000 + index);
+  assert.equal(gate.authority.health({ instanceId: uuid(9), buildId: "test", now: start + 20_000 }).modelOverloads.models.length, 16);
+  for (const bad of [report("claude-fable-5-2", { requestId: uuid(1) }), report("-bad"), report("claude-fable-5-2", { source: "other" })]) assert.throws(() => gate.authority.reportModelOverload(principal, bad), (error) => error instanceof AuthorityError && error.code === "invalid_request");
+  assert.throws(() => gate.authority.reportModelOverload(principal, report("claude-fable-5-2", { provider: "anthropic-b" })), (error) => error instanceof AuthorityError && error.code === "forbidden_lane");
+  assert.deepEqual(gate.authority.health({ instanceId: uuid(9), buildId: "test", now: start + 400_000 }).modelOverloads.models, []);
+});
+
+test("a client reports an overload only to a lane that offers it, and a slow or missing route never holds up permits", async (t) => {
+  const gate = await lane(t);
+  for (const variant of ["advertised", "absent", "hanging", "missing"]) {
+    const link = transport(gate);
+    const request = link.request;
+    const reports = [];
+    link.request = async (input) => {
+      if (input.pathname === "/v1/health" && variant === "absent") { const reply = await request(input); return { ...reply, body: { ...reply.body, capabilities: ["tickets", "snapshot", "allowance", "ticket-await"] } }; }
+      if (input.pathname !== "/v1/model-overloads") return request(input);
+      reports.push(input.body);
+      if (variant === "hanging") return new Promise((_, reject) => input.signal?.addEventListener("abort", () => reject(input.signal.reason), { once: true }));
+      if (variant === "missing") return { status: 404, body: { error: { code: "not_found" } } };
+      return { status: 200, body: gate.authority.reportModelOverload(principal, input.body) };
+    };
+    const session = client(gate, link, 40 + reports.length, { reportTimeoutMs: 50 });
+    const record = await session.acquire("anthropic-a", stopper(t));
+    const reported = session.reportOverload("anthropic-a", "claude-fable-5-2", "message");
+    await session.complete(record);
+    await session.complete(await session.acquire("anthropic-a", stopper(t)));
+    assert.equal(await reported, undefined, variant);
+    if (variant === "absent") assert.equal(reports.length, 0);
+    else assert.deepEqual(reports, [{ schemaVersion: 1, installationId: INSTALLATION, provider: "anthropic-a", accountBindingId: BINDING, model: "claude-fable-5-2", source: "message" }], variant);
+  }
+});

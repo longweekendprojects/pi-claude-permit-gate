@@ -1460,3 +1460,23 @@ test("a busy lane ledger keeps a small working set plus every terminal record un
   assert.equal(Object.keys(full.tickets).length, 256);
   assert.equal(Object.keys(full.createTombstones).length, 0);
 });
+
+test("authority counts model overload reports for the lane monitor and keeps them out of snapshots that do not ask", async (t) => {
+  const gate = await authorityDaemon(t);
+  const principal = gate.principal;
+  const report = { schemaVersion: 1, installationId: principal.installationId, provider: "anthropic-a", accountBindingId: principal.accountBindingId, model: "claude-fable-5-2", source: "message" };
+  const refused = await request(gate.port, "POST", "/v1/model-overloads", report, authorityHeaders(principal, "snapshot:read"));
+  assert.equal(refused.status, 403); assert.equal(refused.body.error.code, "forbidden_scope");
+  const accepted = await request(gate.port, "POST", "/v1/model-overloads", report, authorityHeaders(principal));
+  assert.equal(accepted.status, 200); assert.deepEqual(accepted.body, { schemaVersion: 1, accepted: true });
+  await request(gate.port, "POST", "/v1/model-overloads", { ...report, source: "warm" }, authorityHeaders(principal));
+  const health = await request(gate.port, "GET", "/v1/health", undefined, authorityHeaders(principal));
+  assert.ok(health.body.capabilities.includes("model-overloads"));
+  assert.equal(health.body.modelOverloads.windowMs, 300_000);
+  assert.deepEqual(health.body.modelOverloads.models.map(({ model, count }) => ({ model, count })), [{ model: "claude-fable-5-2", count: 2 }]);
+  // Monitors older than this field reject unknown snapshot keys, so it is sent only when asked for.
+  const plain = await request(gate.port, "GET", "/v1/snapshot", undefined, authorityHeaders(principal, "snapshot:read"));
+  assert.equal(plain.status, 200); assert.equal("modelOverloads" in plain.body, false); assert.equal("capabilities" in plain.body, false);
+  const asked = await request(gate.port, "GET", "/v1/snapshot", undefined, { ...authorityHeaders(principal, "snapshot:read"), "x-permit-model-overloads": "1" });
+  assert.equal(asked.body.modelOverloads.models[0].count, 2);
+});

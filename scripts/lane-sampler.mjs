@@ -54,7 +54,7 @@ async function sample() {
       if (!response.ok) { row = { at, provider, up: false, status: response.status, client }; }
       else {
         const h = await response.json();
-        row = { at, provider, up: true, state: h.status, active: h.active, offered: h.offered, uncertain: h.uncertain, queued: h.queued, current: h.currentConcurrency, max: h.maximumConcurrency, laneTerm: h.laneTerm, instanceId: h.instanceId, cooldownUntil: h.cooldownUntilEpochMs, oldestWaitEpochMs: h.oldestWaitEpochMs, client };
+        row = { at, provider, up: true, state: h.status, active: h.active, offered: h.offered, uncertain: h.uncertain, queued: h.queued, current: h.currentConcurrency, max: h.maximumConcurrency, laneTerm: h.laneTerm, instanceId: h.instanceId, cooldownUntil: h.cooldownUntilEpochMs, oldestWaitEpochMs: h.oldestWaitEpochMs, modelOverloads: h.modelOverloads?.models?.length ? h.modelOverloads.models : undefined, client };
       }
     } catch (error) { row = { at, provider, up: false, error: error.message, client }; }
     fs.appendFileSync(LOG_FILE, JSON.stringify(row) + "\n");

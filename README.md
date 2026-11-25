@@ -36,6 +36,7 @@ The extension starts each daemon on demand. It gates only configured Anthropic-f
 - Releases permits after a response, an agent exit, or session shutdown.
 - Renews live permits and reclaims abandoned permits after the configured lease timeout.
 - Backs off after Anthropic rate limits, then gradually restores concurrency. An overload affects one model, not the account, so it does not pause the pool; Pi's own retry backs off the failed request.
+- In shared-authority mode, reports each overloaded reply to its lane. The Claude Lane Monitor then shows which models were overloaded on which lanes in the last five minutes.
 - Keeps waiting if its daemon is unavailable, rather than sending an ungated request.
 
 It does not proxy provider traffic, read credentials, register providers, select accounts, or modify provider payloads.

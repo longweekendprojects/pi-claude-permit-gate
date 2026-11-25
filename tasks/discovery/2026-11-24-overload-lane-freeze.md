@@ -34,3 +34,4 @@ Release the permit normally after an overload, and keep the lane pause for rate 
 
 - `~/Library/Logs/Claude Permit Authority/lane-samples.jsonl`, provider `anthropic-c`, 04:49Z to 04:59Z.
 - Pi session logs under `~/.pi/agent/sessions/--Users-albertgwo-Repositories-albot--/` for the same window.
+- 2026-11-25: Follow-up shipped. Lanes now count overload reports per model, the lane monitor shows them, and the authority ignores the lane pause that older clients request on an overload. Design: tasks/plans/model-overload-alerts.md.

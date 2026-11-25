@@ -706,3 +706,8 @@ test("authority-client finishes a completion across a lane that degrades and res
   await client.complete(record);
   assert.equal(completes, 3); assert.deepEqual(ledger.tickets, {});
 });
+
+test("an overloaded reply is reported without waiting, before the permit release and before any bypass read", () => {
+  assert.match(source, /pi\.on\("message_end", async \(event, ctx\) => \{ const overloaded = authorityClient \? providerOverload\(event\.message\) : undefined; if \(overloaded && [^;]*!bypassState\(\)\.enabled\) void authorityClient!\.reportOverload\([^;]*"message"\); if \(!activePermit/);
+  assert.match(source, /if \(status === 529 && warmed && authorityClient && activePermit\.kind === "authority"\) void authorityClient\.reportOverload\(warmed\.provider, warmed\.model, "warm"\);/);
+});

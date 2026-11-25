@@ -26,6 +26,12 @@ const RETAINED_ALLOWANCE_REPLAYS_PER_INSTALLATION = 8;
 const MAX_ALLOWANCE_REPLAY_RECORDS = MAX_INSTALLATIONS * MAX_ALLOWANCE_REPLAYS_PER_INSTALLATION;
 const MAX_FINGERPRINT_LENGTH = 16_384;
 const MAX_REQUEST_AGE_MS = 30_000;
+// Advisory overload reports: in memory only, never persisted or used for scheduling.
+export const MODEL_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$";
+const MODEL_ID = new RegExp(MODEL_ID_PATTERN);
+const MODEL_OVERLOAD_WINDOW_MS = 300_000;
+const MODEL_OVERLOAD_MODELS = 16;
+const MODEL_OVERLOAD_EVENTS = 256;
 const STATE_SCHEMA_VERSION = 2;
 const VERIFIER_SCOPES = new Set(["permit:mutate", "snapshot:read", "allowance:publish"]);
 const MAX_VERIFIER_RECORDS = 192;
@@ -1600,6 +1606,9 @@ export class AuthorityState {
     // offer to be claimed on its behalf. Neither is persisted: a restart drops the open requests.
     this._awaiters = new Set();
     this._claimIntents = new Map();
+    // Models a client reported overloaded, each with its report times in ascending order. Advisory
+    // and in memory only: a restart clears it, and nothing here affects scheduling or lane state.
+    this._modelOverloads = new Map();
   }
 
   get status() {
@@ -2101,7 +2110,7 @@ export class AuthorityState {
       status: this.status,
       provider: this.state.provider,
       port: this.state.port,
-      capabilities: ["tickets", "snapshot", "allowance", "ticket-await"],
+      capabilities: ["tickets", "snapshot", "allowance", "ticket-await", "model-overloads"],
       active: counts.active,
       offered: counts.offered,
       uncertain: counts.uncertain,
@@ -2110,13 +2119,55 @@ export class AuthorityState {
       maximumConcurrency: this.state.scheduler.maximumConcurrency,
       cooldownUntilEpochMs: this.state.scheduler.cooldownUntilEpochMs,
       oldestWaitEpochMs,
+      modelOverloads: this._modelOverloadView(now),
     };
   }
 
-  snapshot({ instanceId, buildId, now = this._now() }) {
+  // Monitors older than the model-overloads capability reject unknown snapshot keys, so the field
+  // is sent only to a reader that asks for it.
+  snapshot({ instanceId, buildId, now = this._now(), includeModelOverloads = false }) {
     const health = this.health({ instanceId, buildId, now });
-    const { capabilities, ...common } = health;
-    return { ...common, laneId: LANE_IDS[this.state.provider], allowance: privateAllowance(this.state) };
+    const { capabilities, modelOverloads, ...common } = health;
+    return { ...common, laneId: LANE_IDS[this.state.provider], allowance: privateAllowance(this.state), ...(includeModelOverloads ? { modelOverloads } : {}) };
+  }
+
+  reportModelOverload(principal, request, now = this._now()) {
+    assertExactObject(request, ["schemaVersion", "installationId", "provider", "accountBindingId", "model", "source"]);
+    assertSchemaVersion(request.schemaVersion);
+    assertUuid(request.installationId);
+    assertProvider(request.provider);
+    assertUuid(request.accountBindingId);
+    if (typeof request.model !== "string" || !MODEL_ID.test(request.model)) fail("invalid_request", "request model is invalid");
+    if (request.source !== "message" && request.source !== "warm") fail("invalid_request", "request source is invalid");
+    assertPrincipalMatches(principal, request);
+    if (request.provider !== this.state.provider) fail("provider_mismatch", "request provider does not match lane");
+    this._modelOverloadView(now);
+    let times = this._modelOverloads.get(request.model);
+    if (!times) {
+      if (this._modelOverloads.size >= MODEL_OVERLOAD_MODELS) {
+        let oldest;
+        for (const [model, list] of this._modelOverloads) if (!oldest || list.at(-1) < this._modelOverloads.get(oldest).at(-1)) oldest = model;
+        this._modelOverloads.delete(oldest);
+      }
+      times = [];
+      this._modelOverloads.set(request.model, times);
+    }
+    times.push(now);
+    if (times.length > MODEL_OVERLOAD_EVENTS) times.splice(0, times.length - MODEL_OVERLOAD_EVENTS);
+    return { schemaVersion: 1, accepted: true };
+  }
+
+  _modelOverloadView(now) {
+    const since = now - MODEL_OVERLOAD_WINDOW_MS;
+    const models = [];
+    for (const [model, times] of this._modelOverloads) {
+      const kept = times.findIndex((at) => at > since);
+      if (kept === -1) { this._modelOverloads.delete(model); continue; }
+      if (kept > 0) times.splice(0, kept);
+      models.push({ model, count: times.length, firstAtEpochMs: times[0], lastAtEpochMs: times.at(-1) });
+    }
+    models.sort((left, right) => right.lastAtEpochMs - left.lastAtEpochMs);
+    return { windowMs: MODEL_OVERLOAD_WINDOW_MS, models };
   }
 }
 
