@@ -5,6 +5,7 @@
 - Reject unexpected Host and Origin headers on local requests and require JSON on control POSTs.
 - Let operators require a local token after upgrading daemons and reloading clients.
 - Block Claude requests when a local provider-port map is invalid and report the bad entry.
+- Use the default local port map for empty or whitespace-only overrides.
 - Report why a local permit request was refused without interrupting its wait.
 - Count local admission rejections and control POSTs without a valid token in `/health`.
 - Write rate-limited rejection messages and token creation failures to the daemon log.

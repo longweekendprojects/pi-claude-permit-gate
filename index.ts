@@ -53,7 +53,7 @@ type ProviderPortConfig =
   | { kind: "invalid"; blockedProviders: Set<string>; reason: string };
 
 export function parseProviderPorts(value: string | undefined): ProviderPortConfig {
-  if (value === undefined) return { kind: "valid", ports: new Map(Object.entries(DEFAULT_PORTS)) };
+  if (value === undefined || value.trim() === "") return { kind: "valid", ports: new Map(Object.entries(DEFAULT_PORTS)) };
   const entries = value.split(",");
   const fields = entries.map((entry) => entry.split(":").map((part) => part.trim()));
   const ports = new Map<string, number>();

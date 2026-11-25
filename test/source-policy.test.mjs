@@ -13,7 +13,12 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = await fs.readFile(path.join(root, "index.ts"), "utf8");
 
 test("default provider map gates built-in and four lane providers only", () => {
-  assert.deepEqual(Object.fromEntries(parseProviderPorts(undefined).ports), { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 });
+  const defaults = { anthropic: 8790, "anthropic-a": 8791, "anthropic-b": 8792, "anthropic-c": 8793, "anthropic-d": 8794 };
+  const configs = [undefined, "", " \t\n"].map((value) => {
+    const config = parseProviderPorts(value);
+    return config.kind === "valid" ? Object.fromEntries(config.ports) : config.kind;
+  });
+  assert.deepEqual(configs, [defaults, defaults, defaults]);
   assert.deepEqual(Object.fromEntries(parseProviderPorts("anthropic-a:19001, custom:19002").ports), { "anthropic-a": 19001, custom: 19002 });
 });
 
@@ -28,10 +33,9 @@ test("invalid local provider maps block provider dispatch and identify the bad e
     ["anthropic-a:19001, custom:19002extra", "custom", "custom:19002extra"],
     ["anthropic-a:19001,anthropic-a:19002", "anthropic-b", "anthropic-a:19002"],
     ["anthropic-b:65536", "anthropic-b", "anthropic-b:65536"],
-    ["", "anthropic-b", "empty entry"],
   ];
   for (const [index, [value, provider, badEntry]] of cases.entries()) {
-    await t.test(value || "empty map", { timeout: 2_000 }, async () => {
+    await t.test(value, { timeout: 2_000 }, async () => {
       const previous = process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS;
       const handlers = new Map();
       process.env.CLAUDE_PERMIT_GATE_PROVIDER_PORTS = value;
